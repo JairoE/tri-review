@@ -4,7 +4,7 @@ Full task details (acceptance criteria, verification, files): `../implementation
 
 ## Phase 1: Foundation (real data, no LLMs)
 - [x] Task 1: Project scaffolding and config
-- [ ] Task 2: PR fetching via `gh` (preflight + diff + auto-detect)
+- [x] Task 2: PR fetching via `gh` (preflight + diff + auto-detect)
 - [ ] Task 3: Context builder with token budget (`--dry-run`)
 
 ## Checkpoint: Foundation
