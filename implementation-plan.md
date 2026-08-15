@@ -1,228 +1,205 @@
-Create a .env file at the root of your project:
-OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key
-GOOGLE_API_KEY=your_google_key
-GITHUB_TOKEN=your_github_token # For fetching PRs via API
+# Implementation Plan: `tri-review` CLI
 
-2. Defining the Graph State (state.py)
-   In LangGraph, the State is a dictionary that gets passed between nodes. Each node returns a dictionary that updates this state.
+Source spec: `prd.md`. Task checklist for build tooling: `tasks/todo.md`.
 
-# state.py
+## Overview
 
-from typing import TypedDict, List, Annotated
-import operator
+Build the MVP of `tri-review`: a Python CLI that fetches a real GitHub PR diff via the `gh` CLI, packages it with full-file local context, fans out to three LLM reviewers concurrently through a LangGraph graph, and synthesizes their structured findings into a consensus/unique-insights Markdown report rendered with Rich.
 
-class ReviewState(TypedDict):
-pr_number: str
-diff: str
-context: str # 'reviews' will aggregate outputs from all models. # The Annotated type with operator.add means new reviews are appended to the list, not overwritten.
-reviews: Annotated[List[str], operator.add]
-final_report: str
+## Architecture Decisions
 
-3. Creating the Graph Nodes (nodes.py)
-   Nodes are just Python functions that take the state, perform an action, and return a dictionary containing state updates.
+- **`gh` CLI over PyGithub:** `gh pr diff` and `gh pr view --json` give diff fetching, auth, and branch auto-detection with zero token management. GitHub API integration is deferred to post-MVP (needed only for `--comment`).
+- **Structured findings, not free text:** Each reviewer returns JSON conforming to a shared Pydantic `Finding` schema via LangChain's `with_structured_output`. This is what makes cross-model consensus matching reliable and is non-negotiable in the MVP.
+- **Failure-tolerant fan-in:** Review nodes never raise; they record success (findings) or failure (error string) into state. The synthesizer guards on ≥2 successes. This keeps LangGraph's parallel superstep from aborting the whole run on one flaky provider.
+- **Truncation over chunking:** One token budget (default ~100k tokens, 4 chars/token estimate), dropping full-file contents largest-first with a printed warning. Chunking is post-MVP.
+- **Models are config:** IDs live in `config.py` with env overrides. Current provider flagship IDs must be verified against provider docs during Task 4 — do not trust IDs from memory or from older docs.
+- **Build order is diff-pipeline-first:** The PR-fetching and context slice lands before any LLM code, with a `--dry-run` flag to verify it against real repos. This inverts the old plan's mistake of mocking the core feature.
 
-# nodes.py
+## Task List
 
-import os
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage
-from state import ReviewState
+### Phase 1: Foundation (real data, no LLMs)
 
-# --- 1. Context Builder Node ---
+---
 
-def fetch_pr_context(state: ReviewState):
-\"\"\"Fetches the PR diff and repo context.\"\"\"
-pr_number = state.get("pr_number")
+## Task 1: Project scaffolding and config
 
-    # In a real app, use PyGithub or gitpython here to fetch the diff.
-    # For MVP, we simulate pulling the diff:
-    mock_diff = f"Mock Git Diff for PR #{pr_number}\\n+ def insecure_hash(password):\\n+    return md5(password)"
+**Description:** Create the package skeleton: `pyproject.toml` with a `tri-review` console entry point, dependencies (click, rich, python-dotenv, langgraph, langchain-openai, langchain-anthropic, langchain-google-genai, pytest), `src/tri_review/` layout, `.env.example` with the three provider keys, and `config.py` holding model IDs, token budget, and timeout — each overridable via `TRI_REVIEW_*` env vars.
 
-    return {"diff": mock_diff, "context": "Repo language: Python."}
+**Acceptance criteria:**
+- [ ] `pip install -e .` succeeds and `tri-review --help` prints usage
+- [ ] `config.py` exposes model IDs, token budget (default 100_000), and per-model timeout (default 120s), each overridable via env var
+- [ ] `.env.example` documents `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` — and nothing else (no GITHUB_TOKEN)
 
-# --- 2. Parallel Review Nodes (Fan-Out) ---
+**Verification:**
+- [ ] `pip install -e . && tri-review --help` in a fresh venv
+- [ ] `pytest` runs (zero tests collected is fine)
 
-REVIEW_PROMPT = \"\"\"You are an expert code reviewer.
-Review the following PR diff. Focus on bugs, security, and logic errors.
-Ignore styling nitpicks. Keep it concise.
-\"\"\"
+**Dependencies:** None
+**Files likely touched:** `pyproject.toml`, `src/tri_review/__init__.py`, `src/tri_review/config.py`, `src/tri_review/cli.py`, `.env.example`
+**Estimated scope:** Small
 
-def review_model_a(state: ReviewState):
-llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
-messages = [
-SystemMessage(content=REVIEW_PROMPT),
-HumanMessage(content=f"Context: {state['context']}\\n\\nDiff: {state['diff']}")
-]
-response = llm.invoke(messages)
-return {"reviews": [f"### Model A (GPT-4o)\\n{response.content}"]}
+---
 
-def review_model_b(state: ReviewState):
-llm = ChatAnthropic(model="claude-3-5-sonnet-20240620", temperature=0.2)
-messages = [
-SystemMessage(content=REVIEW_PROMPT),
-HumanMessage(content=f"Context: {state['context']}\\n\\nDiff: {state['diff']}")
-]
-response = llm.invoke(messages)
-return {"reviews": [f"### Model B (Claude)\\n{response.content}"]}
+## Task 2: PR fetching via `gh` (preflight + diff + auto-detect)
 
-def review_model_c(state: ReviewState):
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.2)
-messages = [
-SystemMessage(content=REVIEW_PROMPT),
-HumanMessage(content=f"Context: {state['context']}\\n\\nDiff: {state['diff']}")
-]
-response = llm.invoke(messages)
-return {"reviews": [f"### Model C (Gemini)\\n{response.content}"]}
+**Description:** Implement `github.py`: preflight checks (`gh` installed, `gh auth status` ok, cwd is a git repo with a GitHub remote), `fetch_diff(pr_number)` wrapping `gh pr diff`, and `detect_pr()` wrapping `gh pr view --json number` for the no-argument flow. Wire `--pr` (optional) into the CLI. Every failure mode maps to a specific actionable message and non-zero exit.
 
-# --- 3. Synthesizer Node (Fan-In) ---
+**Acceptance criteria:**
+- [ ] `tri-review --pr <n>` fetches the real diff for that PR in a real repo
+- [ ] `tri-review` with no flag resolves the current branch's open PR, and errors clearly when the branch has none
+- [ ] Missing `gh`, unauthenticated `gh`, and non-repo cwd each produce a distinct actionable error, not a traceback (PRD acceptance criterion 6)
 
-def synthesize_reviews(state: ReviewState):
-llm = ChatOpenAI(model="gpt-4o", temperature=0.1) # Using a strong model for reasoning
+**Verification:**
+- [ ] Unit tests for error mapping with subprocess mocked: `pytest tests/test_github.py`
+- [ ] Manual check in a real repo with an open PR: correct diff, correct auto-detection
 
-    reviews_text = "\\n\\n---\\n\\n".join(state["reviews"])
+**Dependencies:** Task 1
+**Files likely touched:** `src/tri_review/github.py`, `src/tri_review/cli.py`, `tests/test_github.py`
+**Estimated scope:** Small
 
-    sys_prompt = \"\"\"You are the Lead Engineer Synthesizer.
-    You will receive 3 code reviews from different AI models.
-    Your task:
-    1. Identify 'Consensus Findings' (caught by 2+ models).
-    2. Identify 'Unique Insights' (high-value catches by 1 model).
-    3. Output a final Markdown report. Do not repeat the raw reviews.
-    \"\"\"
+---
 
-    messages = [
-        SystemMessage(content=sys_prompt),
-        HumanMessage(content=f"Here are the reviews:\\n\\n{reviews_text}")
-    ]
+## Task 3: Context builder with token budget
 
-    response = llm.invoke(messages)
-    return {"final_report": response.content}
+**Description:** Implement `context.py`: parse changed file paths from the unified diff, read each file's full content from the local checkout (skip deleted files — their hunks are already in the diff), assemble the context block, and enforce the token budget by dropping full-file contents largest-first (keeping their diff hunks) until under budget, emitting a warning that names the dropped files. Add `--dry-run` to the CLI: print diff stats, included/truncated files, and estimated tokens, then exit before any LLM work.
 
-4. Assembling the LangGraph Workflow (graph.py)
-   This is where the magic happens. We wire the nodes together into a DAG, defining how state flows.
+**Acceptance criteria:**
+- [ ] Changed-file paths are parsed correctly from unified diff headers (added, modified, deleted, renamed)
+- [ ] Over-budget input drops largest files first and prints a warning naming them (PRD acceptance criterion 5)
+- [ ] `tri-review --pr <n> --dry-run` shows the full context summary without touching any API key
 
-# graph.py
+**Verification:**
+- [ ] Unit tests for diff parsing and the truncation policy: `pytest tests/test_context.py`
+- [ ] Manual check: `--dry-run` against a real PR shows correct files and plausible token counts
 
-from langgraph.graph import StateGraph, END
-from state import ReviewState
-from nodes import (
-fetch_pr_context,
-review_model_a,
-review_model_b,
-review_model_c,
-synthesize_reviews
-)
+**Dependencies:** Task 2
+**Files likely touched:** `src/tri_review/context.py`, `src/tri_review/cli.py`, `tests/test_context.py`
+**Estimated scope:** Medium
 
-def build_review_graph(): # Initialize the graph with our TypedDict state
-workflow = StateGraph(ReviewState)
+---
 
-    # 1. Add all nodes to the graph
-    workflow.add_node("fetch_context", fetch_pr_context)
-    workflow.add_node("model_a", review_model_a)
-    workflow.add_node("model_b", review_model_b)
-    workflow.add_node("model_c", review_model_c)
-    workflow.add_node("synthesizer", synthesize_reviews)
+### Checkpoint: Foundation
+- [ ] `pytest` green, `tri-review --pr <n> --dry-run` works against a real PR with no API keys set
+- [ ] The old plan's core gap is closed: real diff and real context, verified before any LLM code exists
 
-    # 2. Define the edges (The Flow)
+### Phase 2: Review pipeline
 
-    # Start -> Context Node
-    workflow.set_entry_point("fetch_context")
+---
 
-    # Context -> Models (Fan-out)
-    # LangGraph automatically runs these in parallel when directed from a single node
-    workflow.add_edge("fetch_context", "model_a")
-    workflow.add_edge("fetch_context", "model_b")
-    workflow.add_edge("fetch_context", "model_c")
+## Task 4: Findings schema, graph state, and one working reviewer
 
-    # Models -> Synthesizer (Fan-in)
-    workflow.add_edge("model_a", "synthesizer")
-    workflow.add_edge("model_b", "synthesizer")
-    workflow.add_edge("model_c", "synthesizer")
+**Description:** Define the Pydantic models in `schema.py` (`Finding`: file, line (nullable), severity, category, title, detail, suggested_fix (nullable); `ReviewResult`: model_name, findings list or error). Define `ReviewState` (TypedDict with an `operator.add`-annotated results list) in `state.py`. Implement one review node factory in `nodes.py` using the shared system prompt and `with_structured_output(ReviewResult)`, wired to a minimal two-node graph (context → reviewer). **Verify current model IDs against each provider's official docs before setting the config defaults.**
 
-    # Synthesizer -> End
-    workflow.add_edge("synthesizer", END)
+**Acceptance criteria:**
+- [ ] One model reviews a real PR diff and returns schema-valid findings referencing real files from the diff
+- [ ] A clean/trivial diff yields an empty findings list, not invented findings
+- [ ] The reviewer node catches exceptions and timeouts (config value) and records them as an error in state instead of raising
 
-    # Compile the graph into an executable application
-    return workflow.compile()
+**Verification:**
+- [ ] Unit test: node returns a recorded error (not an exception) when the LLM call raises: `pytest tests/test_nodes.py`
+- [ ] Manual check: run against a real PR with one provider key; inspect findings JSON
 
-5. Building the CLI (cli.py)
-   We use Click for parsing commands and Rich for a beautiful loading spinner and markdown output.
+**Dependencies:** Task 3
+**Files likely touched:** `src/tri_review/schema.py`, `src/tri_review/state.py`, `src/tri_review/nodes.py`, `src/tri_review/config.py`, `tests/test_nodes.py`
+**Estimated scope:** Medium
 
-# cli.py
+---
 
-import click
-import os
-from dotenv import load_dotenv
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from graph import build_review_graph
+## Task 5: Three-model fan-out with failure tolerance
 
-load_dotenv()
-console = Console()
+**Description:** Generalize the reviewer node factory across the three providers and assemble the full LangGraph in `graph.py`: context → {model_a, model_b, model_c} → synthesizer-placeholder → END, with the fan-out running as a parallel superstep. Confirm one provider failing does not abort the others.
 
-@click.command()
-@click.option('--pr', required=True, help='The Pull Request number to review.')
-def main(pr):
-\"\"\"tri-review: Triangulated AI Code Reviewer\"\"\"
+**Acceptance criteria:**
+- [ ] All three models run concurrently (wall time ≈ slowest model, not the sum)
+- [ ] With one provider key removed, the other two results still land in state with the failure recorded (PRD acceptance criterion 3)
+- [ ] Each result in state is attributed to its model name
 
-    console.print(Panel(f"[bold cyan]tri-review[/bold cyan] starting on PR #{pr}...", expand=False))
+**Verification:**
+- [ ] Unit test with stubbed LLMs: three results aggregate via `operator.add`; one stub raising still yields two results plus one recorded error: `pytest tests/test_graph.py`
+- [ ] Manual check: real run with all three keys, then with one key removed
 
-    # Compile Graph
-    app = build_review_graph()
+**Dependencies:** Task 4
+**Files likely touched:** `src/tri_review/nodes.py`, `src/tri_review/graph.py`, `tests/test_graph.py`
+**Estimated scope:** Small
 
-    # Initial State
-    inputs = {"pr_number": pr, "reviews": []}
+---
 
-    # Execute Graph with Rich Spinner
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,
-    ) as progress:
+## Task 6: Synthesizer and report
 
-        task_id = progress.add_task("[yellow]Gathering Context & Running Parallel AI Reviews...", total=None)
+**Description:** Implement the synthesizer node: guard on ≥2 successful reviews (otherwise write a structured failure into state for the CLI to exit non-zero with the collected errors); prompt a strong model with the structured findings lists to match same-issue findings across models and produce the three-section Markdown report (Consensus Findings, Unique Insights with model attribution, Actionable Next Steps with file/line references), noting any failed model.
 
-        try:
-            # invoke() runs the graph synchronously but internal parallel edges are run asynchronously
-            # by LangGraph using Python's asyncio under the hood.
-            result = app.invoke(inputs)
-            progress.update(task_id, description="[green]Synthesis Complete!")
+**Acceptance criteria:**
+- [ ] Findings flagged by 2+ models appear once under Consensus; single-model findings appear under Unique Insights with attribution
+- [ ] With exactly 2 successful reviews, synthesis proceeds and the report notes the failed model
+- [ ] With ≤1 successful review, the run exits non-zero with the provider errors (PRD acceptance criterion 4)
 
-        except Exception as e:
-            console.print(f"[bold red]Error during execution:[/bold red] {e}")
-            return
+**Verification:**
+- [ ] Unit tests for the ≥2 guard and report assembly with canned findings: `pytest tests/test_synthesizer.py`
+- [ ] Manual check: real 3-model run on a PR with a planted bug; the bug lands in Consensus
 
-    # Output the Synthesized Markdown
-    console.print("\\n[bold green]✅ Review Complete. Final Synthesis:[/bold green]\\n")
-    md = Markdown(result["final_report"])
-    console.print(md)
+**Dependencies:** Task 5
+**Files likely touched:** `src/tri_review/nodes.py`, `src/tri_review/graph.py`, `tests/test_synthesizer.py`
+**Estimated scope:** Medium
 
-if **name** == '**main**':
-main()
+---
 
-6. How to Run the MVP
+### Checkpoint: Core pipeline
+- [ ] End-to-end: `tri-review --pr <n>` on a real PR produces a correct three-section report (PRD acceptance criteria 1–4)
+- [ ] Review with human before polish
 
-- Ensure your .env is loaded with API keys.
-- Run the tool via the command line:
-  python cli.py --pr 42
+### Phase 3: CLI polish
 
-Next Steps for Production
+---
 
-- Git Integration: Replace the mocked fetch_pr_context logic with API calls to GitHub (e.g., using PyGithub) to grab the actual PR diff.
-- Chunking Strategy: If the diff is massive, you may need a node before the fan-out that chunks the diff into smaller payloads or uses an LLM to pre-filter unchanged or boilerplate files.
-- Streaming Output: Hook into LangGraph's .stream() method instead of .invoke() to stream the progress of each node to the user via the terminal UI.
-  """
-  with open("tri_review_implementation.md", "w") as f:
-  f.write(content)
-  print("File generated successfully: tri_review_implementation.md")
+## Task 7: Rich terminal UX and output flag
 
-```text?code_stdout&code_event_index=1
-File generated successfully: tri_review_implementation.md
+**Description:** Replace plain prints with Rich: spinner during context gathering, per-model status line (✓ done / ✗ failed with reason) during the fan-out, rendered Markdown report at the end, and a `--output <file>` flag writing the raw Markdown. Clean exit codes throughout (0 success; distinct non-zero for preflight vs. insufficient-reviews failures).
 
+**Acceptance criteria:**
+- [ ] Progress is visible during the run; per-model success/failure shown as results land
+- [ ] Final report renders as formatted Markdown in the terminal; `--output` writes identical raw Markdown to disk
+- [ ] Exit codes: 0 success, non-zero for each failure class
 
-The document contains a full MVP (Minimum Viable Product) guide. It leverages Python, LangGraph for the fan-out/fan-in architecture, LangChain for model integrations (OpenAI, Anthropic, Google), and Click/Rich for building a polished CLI tool.
-```
+**Verification:**
+- [ ] Manual check: full run, run with a dead key, run with `--output report.md`; `echo $?` after each
+
+**Dependencies:** Task 6
+**Files likely touched:** `src/tri_review/cli.py`, `src/tri_review/graph.py`
+**Estimated scope:** Small
+
+---
+
+## Task 8: README and acceptance pass
+
+**Description:** Rewrite `README.md` with install (`pipx install` / `pip install -e .`), `gh` prerequisite, `.env` setup, usage examples, and a sample report. Then run the full PRD acceptance checklist (criteria 1–6) against a real repository and fix anything that fails.
+
+**Acceptance criteria:**
+- [ ] A new user can go from clone to first review using only the README
+- [ ] All six PRD acceptance criteria pass, demonstrated against a real PR
+
+**Verification:**
+- [ ] Execute each PRD acceptance criterion and record the result in the PR description
+- [ ] `pytest` fully green
+
+**Dependencies:** Task 7
+**Files likely touched:** `README.md`, misc fixes
+**Estimated scope:** Small
+
+---
+
+### Checkpoint: Complete
+- [ ] All PRD acceptance criteria met; tests green; ready for review
+
+## Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Model IDs from memory/old docs are deprecated at runtime | High | Task 4 explicitly verifies current IDs against provider docs; IDs are env-overridable so a dead default never requires a code change |
+| `with_structured_output` behaves differently across the three providers | Medium | Task 4 proves the schema on one provider first; Task 5 extends provider-by-provider instead of all at once |
+| LangGraph parallel superstep aborts all branches when one node raises | Medium | Nodes never raise by design (record-error pattern); Task 5 has an explicit test for this |
+| Synthesizer consensus matching is unreliable | Medium | Structured findings (file/line/category) make matching mostly mechanical; Task 6 manual check plants a known bug and confirms it reaches Consensus |
+| Huge PRs blow the context budget | Low (MVP) | Truncation policy with visible warning (Task 3); chunking deferred per PRD |
+
+## Open Questions
+
+- None blocking. Post-MVP direction (`--comment`, chunking, streaming) is listed in the PRD scope table and intentionally excluded here.

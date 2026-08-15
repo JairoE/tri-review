@@ -1,62 +1,90 @@
 # Product Requirements Document (PRD): `tri-review` CLI
 
-## 1\. Product Overview
+## 1. Product Overview
 
-**Name:** `tri-review` (Triangulated PR Reviewer) **Goal:** A CLI application executed at the root of a local git repository. It fetches an open Pull Request, gathers local repository context, processes the PR through three distinct LLMs, and outputs a synthesized comparison highlighting the highest-value code changes to make. **Target Audience:** Software Engineers, Tech Leads, and Open-Source Maintainers who want rigorous, hallucination-free AI code reviews.
+**Name:** `tri-review` (Triangulated PR Reviewer)
 
-## 2\. User Flow
+**Goal:** A CLI application executed at the root of a local git repository. It fetches an open Pull Request, gathers local repository context, processes the PR through three distinct LLMs concurrently, and outputs a synthesized comparison highlighting the highest-value code changes to make.
 
-1.  The user navigates to their local repository in the terminal.
-2.  The user runs `tri-review --pr 123` (or simply `tri-review` to detect the current branch's PR).
-3.  The CLI identifies the PR diff and packages it with relevant repository context (e.g., file structure, imported files).
-4.  The CLI concurrently sends the context and diff to Model A, Model B, and Model C.
-5.  A "Synthesizer" module evaluates the three responses, identifying consensus and filtering out edge-case hallucinations.
-6.  The CLI outputs a formatted Markdown report in the terminal outlining:
-    - **Consensus Findings:** Issues caught by 2 or more models.
-    - **Unique Insights:** High-value observations caught by only one model.
-    - **Actionable Next Steps:** Specific code snippets to change.
+**Target Audience:** Software engineers, tech leads, and open-source maintainers who want rigorous AI code reviews where cross-model consensus filters out single-model hallucinations.
 
-## 3\. Core Features & Requirements
+**Core value proposition:** One model hallucinates confidently; three models rarely hallucinate the *same* thing. Findings flagged by 2+ independent models are high-trust; findings from one model are surfaced but labeled as unverified.
 
-### 3.1. Context & Diff Gathering Engine
+## 2. MVP Scope
 
-- **PR Retrieval:** Integration with Git/GitHub APIs to pull the target PR's diff.
-- **Repo Context:** Since it runs locally, the tool must read the local file system to map dependencies or provide full-file context for the files modified in the PR diff.
-- **Token Management:** A chunking or formatting mechanism to ensure the combined Diff + Context fits within the context windows of all three target models.
+| In scope (MVP) | Out of scope (post-MVP) |
+|---|---|
+| Fetch real PR diff via `gh` CLI | GitHub API / PyGithub integration |
+| Auto-detect PR from current branch | GitLab / Bitbucket support |
+| Full-file context for changed files | Dependency-graph context mapping |
+| Truncation with warning when over token budget | Smart chunking / multi-pass review of huge diffs |
+| 3-model concurrent review + synthesis | Configurable number of models |
+| Rich terminal Markdown report | `--comment` flag to post review to the PR |
+| Structured JSON findings per model | Streaming per-node progress output |
 
-### 3.2. Multi-Model Orchestration (The Graph)
+## 3. User Flow
 
-- **Concurrent Execution:** The tool must execute the API calls to the three models asynchronously to minimize waiting time.
-- **Agnostic Prompts:** A standardized system prompt that instructs the models to behave as expert reviewers, focusing on logic, security, and performance rather than stylistic nitpicks.
+1. The user navigates to their local repository in the terminal.
+2. The user runs `tri-review --pr 123`, or simply `tri-review` to auto-detect the open PR for the current branch.
+3. The CLI fetches the PR diff and reads the full local contents of every file the diff touches.
+4. The CLI concurrently sends the context and diff to Model A, Model B, and Model C, each returning **structured findings** (not free text).
+5. A Synthesizer module cross-references the three findings lists, identifying consensus and labeling single-model findings.
+6. The CLI renders a formatted Markdown report in the terminal:
+   - **Consensus Findings:** Issues flagged by 2 or more models (grouped, deduplicated).
+   - **Unique Insights:** High-value observations from a single model, labeled as such.
+   - **Actionable Next Steps:** Specific code changes, with file/line references and suggested snippets.
 
-### 3.3. Synthesis & Comparison Engine
+## 4. Core Features & Requirements
 
-- **Consensus Algorithm:** A final LLM call (the Synthesizer) that takes the raw outputs from Model A, B, and C as its input.
-- **Categorization:** The synthesizer must cross-reference the reviews and output a structured JSON or Markdown file comparing the results.
+### 4.1. PR Retrieval & Context Engine
 
-### 3.4. Output & UX
+- **Mechanism (decided):** Shell out to the GitHub CLI (`gh`). `gh pr diff <n>` fetches the diff; `gh pr view --json number` auto-detects the current branch's PR. This eliminates GITHUB_TOKEN management (auth is `gh auth login`, which users already have) and gets branch detection for free.
+- **Preflight checks:** On startup, verify `gh` is installed, authenticated, and the cwd is a git repo with a GitHub remote. Fail fast with an actionable message for each case.
+- **Repo context (decided):** For each file modified in the diff, include its full current content from the local checkout. No dependency mapping in MVP. Deleted files contribute only their diff hunk.
+- **Token management (decided):** A configurable total context budget (default ~100k tokens, estimated at 4 chars/token). If diff + file contents exceed the budget, drop full-file contents largest-first (keeping their diff hunks) until under budget, and print a visible warning listing what was truncated. No chunking in MVP.
 
-- **Terminal UI:** Rich terminal output (using a library like `Rich` in Python or `Ink` in Node.js) with loading spinners for parallel tasks.
-- _(Optional)_ **Automated Commenting:** A flag (e.g., `--comment`) to automatically post the synthesized review as a comment on the GitHub PR.
+### 4.2. Multi-Model Orchestration (The Graph)
 
-## 4\. Architecture: The Graph Workflow
+- **Concurrent execution:** The three review calls run in parallel (LangGraph fan-out).
+- **Structured output (decided):** Each model must return findings as structured JSON conforming to a shared schema — `file`, `line` (nullable), `severity` (critical/major/minor), `category` (bug/security/performance/logic), `title`, `detail`, `suggested_fix` (nullable). Free-text reviews are not acceptable; structure is what makes cross-model matching reliable.
+- **Agnostic prompt:** One standardized system prompt for all three models: behave as an expert reviewer, focus on bugs, security, logic, and performance; explicitly ignore style nitpicks; return an empty findings list if the diff is clean (no invented findings).
+- **Model configuration:** Model IDs live in config with environment-variable overrides (`TRI_REVIEW_MODEL_A`, etc.). Defaults are the current flagship of each provider (OpenAI, Anthropic, Google) and must be verified against provider docs at implementation time — never hardcoded deep in node code.
+- **Failure tolerance (decided):** If a model call fails or times out (default 120s), its node records the failure and the run continues. Synthesis proceeds if **≥2 models** returned findings; the report notes which model failed and why. If ≤1 model succeeds, the run exits non-zero with the errors — a single-model review defeats the product's purpose.
 
-Because this is a Graph solution, the architecture follows a strict state machine:
+### 4.3. Synthesis & Comparison Engine
 
-1.  **State Initiation:** `{"pr_id": 123, "diff": null, "context": null, "reviews": [], "final_report": null}`
-2.  **Node 1 (Context Builder):** Fetches diff and local context. Updates State.
-3.  **Parallel Nodes (The Fan-Out):**
-    - **Node 2A:** Prompts Model A (e.g., GPT-4o).
-    - **Node 2B:** Prompts Model B (e.g., Claude 3.5 Sonnet).
-    - **Node 2C:** Prompts Model C (e.g., Gemini 1.5 Pro).
-    - _All append their output to the `reviews` array in the State._
+- **Consensus algorithm (decided):** A final LLM call (the Synthesizer) receives the structured findings lists from all successful models. Because inputs are structured (file/line/category), it matches findings that describe the same underlying issue even when worded differently, then produces the three-section report. Findings matched across 2+ models → Consensus; others → Unique Insights, attributed to their model.
+- **Output:** Markdown rendered to the terminal. `--output <file>` optionally writes the raw Markdown to disk.
 
-4.  **Node 3 (The Synthesizer / Fan-In):** Reads the `reviews` array. Compares them. Updates `final_report`.
-5.  **Node 4 (Output):** Renders `final_report` to the CLI.
+### 4.4. Output & UX
 
-## 5\. Tech Stack Recommendations
+- **Terminal UI:** `Rich` for spinners during parallel review, per-model status (✓ / ✗ with error), and final Markdown rendering.
+- **Exit codes:** 0 on success, non-zero on preflight failure or <2 successful reviews (script/CI friendly).
 
-- **Language:** Python
-- **Framework:** **LangGraph** Python
-- **Terminal UI:** `Rich` (if Python) for beautiful, readable CLI spinners and Markdown rendering.
-- **Git Integration:** `PyGithub` / `Octokit` combined with native CLI git commands.
+## 5. Architecture: The Graph Workflow
+
+A LangGraph state machine:
+
+1. **State:** `{pr_number, diff, context, findings: [per-model], errors: [per-model], final_report}`
+2. **Node 1 (Context Builder):** Runs `gh` preflight, fetches diff, reads changed files, applies token budget. Updates state.
+3. **Parallel Nodes (Fan-Out):** Node 2A/2B/2C each prompt one model with the shared prompt + schema, appending structured findings (or a recorded error) to state.
+4. **Node 3 (Synthesizer / Fan-In):** Guards on ≥2 successful reviews, cross-references findings, writes `final_report`.
+5. **Node 4 (Output):** Renders `final_report` via Rich.
+
+## 6. Tech Stack (decided)
+
+- **Language:** Python 3.11+
+- **Orchestration:** LangGraph (Python) with LangChain provider packages (`langchain-openai`, `langchain-anthropic`, `langchain-google-genai`) and `with_structured_output` for the findings schema
+- **CLI:** `Click`; **Terminal UI:** `Rich`
+- **Git/GitHub:** `gh` CLI + native `git`, via subprocess — no GitHub API library
+- **Packaging:** `pyproject.toml` with a `tri-review` console entry point
+- **Config:** `.env` via `python-dotenv` for the three provider API keys; model IDs and token budget overridable via env vars
+
+## 7. Acceptance Criteria (MVP is done when)
+
+1. From the root of a real repository with an open GitHub PR, `tri-review --pr <n>` produces a synthesized three-section Markdown report in the terminal in under ~3 minutes, with findings referencing real files/lines from the PR.
+2. `tri-review` with no arguments auto-detects and reviews the current branch's open PR.
+3. With one provider key removed, the run completes on the remaining two models and the report notes the failure.
+4. With only one working provider, the run exits non-zero with a clear message.
+5. Running against a diff exceeding the token budget prints a truncation warning naming the dropped files and still completes.
+6. Missing `gh`, unauthenticated `gh`, or a non-repo cwd each produce a specific, actionable error — not a stack trace.
