@@ -3,7 +3,7 @@
 Full task details (acceptance criteria, verification, files): `../implementation-plan.md`
 
 ## Phase 1: Foundation (real data, no LLMs)
-- [ ] Task 1: Project scaffolding and config
+- [x] Task 1: Project scaffolding and config
 - [ ] Task 2: PR fetching via `gh` (preflight + diff + auto-detect)
 - [ ] Task 3: Context builder with token budget (`--dry-run`)
 
