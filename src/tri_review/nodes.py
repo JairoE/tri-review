@@ -5,6 +5,7 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import config
+from .errors import InsufficientReviewsError
 from .schema import ReviewOutput, ReviewResult
 from .state import ReviewState
 
@@ -93,3 +94,31 @@ def make_review_node(model_name: str, llm_builder=build_llm):
         return {"results": [review_with(model_name, state["payload"], llm_builder)]}
 
     return node
+
+
+def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
+    """Cross-reference the reviews. Requires at least two successful ones."""
+    results = state.get("results", [])
+    succeeded = [r for r in results if r.ok]
+    failed = [r for r in results if not r.ok]
+
+    if len(succeeded) < 2:
+        detail = "; ".join(f"{r.model}: {r.error}" for r in failed) or "no models ran"
+        raise InsufficientReviewsError(
+            f"Only {len(succeeded)} of {len(results)} models returned a review, so there is "
+            f"nothing to triangulate.\nFailures: {detail}"
+        )
+
+    return {"final_report": _synthesize(succeeded, failed, llm_builder)}
+
+
+def _synthesize(succeeded, failed, llm_builder) -> str:
+    """Placeholder: lists raw findings. Replaced by the LLM synthesizer in task 6."""
+    lines = [f"Reviews from: {', '.join(r.model for r in succeeded)}"]
+    for result in succeeded:
+        lines.append(f"\n### {result.model} ({len(result.findings)} findings)")
+        for finding in result.findings:
+            lines.append(f"- {finding.file}:{finding.line} {finding.title}")
+    for result in failed:
+        lines.append(f"\n(!) {result.model} failed: {result.error}")
+    return "\n".join(lines)
