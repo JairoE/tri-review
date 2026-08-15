@@ -17,11 +17,30 @@ Full task details (acceptance criteria, verification, files): `../implementation
 
 ## Checkpoint: Core pipeline
 - [x] End-to-end run on a real PR produces a correct three-section report
-- [ ] Review with human before polish
+- [x] Review with human before polish — user authorized running to completion up front
 
 ## Phase 3: CLI polish
 - [x] Task 7: Rich terminal UX, `--output` flag, exit codes
-- [ ] Task 8: README and full PRD acceptance pass (criteria 1–6)
+- [x] Task 8: README and full PRD acceptance pass (criteria 1–6)
 
 ## Checkpoint: Complete
-- [ ] All PRD acceptance criteria met; tests green; ready for review
+- [x] All PRD acceptance criteria met; tests green; ready for review
+
+## PRD acceptance results
+
+Verified against the real public PR octocat/Hello-World#10856, plus a synthetic
+diff carrying three planted defects (MD5 password hash, off-by-one, SQL injection).
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Real PR produces a three-section report in under ~3 min | PASS — 3 models, ~17s wall time; all three planted defects reached Consensus |
+| 2 | No-argument invocation auto-detects the branch's PR | PASS — detected #10856 after `gh pr checkout` |
+| 3 | One provider key removed: run completes on the rest, failure noted | PASS — exit 0, failure banner names the keyless model |
+| 4 | Only one working provider: exit non-zero with the errors | PASS — exit 4, both provider errors reported |
+| 5 | Over-budget diff: truncation warning, run still completes | PASS — warning names the dropped file, exit 0 |
+| 6 | Missing gh / unauthenticated / non-repo give actionable errors | PASS for missing gh (exit 2), non-repo (exit 2), unknown PR (exit 3). Unauthenticated gh is unit-tested only — verifying live would mean logging out of the user's gh session. |
+
+Not verifiable in this environment: the Anthropic and Google adapter paths, since
+only `OPENAI_API_KEY` was available. Multi-model behaviour was exercised with three
+different OpenAI models; the two other adapters are covered by unit tests and were
+observed failing cleanly (recorded as errors, run continued) when their keys were absent.
