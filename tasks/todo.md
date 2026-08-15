@@ -16,11 +16,11 @@ Full task details (acceptance criteria, verification, files): `../implementation
 - [x] Task 6: Synthesizer and report (≥2-model guard)
 
 ## Checkpoint: Core pipeline
-- [ ] End-to-end run on a real PR produces a correct three-section report
+- [x] End-to-end run on a real PR produces a correct three-section report
 - [ ] Review with human before polish
 
 ## Phase 3: CLI polish
-- [ ] Task 7: Rich terminal UX, `--output` flag, exit codes
+- [x] Task 7: Rich terminal UX, `--output` flag, exit codes
 - [ ] Task 8: README and full PRD acceptance pass (criteria 1–6)
 
 ## Checkpoint: Complete
