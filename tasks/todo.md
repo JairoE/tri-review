@@ -11,7 +11,7 @@ Full task details (acceptance criteria, verification, files): `../implementation
 - [x] `pytest` green; `tri-review --pr <n> --dry-run` works on a real PR with no API keys
 
 ## Phase 2: Review pipeline
-- [ ] Task 4: Findings schema, graph state, one working reviewer (verify current model IDs against provider docs)
+- [x] Task 4: Findings schema, graph state, one working reviewer (verify current model IDs against provider docs)
 - [ ] Task 5: Three-model fan-out with failure tolerance
 - [ ] Task 6: Synthesizer and report (≥2-model guard)
 

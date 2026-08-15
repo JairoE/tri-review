@@ -30,3 +30,6 @@ packages = ["src/tri_review"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Import the package from the source tree directly, so the suite does not depend
+# on an editable install being present and correctly wired.
+pythonpath = ["src"]
