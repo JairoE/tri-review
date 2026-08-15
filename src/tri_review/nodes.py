@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import config
@@ -113,12 +115,53 @@ def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
 
 
 def _synthesize(succeeded, failed, llm_builder) -> str:
-    """Placeholder: lists raw findings. Replaced by the LLM synthesizer in task 6."""
-    lines = [f"Reviews from: {', '.join(r.model for r in succeeded)}"]
+    """Ask a model to cross-reference the structured findings into one report."""
+    payload = json.dumps(
+        [
+            {"model": r.model, "findings": [f.model_dump() for f in r.findings]}
+            for r in succeeded
+        ],
+        indent=2,
+    )
+    header = _failure_note(failed)
+
+    try:
+        llm = llm_builder(config.synthesizer_model())
+        response = llm.invoke(
+            [SystemMessage(content=SYNTHESIS_PROMPT), HumanMessage(content=payload)]
+        )
+        return header + _text_of(response)
+    except Exception as exc:  # noqa: BLE001 - the reviews already cost money; don't lose them
+        return (
+            header
+            + f"> Synthesis failed ({type(exc).__name__}: {exc}). "
+            "Raw findings from each model follow.\n\n"
+            + _raw_listing(succeeded)
+        )
+
+
+def _failure_note(failed) -> str:
+    if not failed:
+        return ""
+    lines = "\n".join(f"- `{r.model}`: {r.error}" for r in failed)
+    return f"> **{len(failed)} model(s) did not report.** This review is based on the rest.\n{lines}\n\n"
+
+
+def _text_of(response) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, list):  # some providers return content blocks
+        return "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+    return str(content)
+
+
+def _raw_listing(succeeded) -> str:
+    lines: list[str] = []
     for result in succeeded:
-        lines.append(f"\n### {result.model} ({len(result.findings)} findings)")
+        lines.append(f"### {result.model} ({len(result.findings)} findings)")
         for finding in result.findings:
-            lines.append(f"- {finding.file}:{finding.line} {finding.title}")
-    for result in failed:
-        lines.append(f"\n(!) {result.model} failed: {result.error}")
+            lines.append(
+                f"- **{finding.severity}/{finding.category}** `{finding.file}:{finding.line}` "
+                f"— {finding.title}\n  {finding.detail}"
+            )
+        lines.append("")
     return "\n".join(lines)

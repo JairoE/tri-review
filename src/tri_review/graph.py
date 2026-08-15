@@ -22,7 +22,8 @@ def build_review_graph(models: list[str] | None = None, llm_builder=nodes.build_
 
     workflow = StateGraph(ReviewState)
     workflow.add_node("fetch_context", fetch_context_node)
-    workflow.add_node("synthesize", nodes.synthesize_node)
+    # Bind the same builder the reviewers use, so tests can stub the synthesizer too.
+    workflow.add_node("synthesize", lambda state: nodes.synthesize_node(state, llm_builder))
 
     workflow.set_entry_point("fetch_context")
 

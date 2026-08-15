@@ -13,7 +13,7 @@ Full task details (acceptance criteria, verification, files): `../implementation
 ## Phase 2: Review pipeline
 - [x] Task 4: Findings schema, graph state, one working reviewer (verify current model IDs against provider docs)
 - [x] Task 5: Three-model fan-out with failure tolerance
-- [ ] Task 6: Synthesizer and report (≥2-model guard)
+- [x] Task 6: Synthesizer and report (≥2-model guard)
 
 ## Checkpoint: Core pipeline
 - [ ] End-to-end run on a real PR produces a correct three-section report

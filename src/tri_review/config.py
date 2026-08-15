@@ -42,6 +42,11 @@ def model_c() -> str:
     return os.environ.get("TRI_REVIEW_MODEL_C") or DEFAULT_MODEL_C
 
 
+def synthesizer_model() -> str:
+    """Model that cross-references the reviews. Defaults to slot A."""
+    return os.environ.get("TRI_REVIEW_SYNTHESIZER") or model_a()
+
+
 def token_budget() -> int:
     """Max estimated tokens for diff + file context combined."""
     return _env_int("TRI_REVIEW_TOKEN_BUDGET", 100_000)
