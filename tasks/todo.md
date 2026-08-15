@@ -5,10 +5,10 @@ Full task details (acceptance criteria, verification, files): `../implementation
 ## Phase 1: Foundation (real data, no LLMs)
 - [x] Task 1: Project scaffolding and config
 - [x] Task 2: PR fetching via `gh` (preflight + diff + auto-detect)
-- [ ] Task 3: Context builder with token budget (`--dry-run`)
+- [x] Task 3: Context builder with token budget (`--dry-run`)
 
 ## Checkpoint: Foundation
-- [ ] `pytest` green; `tri-review --pr <n> --dry-run` works on a real PR with no API keys
+- [x] `pytest` green; `tri-review --pr <n> --dry-run` works on a real PR with no API keys
 
 ## Phase 2: Review pipeline
 - [ ] Task 4: Findings schema, graph state, one working reviewer (verify current model IDs against provider docs)
