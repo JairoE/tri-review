@@ -1,6 +1,44 @@
-# tri-review MVP — Task Checklist
+# tri-review — Task Checklist
 
-Full task details (acceptance criteria, verification, files): `../implementation-plan.md`
+Active plan: `plan.md` (full-stack app). Shipped MVP details: `../implementation-plan.md`.
+
+---
+
+# ACTIVE: Full-stack app
+
+Turn the CLI into a local-first web app: pick any repo and PR, click Review, watch
+progress live, keep a browsable history. Manual trigger, single user, no login.
+Full task detail in `plan.md`.
+
+## Phase 1: Make the core repo-addressable (CLI stays green)
+- [ ] Task 1: Repo-parameterized GitHub client (`--repo owner/name`, list repos/PRs, fetch file contents)
+- [ ] Task 2: Pluggable context reader (filesystem reader + GitHub reader)
+
+## Checkpoint A
+- [ ] All 56 existing tests green; CLI works both cwd-style and `--repo`-style
+
+## Phase 2: Backend
+- [ ] Task 3: FastAPI skeleton + browse endpoints (`/api/health`, `/api/repos`, `/api/repos/{owner}/{repo}/pulls`)
+- [ ] Task 4: Persistence + review jobs (SQLite, `POST /api/reviews`, `/preview` with no model calls)
+- [ ] Task 5: Live progress over SSE (`GET /api/reviews/{id}/events`)
+
+## Checkpoint B
+- [ ] A full review is drivable end-to-end with `curl` alone — no frontend needed
+- [ ] Highest-risk phase: confirm streaming and persistence before any UI work
+
+## Phase 3: Frontend
+- [ ] Task 6: Next.js app + PR picker (types generated from the OpenAPI schema)
+- [ ] Task 7: Review page with live progress + preview-before-run confirm step
+- [ ] Task 8: History, error surfaces, BYOK-ready settings page
+
+## Checkpoint C
+- [ ] End-to-end from the browser against a real PR; history survives restart; CLI still green
+
+---
+
+# SHIPPED: CLI MVP
+
+All tasks complete. Merged via PR #1.
 
 ## Phase 1: Foundation (real data, no LLMs)
 - [x] Task 1: Project scaffolding and config
@@ -25,6 +63,9 @@ Full task details (acceptance criteria, verification, files): `../implementation
 
 ## Checkpoint: Complete
 - [x] All PRD acceptance criteria met; tests green; ready for review
+
+## Follow-on (post-plan, same branch)
+- [x] Repeatable `--model` flag to select the review panel per run
 
 ## PRD acceptance results
 
