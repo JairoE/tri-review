@@ -51,6 +51,21 @@ Do not reproduce the raw reviews.
 """
 
 
+PROVIDER_PREFIXES: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-", "o1", "o3", "o4"),
+    "anthropic": ("claude-",),
+    "google": ("gemini",),
+}
+
+
+def provider_of(model_name: str) -> str | None:
+    """Return the provider a model ID belongs to, or None if unrecognized."""
+    for provider, prefixes in PROVIDER_PREFIXES.items():
+        if model_name.startswith(prefixes):
+            return provider
+    return None
+
+
 def build_llm(model_name: str):
     """Construct a chat model from its ID, choosing the provider by ID prefix.
 
@@ -58,17 +73,19 @@ def build_llm(model_name: str):
     reject sampling parameters outright.
     """
     timeout = config.model_timeout()
-    if model_name.startswith(("gpt-", "o1", "o3", "o4")):
+    provider = provider_of(model_name)
+
+    if provider == "openai":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(model=model_name, timeout=timeout, max_retries=1)
-    if model_name.startswith("claude-"):
+    if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         # Generous max_tokens: on current Anthropic models max_tokens caps
         # thinking plus response together, so a tight value truncates output.
         return ChatAnthropic(model=model_name, timeout=timeout, max_retries=1, max_tokens=8000)
-    if model_name.startswith("gemini"):
+    if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(model=model_name, timeout=timeout, max_retries=1)

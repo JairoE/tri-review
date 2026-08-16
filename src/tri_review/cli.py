@@ -26,17 +26,28 @@ console = Console()
     help="Show what would be sent to the models, then exit without calling them.",
 )
 @click.option(
+    "--model",
+    "models",
+    multiple=True,
+    metavar="MODEL_ID",
+    help=(
+        "Model to review with. Repeat to pick the panel, e.g. "
+        "--model gpt-5.1 --model claude-opus-5 --model gemini-2.5-pro. "
+        "Defaults to the three configured slots. At least two are required."
+    ),
+)
+@click.option(
     "--output",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
     default=None,
     help="Also write the raw Markdown report to this file.",
 )
 @click.version_option(package_name="tri-review")
-def main(pr: str | None, dry_run: bool, output: Path | None) -> None:
+def main(pr: str | None, dry_run: bool, models: tuple[str, ...], output: Path | None) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
     load_dotenv()
     try:
-        _run(pr, dry_run, output)
+        _run(pr, dry_run, models, output)
     except TriReviewError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(exc.exit_code)
@@ -45,10 +56,44 @@ def main(pr: str | None, dry_run: bool, output: Path | None) -> None:
         sys.exit(130)
 
 
-def _run(pr: str | None, dry_run: bool, output: Path | None) -> None:
-    # Imported here so --help and --dry-run stay fast and key-free.
+def _resolve_models(selected: tuple[str, ...]) -> list[str]:
+    """Pick the review panel: --model flags if given, else the configured slots.
+
+    Validated here rather than per-node so a typo fails before the PR is
+    fetched, instead of surfacing later as an unexplained missing review.
+    """
     from . import config
+    from .nodes import PROVIDER_PREFIXES, provider_of
+
+    if not selected:
+        return [config.model_a(), config.model_b(), config.model_c()]
+
+    if len(selected) < 2:
+        raise click.BadParameter(
+            f"need at least 2 models to triangulate, got {len(selected)}. "
+            "Pass --model twice or more, or omit it to use the configured three.",
+            param_hint="--model",
+        )
+
+    unknown = [name for name in selected if provider_of(name) is None]
+    if unknown:
+        supported = ", ".join(
+            f"{provider} ({', '.join(p + '*' for p in prefixes)})"
+            for provider, prefixes in PROVIDER_PREFIXES.items()
+        )
+        raise click.BadParameter(
+            f"unrecognized model ID(s): {', '.join(unknown)}. Supported: {supported}.",
+            param_hint="--model",
+        )
+
+    return list(selected)
+
+
+def _run(pr: str | None, dry_run: bool, selected: tuple[str, ...], output: Path | None) -> None:
+    # Imported here so --help and --dry-run stay fast and key-free.
     from .graph import build_review_graph
+
+    models = _resolve_models(selected)
 
     github.preflight()
     pr_number = pr or github.detect_pr()
@@ -56,10 +101,10 @@ def _run(pr: str | None, dry_run: bool, output: Path | None) -> None:
     if dry_run:
         ctx = context.build_context(github.fetch_diff(pr_number))
         _print_context(pr_number, ctx)
-        console.print("\n[dim]--dry-run: stopping before any model call.[/dim]")
+        console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
+        console.print("[dim]--dry-run: stopping before any model call.[/dim]")
         return
 
-    models = [config.model_a(), config.model_b(), config.model_c()]
     console.print(
         Panel(
             f"[bold cyan]tri-review[/bold cyan]  PR #{pr_number}\n"
@@ -69,7 +114,7 @@ def _run(pr: str | None, dry_run: bool, output: Path | None) -> None:
     )
 
     app = build_review_graph(models=models)
-    report = _stream_graph(app, pr_number)
+    report = _stream_graph(app, pr_number, len(models))
 
     console.print()
     console.print(Markdown(report))
@@ -79,7 +124,7 @@ def _run(pr: str | None, dry_run: bool, output: Path | None) -> None:
         console.print(f"\n[green]Wrote report to[/green] {output}")
 
 
-def _stream_graph(app, pr_number: str) -> str:
+def _stream_graph(app, pr_number: str, model_count: int) -> str:
     """Drive the graph, reporting each node's outcome as it lands."""
     report = ""
 
@@ -94,7 +139,7 @@ def _stream_graph(app, pr_number: str) -> str:
         for chunk in app.stream({"pr_number": pr_number, "results": []}, stream_mode="updates"):
             for node, update in chunk.items():
                 if node == "fetch_context":
-                    progress.update(task, description="Reviewing with 3 models...")
+                    progress.update(task, description=f"Reviewing with {model_count} models...")
                     if update.get("context") is not None:
                         _print_context(pr_number, update["context"], via=progress.console)
                 elif node.startswith("review_"):

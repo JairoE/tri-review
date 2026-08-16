@@ -47,6 +47,28 @@ tri-review --pr 123 --output review.md # also save the raw Markdown
 `--dry-run` needs no API keys, which makes it a cheap way to check what context a
 review would actually see before paying for one.
 
+### Choosing the panel
+
+Repeat `--model` to pick which models review the PR, overriding the configured slots:
+
+```bash
+tri-review --pr 123 \
+  --model gpt-5.1 \
+  --model claude-opus-5 \
+  --model gemini-2.5-pro
+```
+
+Useful when you only hold one provider's key — run three models from that provider
+and still get consensus:
+
+```bash
+tri-review --pr 123 --model gpt-5.1 --model gpt-4.1 --model gpt-4o
+```
+
+At least two models are required, since one model can't corroborate anything. More
+than three is allowed. Unrecognized model IDs and too-short panels are rejected
+before the PR is fetched, so a typo costs you nothing.
+
 ## Configuration
 
 Every value is an environment variable override; defaults are in `src/tri_review/config.py`.
@@ -63,6 +85,9 @@ Every value is an environment variable override; defaults are in `src/tri_review
 The provider is chosen from the model ID prefix (`gpt-`/`o3`, `claude-`, `gemini`), so
 you can point any slot at any supported provider — including three models from
 the same provider if you only have one key.
+
+`--model` takes precedence over `TRI_REVIEW_MODEL_A/B/C`: use the env vars for your
+standing default panel, and the flag for a one-off.
 
 ## How it behaves
 
