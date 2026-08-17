@@ -1464,11 +1464,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
-    { name = "langchain-anthropic", specifier = ">=0.3" },
-    { name = "langchain-core", specifier = ">=0.3" },
-    { name = "langchain-google-genai", specifier = ">=2.0" },
-    { name = "langchain-openai", specifier = ">=0.2" },
-    { name = "langgraph", specifier = ">=0.2" },
+    { name = "langchain-anthropic", specifier = ">=1.5" },
+    { name = "langchain-core", specifier = ">=1.5" },
+    { name = "langchain-google-genai", specifier = ">=4.3" },
+    { name = "langchain-openai", specifier = ">=1.5" },
+    { name = "langgraph", specifier = ">=1.2" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
