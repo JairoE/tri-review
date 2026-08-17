@@ -1,0 +1,35 @@
+[project]
+name = "tri-review"
+version = "0.1.0"
+description = "Triangulated PR reviewer: three LLMs review a GitHub PR, a synthesizer reports consensus"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+    "pydantic>=2.7",
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.2",
+    "langchain-anthropic>=0.3",
+    "langchain-google-genai>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+tri-review = "tri_review.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tri_review"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import the package from the source tree directly, so the suite does not depend
+# on an editable install being present and correctly wired.
+pythonpath = ["src"]
