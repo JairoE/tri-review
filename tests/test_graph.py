@@ -39,16 +39,78 @@ class StubLLM:
 
 @pytest.fixture
 def stub_context(monkeypatch):
-    monkeypatch.setattr(graph_mod.github, "detect_pr", lambda: "1")
-    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda pr: "diff --git a/a.py b/a.py\n")
+    monkeypatch.setattr(graph_mod.github, "detect_pr", lambda repo=None: "1")
     monkeypatch.setattr(
-        graph_mod.context, "build_context", lambda diff: _FakeCtx()
+        graph_mod.github, "fetch_diff", lambda pr, repo=None: "diff --git a/a.py b/a.py\n"
+    )
+    monkeypatch.setattr(
+        graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx()
     )
 
 
 class _FakeCtx:
     def render(self):
         return "payload"
+
+
+def test_repo_mode_reads_files_at_the_pr_head_sha(monkeypatch):
+    """The whole point of --repo: no checkout, and file bodies from the reviewed commit.
+
+    Guards the plan's highest-severity silent failure -- reading contents off the
+    default branch pairs the right diff with the wrong files and degrades every
+    finding without raising anything.
+    """
+    calls = {}
+
+    def fake_fetch_diff(pr, repo=None):
+        calls["diff"] = (pr, repo)
+        return "diff\n"
+
+    def fake_github_reader(repo, ref):
+        calls["reader"] = (repo, ref)
+        return lambda rel: None
+
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", fake_fetch_diff)
+    monkeypatch.setattr(
+        graph_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"head_sha": "a" * 40}
+    )
+    monkeypatch.setattr(graph_mod.context, "github_reader", fake_github_reader)
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+
+    out = graph_mod.fetch_context_node({"pr_number": "7", "repo": "octocat/Hello-World"})
+
+    assert calls["diff"] == ("7", "octocat/Hello-World")
+    assert calls["reader"] == ("octocat/Hello-World", "a" * 40)
+    assert out["head_ref"] == "a" * 40
+    assert out["repo"] == "octocat/Hello-World"
+
+
+def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
+    """No repo on state means the old behaviour: read the checkout we are sitting in."""
+    chosen = {}
+
+    def fake_filesystem_reader(root):
+        chosen["root"] = root
+        return lambda rel: None
+
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda pr, repo=None: "diff\n")
+    monkeypatch.setattr(
+        graph_mod.github,
+        "fetch_pr_meta",
+        lambda pr, repo=None: pytest.fail("cwd mode must not need PR metadata"),
+    )
+    monkeypatch.setattr(
+        graph_mod.context,
+        "github_reader",
+        lambda repo, ref: pytest.fail("cwd mode must not use the GitHub reader"),
+    )
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", fake_filesystem_reader)
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+
+    out = graph_mod.fetch_context_node({"pr_number": "7"})
+
+    assert "root" in chosen
+    assert out["repo"] == ""
 
 
 def test_three_models_all_succeed(stub_context):

@@ -10,6 +10,13 @@ from .schema import ReviewResult
 
 class ReviewState(TypedDict, total=False):
     pr_number: str
+    # "owner/name" to review a repo the process is not checked out into, or
+    # absent/empty to use whatever repo the cwd is in.
+    repo: str
+    # The PR's head commit SHA. File contents are read at this ref, so leaving it
+    # to be resolved by the entry node is safe, but overriding it with anything
+    # other than the reviewed revision silently corrupts the review.
+    head_ref: str
     payload: str
     # Holds a context.ReviewContext. Typed as Any because LangGraph resolves
     # these annotations at runtime, and because the state must declare the key

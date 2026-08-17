@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from langgraph.graph import END, StateGraph
 
 from . import config, context, github, nodes, providers
@@ -9,11 +11,32 @@ from .state import ReviewState
 
 
 def fetch_context_node(state: ReviewState) -> dict:
-    """Resolve the PR, fetch its diff, and assemble the review payload."""
-    pr_number = state.get("pr_number") or github.detect_pr()
-    diff = github.fetch_diff(pr_number)
-    ctx = context.build_context(diff)
-    return {"pr_number": pr_number, "payload": ctx.render(), "context": ctx}
+    """Resolve the PR, fetch its diff, and assemble the review payload.
+
+    Two modes, decided by whether `repo` is on the state. With a repo, files are
+    read from GitHub at the PR's head SHA; without one, from the checkout the
+    process is sitting in. Resolving `head_ref` here rather than at the caller
+    means no caller can forget it and silently review the default branch's files.
+    """
+    repo = state.get("repo") or None
+    pr_number = state.get("pr_number") or github.detect_pr(repo)
+    diff = github.fetch_diff(pr_number, repo)
+
+    if repo:
+        head_ref = state.get("head_ref") or github.fetch_pr_meta(pr_number, repo)["head_sha"]
+        reader = context.github_reader(repo, head_ref)
+    else:
+        head_ref = state.get("head_ref") or ""
+        reader = context.filesystem_reader(Path.cwd())
+
+    ctx = context.build_context(diff, reader=reader)
+    return {
+        "pr_number": pr_number,
+        "repo": repo or "",
+        "head_ref": head_ref,
+        "payload": ctx.render(),
+        "context": ctx,
+    }
 
 
 def build_review_graph(models: list[str] | None = None, llm_builder=providers.build_llm):
