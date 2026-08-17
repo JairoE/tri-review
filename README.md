@@ -16,12 +16,28 @@ One model hallucinates confidently. Three models rarely hallucinate the *same* t
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/), which installs the exact dependency set this
+project was built and tested against:
+
+```bash
+git clone https://github.com/JairoE/tri-review.git
+cd tri-review
+uv sync
+```
+
+Or with pip:
+
 ```bash
 git clone https://github.com/JairoE/tri-review.git
 cd tri-review
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
+
+`uv.lock` is committed, so `uv sync` reproduces the resolved graph exactly. The pip
+path resolves fresh against the floors in `pyproject.toml`, which are permissive —
+prefer `uv sync` if a provider adapter misbehaves, since a version skew in the
+`langchain-*` packages is the likeliest cause.
 
 Then create a `.env` in the directory you run from (see `.env.example`):
 
