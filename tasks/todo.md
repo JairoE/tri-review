@@ -11,11 +11,13 @@ progress live, keep a browsable history. Manual trigger, single user, no login.
 Full task detail in `plan.md`.
 
 ## Phase 1: Make the core repo-addressable (CLI stays green)
-- [ ] Task 1: Repo-parameterized GitHub client (`--repo owner/name`, list repos/PRs, fetch file contents)
-- [ ] Task 2: Pluggable context reader (filesystem reader + GitHub reader)
+- [ ] Task 1: Repo-parameterized GitHub client (`--repo owner/name`, list repos/PRs, PR head SHA, fetch file contents)
+- [ ] Task 2: Pluggable context reader (filesystem + GitHub), threaded through `graph.py`/`state.py`, path guard at the boundary
+- [ ] Task 2b: Extract `preview_context()` + a `ContextSummary` Pydantic model
 
 ## Checkpoint A
-- [ ] All 56 existing tests green; CLI works both cwd-style and `--repo`-style
+- [ ] All 72 existing tests green; CLI works both cwd-style and `--repo`-style
+- [ ] A `--repo` review from an unrelated directory reads file contents at the PR's head SHA
 
 ## Phase 2: Backend
 - [ ] Task 3: FastAPI skeleton + browse endpoints (`/api/health`, `/api/repos`, `/api/repos/{owner}/{repo}/pulls`)
