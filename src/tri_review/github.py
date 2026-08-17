@@ -16,7 +16,22 @@ _GH_TIMEOUT = 60
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, timeout=_GH_TIMEOUT)
+    """Run a helper binary, turning the two ways it can fail to run into errors.
+
+    A non-zero exit is the caller's business; a hung or absent binary is not, and
+    must not reach the user as a traceback.
+    """
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=_GH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise PreflightError(
+            f"`{' '.join(args)}` did not respond within {_GH_TIMEOUT}s.\n"
+            "Check your network connection and that GitHub is reachable."
+        ) from None
+    except FileNotFoundError:
+        raise PreflightError(
+            f"`{args[0]}` not found on PATH.\ntri-review needs both `git` and `gh` installed."
+        ) from None
 
 
 def preflight() -> None:

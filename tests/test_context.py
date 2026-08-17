@@ -86,6 +86,64 @@ def test_over_budget_drops_largest_first(tmp_path):
     assert "big.py" in ctx.render()  # named in the truncation note
 
 
+def _diff_touching(path: str) -> str:
+    return f"diff --git a/x b/x\n--- a/x\n+++ b/{path}\n@@ -1 +1 @@\n+x\n"
+
+
+def test_traversal_path_is_refused_not_read(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("PRIVATE KEY")
+
+    ctx = build_context(_diff_touching("../secret.txt"), root=root)
+
+    assert ctx.files == {}
+    assert ctx.rejected == ["../secret.txt"]
+    assert "PRIVATE KEY" not in ctx.render()
+
+
+def test_symlink_out_of_the_repo_is_refused(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("PRIVATE KEY")
+    (root / "notes.md").symlink_to(tmp_path / "secret.txt")
+
+    ctx = build_context(_diff_touching("notes.md"), root=root)
+
+    assert ctx.rejected == ["notes.md"]
+    assert "PRIVATE KEY" not in ctx.render()
+
+
+def test_symlink_inside_the_repo_is_still_read(tmp_path):
+    """Containment is the rule, not symlink-phobia -- in-repo links are fine."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "real.py").write_text("in-repo contents")
+    (root / "alias.py").symlink_to(root / "real.py")
+
+    ctx = build_context(_diff_touching("alias.py"), root=root)
+
+    assert ctx.rejected == []
+    assert ctx.files["alias.py"] == "in-repo contents"
+
+
+def test_diff_alone_over_budget_is_reported(tmp_path):
+    (tmp_path / "small.py").write_text("x" * 40)
+    diff = _diff_touching("small.py") + "+" + "y" * 4_000
+
+    ctx = build_context(diff, root=tmp_path, budget=100)
+
+    assert ctx.diff_overflow > 0
+    assert ctx.files == {}
+    assert ctx.dropped == ["small.py"]
+
+
+def test_diff_within_budget_reports_no_overflow(tmp_path):
+    (tmp_path / "small.py").write_text("x" * 40)
+    ctx = build_context(_diff_touching("small.py"), root=tmp_path, budget=100_000)
+    assert ctx.diff_overflow == 0
+
+
 def test_everything_fits_when_budget_is_ample(tmp_path):
     (tmp_path / "small.py").write_text("x" * 40)
     diff = "diff --git a/small.py b/small.py\n--- a/small.py\n+++ b/small.py\n@@ -1 +1 @@\n+x\n"

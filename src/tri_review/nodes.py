@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import config
 from .errors import InsufficientReviewsError
+from .providers import build_llm, provider_of
 from .schema import ReviewOutput, ReviewResult
 from .state import ReviewState
 
@@ -49,47 +50,6 @@ references and concrete code where useful.
 If a section has nothing in it, say so in one line rather than padding it.
 Do not reproduce the raw reviews.
 """
-
-
-PROVIDER_PREFIXES: dict[str, tuple[str, ...]] = {
-    "openai": ("gpt-", "o1", "o3", "o4"),
-    "anthropic": ("claude-",),
-    "google": ("gemini",),
-}
-
-
-def provider_of(model_name: str) -> str | None:
-    """Return the provider a model ID belongs to, or None if unrecognized."""
-    for provider, prefixes in PROVIDER_PREFIXES.items():
-        if model_name.startswith(prefixes):
-            return provider
-    return None
-
-
-def build_llm(model_name: str):
-    """Construct a chat model from its ID, choosing the provider by ID prefix.
-
-    No temperature is set anywhere: the current OpenAI and Anthropic flagships
-    reject sampling parameters outright.
-    """
-    timeout = config.model_timeout()
-    provider = provider_of(model_name)
-
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(model=model_name, timeout=timeout, max_retries=1)
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-
-        # Generous max_tokens: on current Anthropic models max_tokens caps
-        # thinking plus response together, so a tight value truncates output.
-        return ChatAnthropic(model=model_name, timeout=timeout, max_retries=1, max_tokens=8000)
-    if provider == "google":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        return ChatGoogleGenerativeAI(model=model_name, timeout=timeout, max_retries=1)
-    raise ValueError(f"Unrecognized model ID {model_name!r} — cannot pick a provider.")
 
 
 def review_with(model_name: str, payload: str, llm_builder=build_llm) -> ReviewResult:
@@ -140,7 +100,7 @@ def _synthesize(succeeded, failed, llm_builder) -> str:
         ],
         indent=2,
     )
-    header = _failure_note(failed)
+    header = _failure_note(failed) + _diversity_note(succeeded)
 
     try:
         llm = llm_builder(config.synthesizer_model())
@@ -155,6 +115,27 @@ def _synthesize(succeeded, failed, llm_builder) -> str:
             "Raw findings from each model follow.\n\n"
             + _raw_listing(succeeded)
         )
+
+
+def _diversity_note(succeeded) -> str:
+    """Warn when the surviving reviewers all came from one provider.
+
+    The product's premise is that independent models rarely hallucinate the same
+    thing. Two checkpoints of one family are not independent -- they share
+    training data and failure modes -- so their agreement must not be presented
+    as though it were corroboration. Computed from the models that actually
+    reported, since a failed reviewer can collapse a diverse panel into a
+    single-provider one.
+    """
+    providers = {provider_of(r.model) for r in succeeded}
+    if len(providers) > 1 or None in providers:
+        return ""
+    return (
+        f"> **All {len(succeeded)} reviewers are `{providers.pop()}` models.** Models from one "
+        "provider share training data and failure modes, so agreement between them is much "
+        "weaker evidence than cross-provider consensus. Read the sections below as one "
+        "opinion stated repeatedly, not as independent corroboration.\n\n"
+    )
 
 
 def _failure_note(failed) -> str:

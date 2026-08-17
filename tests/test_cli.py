@@ -30,7 +30,7 @@ def test_more_than_three_models_are_allowed():
 
 
 def test_single_model_is_rejected():
-    with pytest.raises(click.BadParameter, match="at least 2 models"):
+    with pytest.raises(click.BadParameter, match="at least 2 distinct models"):
         _resolve_models(("gpt-5.1",))
 
 
@@ -47,9 +47,17 @@ def test_rejection_message_names_every_bad_id():
     assert "mistral-large" in message
 
 
-def test_duplicate_models_are_left_alone():
-    """Two runs of the same model is a legitimate (if odd) self-consistency check."""
-    assert _resolve_models(("gpt-5.1", "gpt-5.1")) == ["gpt-5.1", "gpt-5.1"]
+def test_duplicate_models_are_collapsed():
+    """The same model twice would pay for one opinion and report it as consensus."""
+    assert _resolve_models(("gpt-5.1", "gpt-5.1", "claude-opus-5")) == [
+        "gpt-5.1",
+        "claude-opus-5",
+    ]
+
+
+def test_the_same_model_twice_is_not_a_panel():
+    with pytest.raises(click.BadParameter, match="at least 2 distinct models"):
+        _resolve_models(("gpt-5.1", "gpt-5.1"))
 
 
 def test_help_documents_the_flag():

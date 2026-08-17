@@ -63,19 +63,24 @@ def _resolve_models(selected: tuple[str, ...]) -> list[str]:
     fetched, instead of surfacing later as an unexplained missing review.
     """
     from . import config
-    from .nodes import PROVIDER_PREFIXES, provider_of
+    from .providers import PROVIDER_PREFIXES, provider_of
 
     if not selected:
         return [config.model_a(), config.model_b(), config.model_c()]
 
-    if len(selected) < 2:
+    # The same model twice cannot corroborate itself -- it would just pay for one
+    # opinion and report it as consensus. Collapse before counting.
+    models = list(dict.fromkeys(selected))
+
+    if len(models) < 2:
         raise click.BadParameter(
-            f"need at least 2 models to triangulate, got {len(selected)}. "
-            "Pass --model twice or more, or omit it to use the configured three.",
+            f"need at least 2 distinct models to triangulate, got {len(models)}. "
+            "Pass --model twice or more with different IDs, or omit it to use the "
+            "configured three.",
             param_hint="--model",
         )
 
-    unknown = [name for name in selected if provider_of(name) is None]
+    unknown = [name for name in models if provider_of(name) is None]
     if unknown:
         supported = ", ".join(
             f"{provider} ({', '.join(p + '*' for p in prefixes)})"
@@ -86,7 +91,7 @@ def _resolve_models(selected: tuple[str, ...]) -> list[str]:
             param_hint="--model",
         )
 
-    return list(selected)
+    return models
 
 
 def _run(pr: str | None, dry_run: bool, selected: tuple[str, ...], output: Path | None) -> None:
@@ -120,8 +125,14 @@ def _run(pr: str | None, dry_run: bool, selected: tuple[str, ...], output: Path 
     console.print(Markdown(report))
 
     if output:
-        output.write_text(report, encoding="utf-8")
-        console.print(f"\n[green]Wrote report to[/green] {output}")
+        try:
+            output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            # The report is already on screen and the models are already paid
+            # for, so a bad path is a warning, not a failed run.
+            console.print(f"\n[yellow]Could not write {output}: {exc}[/yellow]")
+        else:
+            console.print(f"\n[green]Wrote report to[/green] {output}")
 
 
 def _stream_graph(app, pr_number: str, model_count: int) -> str:
@@ -180,7 +191,19 @@ def _print_context(pr_number: str, ctx: context.ReviewContext, via=console) -> N
         via.print(f"  not readable locally ({len(ctx.missing)}), diff hunks only:")
         for path in ctx.missing:
             via.print(f"    ? {path}")
+    if ctx.rejected:
+        via.print(
+            f"  [bold red]REFUSED: {len(ctx.rejected)} diff path(s) point outside this "
+            f"repository and were not read:[/bold red]"
+        )
+        for path in ctx.rejected:
+            via.print(f"    [red]![/red] {path}")
     via.print(f"  estimated tokens: {ctx.estimated_tokens:,}")
+    if ctx.diff_overflow:
+        via.print(
+            f"  [yellow]WARNING: the diff alone is {ctx.diff_overflow:,} tokens over the "
+            f"budget. No file contents were included and the models may reject it.[/yellow]"
+        )
 
 
 if __name__ == "__main__":

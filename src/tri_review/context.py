@@ -14,6 +14,9 @@ class ReviewContext:
     files: dict[str, str]
     dropped: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
+    # Tokens by which the diff alone overruns the budget, 0 if it fits.
+    diff_overflow: int = 0
 
     @property
     def estimated_tokens(self) -> int:
@@ -53,16 +56,34 @@ def parse_changed_files(diff: str) -> list[str]:
     return paths
 
 
+def _is_inside(path: Path, root: Path) -> bool:
+    """True if `path` resolves to a location inside `root`, symlinks followed.
+
+    Diff paths are written by whoever opened the PR, so they are untrusted. A
+    `+++ b/../../.ssh/id_rsa` header, or a symlink the PR adds and the user then
+    checks out, must not pull a file off the reviewer's disk into a payload
+    bound for three third-party APIs.
+    """
+    try:
+        return path.resolve().is_relative_to(root)
+    except OSError:  # symlink loop, or a path the OS refuses to resolve
+        return False
+
+
 def build_context(diff: str, root: Path | None = None, budget: int | None = None) -> ReviewContext:
     """Assemble diff + changed-file contents, dropping largest files to fit the budget."""
     root = root or Path.cwd()
     budget = budget if budget is not None else config.token_budget()
+    root_resolved = root.resolve()
 
     ctx = ReviewContext(diff=diff, files={})
     candidates: list[tuple[str, str]] = []
 
     for rel in parse_changed_files(diff):
         path = root / rel
+        if not _is_inside(path, root_resolved):
+            ctx.rejected.append(rel)
+            continue
         try:
             candidates.append((rel, path.read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError):
@@ -72,6 +93,8 @@ def build_context(diff: str, root: Path | None = None, budget: int | None = None
 
     # The diff is mandatory; files compete for whatever budget is left.
     remaining = budget - config.estimate_tokens(diff)
+    if remaining < 0:
+        ctx.diff_overflow = -remaining
     for rel, content in sorted(candidates, key=lambda item: len(item[1])):
         cost = config.estimate_tokens(content)
         if cost <= remaining:

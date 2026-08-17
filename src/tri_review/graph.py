@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
-from . import config, context, github, nodes
+from . import config, context, github, nodes, providers
 from .state import ReviewState
 
 
@@ -16,7 +16,7 @@ def fetch_context_node(state: ReviewState) -> dict:
     return {"pr_number": pr_number, "payload": ctx.render(), "context": ctx}
 
 
-def build_review_graph(models: list[str] | None = None, llm_builder=nodes.build_llm):
+def build_review_graph(models: list[str] | None = None, llm_builder=providers.build_llm):
     """Compile the review graph. `models` defaults to the three configured slots."""
     models = models or [config.model_a(), config.model_b(), config.model_c()]
 

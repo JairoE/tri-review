@@ -1,6 +1,7 @@
 import pytest
 
-from tri_review.nodes import build_llm, make_review_node, review_with
+from tri_review.nodes import make_review_node, review_with
+from tri_review.providers import build_llm, provider_of
 from tri_review.schema import Finding, ReviewOutput
 
 
@@ -88,3 +89,17 @@ def test_node_appends_single_result_to_state():
 def test_unknown_model_id_is_rejected():
     with pytest.raises(ValueError, match="Unrecognized model ID"):
         build_llm("llama-9000")
+
+
+@pytest.mark.parametrize(
+    "model_name, expected",
+    [
+        ("gpt-5.1", "openai"),
+        ("o3-mini", "openai"),
+        ("claude-opus-5", "anthropic"),
+        ("gemini-2.5-pro", "google"),
+        ("llama-9000", None),
+    ],
+)
+def test_provider_is_read_from_the_model_id(model_name, expected):
+    assert provider_of(model_name) == expected

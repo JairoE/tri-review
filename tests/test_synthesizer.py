@@ -90,6 +90,33 @@ def test_synthesizer_receives_structured_findings_from_every_model():
     assert finding["severity"] == "critical"
 
 
+def test_single_provider_panel_is_disclosed():
+    """Three OpenAI models agreeing is one opinion, and the report must say so."""
+    state = {"results": [_result(m, "issue") for m in ("gpt-5.1", "gpt-4.1", "gpt-4o")]}
+    report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
+    assert "All 3 reviewers are `openai` models" in report
+    assert "weaker evidence than cross-provider consensus" in report
+
+
+def test_cross_provider_panel_gets_no_disclosure():
+    state = {"results": [_result(m, "issue") for m in ("gpt-5.1", "claude-opus-5")]}
+    report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
+    assert "reviewers are" not in report
+
+
+def test_disclosure_follows_the_models_that_actually_reported():
+    """A failed reviewer can collapse a diverse panel into a single-provider one."""
+    state = {
+        "results": [
+            _result("gpt-5.1", "issue"),
+            _result("gpt-4.1", "issue"),
+            _result("claude-opus-5", error="no key"),
+        ]
+    }
+    report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
+    assert "All 2 reviewers are `openai` models" in report
+
+
 def test_synthesizer_failure_falls_back_to_raw_findings():
     llm = CapturingLLM(raises=RuntimeError("synth exploded"))
     state = {"results": [_result("m1", "alpha"), _result("m2", "beta")]}

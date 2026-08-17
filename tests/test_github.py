@@ -57,6 +57,24 @@ def test_preflight_passes(monkeypatch):
     github.preflight()
 
 
+def test_hung_binary_becomes_an_actionable_error(monkeypatch):
+    def hang(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="gh", timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(PreflightError, match="did not respond within"):
+        github.detect_pr()
+
+
+def test_absent_binary_becomes_an_actionable_error(monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(PreflightError, match="not found on PATH"):
+        github.fetch_diff("42")
+
+
 def test_detect_pr(monkeypatch):
     monkeypatch.setattr(github, "_run", lambda args: _proc(stdout='{"number": 42}'))
     assert github.detect_pr() == "42"
