@@ -78,6 +78,10 @@ def is_repo_relative(path: str) -> bool:
     """
     if not path or path.startswith("/") or path.startswith("\\"):
         return False
+    # `C:/Windows/...` has no leading separator and no `..`, but on a Windows
+    # host it is still absolute: joining it to the repo root discards the root.
+    if re.match(r"^[A-Za-z]:", path):
+        return False
     parts = re.split(r"[/\\]", path)
     return ".." not in parts
 

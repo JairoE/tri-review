@@ -183,6 +183,16 @@ def test_is_repo_relative_refuses_escapes(path):
     assert github.is_repo_relative(path) is False
 
 
+@pytest.mark.parametrize("path", ["C:/Windows/System32/config/SAM", "C:\\evil", "d:/x", "Z:"])
+def test_is_repo_relative_refuses_windows_drive_paths(path):
+    """`C:/x` has no leading separator and no `..`, but is absolute on Windows.
+
+    Joining it to the repo root discards the root entirely, so the boundary
+    guard has to reject it even though it looks relative on a POSIX host.
+    """
+    assert github.is_repo_relative(path) is False
+
+
 # --- preflight, split by mode ----------------------------------------------
 
 

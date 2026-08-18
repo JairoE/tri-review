@@ -189,13 +189,15 @@ async def review_events(review_id: int, request: Request) -> EventSourceResponse
     mid-review — or opens a finished one — sees the same thing either way and
     never hangs waiting for events it already missed.
     """
+    # Subscribe first, then read the row. The other order loses any event that
+    # lands in between: the snapshot would be built from the older row, and a
+    # `done` published in the gap would reach no subscriber, leaving the client
+    # waiting on a stream that has nothing left to send.
+    queue = jobs.subscribe(review_id)
     review = db.get_review(review_id)
     if review is None:
+        jobs.unsubscribe(review_id, queue)
         raise PRNotFoundError(f"No review with id {review_id}.")
-
-    # Subscribe before replaying, so an event landing between the two is queued
-    # rather than lost in the gap.
-    queue = jobs.subscribe(review_id)
 
     async def stream():
         try:

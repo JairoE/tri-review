@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -436,3 +438,52 @@ def test_results_stream_as_they_land_rather_than_batched(client):
 
 def test_stream_of_an_unknown_review_is_a_404(client):
     assert client.get("/api/reviews/9999/events").status_code == 404
+
+
+def test_stream_subscribes_before_reading_the_row(client, monkeypatch):
+    """Subscription must happen before the row is read, not after.
+
+    With the other order a review that completes in the gap publishes `done` to
+    no subscriber, and the snapshot is built from the pre-completion row -- so
+    the client holds an open stream that has already sent everything it will
+    ever send. Asserted as call order rather than by racing the two, because a
+    lost-event test can only fail by hanging.
+    """
+    from tri_review.web import jobs as jobs_mod
+    from tri_review.web.routes import reviews as routes
+
+    review_id = client.post(
+        "/api/reviews", json={"url": "https://github.com/octocat/Hello-World/pull/42"}
+    ).json()["id"]
+    _await_terminal(client, review_id)
+
+    calls: list[str] = []
+    real_subscribe = jobs_mod.subscribe
+    real_get = routes.db.get_review
+
+    def traced_subscribe(rid):
+        calls.append("subscribe")
+        return real_subscribe(rid)
+
+    def traced_get(rid):
+        calls.append("get_review")
+        return real_get(rid)
+
+    monkeypatch.setattr(routes.jobs, "subscribe", traced_subscribe)
+    monkeypatch.setattr(routes.db, "get_review", traced_get)
+
+    with client.stream("GET", f"/api/reviews/{review_id}/events") as response:
+        "".join(response.iter_text())
+
+    assert calls[:2] == ["subscribe", "get_review"], (
+        f"endpoint read the row before subscribing: {calls[:2]}"
+    )
+
+
+def test_stream_of_a_missing_review_does_not_leak_a_subscriber(client):
+    """The 404 path subscribes first, so it has to unsubscribe on the way out."""
+    from tri_review.web import jobs as jobs_mod
+
+    before = len(jobs_mod._subscribers.get(9999, []))
+    assert client.get("/api/reviews/9999/events").status_code == 404
+    assert len(jobs_mod._subscribers.get(9999, [])) == before
