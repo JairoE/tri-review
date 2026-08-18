@@ -10,31 +10,44 @@ Turn the CLI into a local-first web app: pick any repo and PR, click Review, wat
 progress live, keep a browsable history. Manual trigger, single user, no login.
 Full task detail in `plan.md`.
 
+**Scope change from the plan, on request:** the goal is *paste a PR URL, read
+three reviews side by side in Markdown*. So the repo browser became a URL paste
+box (no `/api/repos` endpoints, no `list_repos`), per-model Markdown became the
+primary view rather than the synthesized report, and the BYOK settings page was
+dropped. Phases 1–2 were built as planned.
+
 ## Phase 1: Make the core repo-addressable (CLI stays green)
-- [ ] Task 1: Repo-parameterized GitHub client (`--repo owner/name`, list repos/PRs, PR head SHA, fetch file contents)
-- [ ] Task 2: Pluggable context reader (filesystem + GitHub), threaded through `graph.py`/`state.py`, path guard at the boundary
-- [ ] Task 2b: Extract `preview_context()` + a `ContextSummary` Pydantic model
+- [x] Task 1: Repo-parameterized GitHub client (`--repo owner/name`, `--url`, PR head SHA, fetch file contents, `parse_pr_url`)
+- [x] Task 2: Pluggable context reader (filesystem + GitHub), threaded through `graph.py`/`state.py`, path guard at the boundary
+- [x] Task 2b: Extract `preview_context()` + a `ContextSummary` Pydantic model, plus `render_findings_md()` for the side-by-side view
 
 ## Checkpoint A
-- [ ] All 72 existing tests green; CLI works both cwd-style and `--repo`-style
-- [ ] A `--repo` review from an unrelated directory reads file contents at the PR's head SHA
+- [x] All existing tests green (72 -> 138); CLI works both cwd-style and `--repo`/`--url`-style
+- [x] A `--repo` review from an unrelated directory reads file contents at the PR's head SHA —
+      proven live on octocat/Hello-World#10856: README at head `8dc060f` carries the PR's added
+      line, master does not, and the built context contains the head version
 
 ## Phase 2: Backend
-- [ ] Task 3: FastAPI skeleton + browse endpoints (`/api/health`, `/api/repos`, `/api/repos/{owner}/{repo}/pulls`)
-- [ ] Task 4: Persistence + review jobs (SQLite, `POST /api/reviews`, `/preview` with no model calls)
-- [ ] Task 5: Live progress over SSE (`GET /api/reviews/{id}/events`)
+- [x] Task 3: FastAPI skeleton + `/api/health` (reports provider-key presence) + `/api/pulls/resolve`
+- [x] Task 4: Persistence + review jobs (SQLite, `POST /api/reviews`, `/preview` with no model calls)
+- [x] Task 5: Live progress over SSE (`GET /api/reviews/{id}/events`)
 
 ## Checkpoint B
-- [ ] A full review is drivable end-to-end with `curl` alone — no frontend needed
-- [ ] Highest-risk phase: confirm streaming and persistence before any UI work
+- [x] A full review is drivable end-to-end with `curl` alone — no frontend needed
+- [x] Streaming confirmed unbuffered over real HTTP: models staggered 1.0/2.5/4.0s
+      arrived at 3.64/5.13/6.64s, ~1.5s apart, not batched
 
 ## Phase 3: Frontend
-- [ ] Task 6: Next.js app + PR picker (types generated from the OpenAPI schema)
-- [ ] Task 7: Review page with live progress + preview-before-run confirm step
-- [ ] Task 8: History, error surfaces, BYOK-ready settings page
+- [x] Task 6: Next.js app + URL paste box (replaces the PR picker)
+- [x] Task 7: Review page — three-column side-by-side Markdown, live via SSE, preview-before-run confirm
+- [x] Task 8: History list and error surfaces (settings/BYOK page dropped as out of the stated goal)
 
 ## Checkpoint C
-- [ ] End-to-end from the browser against a real PR; history survives restart; CLI still green
+- [x] End-to-end from the browser against the real PR octocat/Hello-World#10856:
+      preview -> run -> three columns filling in -> consensus -> history
+- [x] A fresh load of a finished review replays identically from the database
+- [x] A panel with one model failing keeps its column, shows the error, and the other two still report
+- [x] CLI still green (157 tests)
 
 ---
 
