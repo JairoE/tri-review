@@ -9,6 +9,7 @@ import click
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -203,7 +204,7 @@ def _print_result(result, via=console) -> None:
         noun = "finding" if count == 1 else "findings"
         via.print(f"  [green]OK[/green] {result.model} — {count} {noun}")
     else:
-        via.print(f"  [red]FAIL[/red] {result.model} — {result.error}")
+        via.print(f"  [red]FAIL[/red] {result.model} — {escape(str(result.error))}")
 
 
 def _print_context(pr_number: str, ctx: context.ReviewContext, via=console) -> None:
@@ -211,25 +212,25 @@ def _print_context(pr_number: str, ctx: context.ReviewContext, via=console) -> N
     via.print(f"  diff lines:       {len(ctx.diff.splitlines())}")
     via.print(f"  files included:   {len(ctx.files)}")
     for path in ctx.files:
-        via.print(f"    [green]+[/green] {path}")
+        via.print(f"    [green]+[/green] {escape(path)}")
     if ctx.dropped:
         via.print(
             f"  [yellow]WARNING: {len(ctx.dropped)} file(s) over token budget, "
             f"diff hunks only:[/yellow]"
         )
         for path in ctx.dropped:
-            via.print(f"    [yellow]-[/yellow] {path}")
+            via.print(f"    [yellow]-[/yellow] {escape(path)}")
     if ctx.missing:
         via.print(f"  not readable locally ({len(ctx.missing)}), diff hunks only:")
         for path in ctx.missing:
-            via.print(f"    ? {path}")
+            via.print(f"    ? {escape(path)}")
     if ctx.rejected:
         via.print(
             f"  [bold red]REFUSED: {len(ctx.rejected)} diff path(s) point outside this "
             f"repository and were not read:[/bold red]"
         )
         for path in ctx.rejected:
-            via.print(f"    [red]![/red] {path}")
+            via.print(f"    [red]![/red] {escape(path)}")
     via.print(f"  estimated tokens: {ctx.estimated_tokens:,}")
     if ctx.diff_overflow:
         via.print(

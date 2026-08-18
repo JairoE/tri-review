@@ -75,3 +75,39 @@ def test_bad_flag_exits_before_touching_github(monkeypatch):
 
     assert result.exit_code != 0
     assert called == []
+
+
+def test_bracketed_paths_survive_the_context_printout(capsys):
+    """A path like `app/reviews/[id]/page.tsx` must print whole.
+
+    Rich reads `[id]` as a style tag and silently drops it, so every Next.js
+    dynamic route was being reported under a path that does not exist. Diff
+    paths are arbitrary text and must be escaped before they reach markup.
+    """
+    from tri_review.cli import _print_context
+    from tri_review.context import ReviewContext
+
+    ctx = ReviewContext(
+        diff="diff --git a/x b/x\n",
+        files={"web/app/reviews/[id]/page.tsx": "x"},
+        dropped=["web/app/[slug]/page.tsx"],
+        missing=["pkg/[a]/b.ts"],
+        rejected=["../[evil]/x"],
+    )
+    _print_context("1", ctx)
+
+    out = capsys.readouterr().out
+    assert "web/app/reviews/[id]/page.tsx" in out
+    assert "web/app/[slug]/page.tsx" in out
+    assert "pkg/[a]/b.ts" in out
+    assert "../[evil]/x" in out
+
+
+def test_provider_errors_survive_the_result_printout(capsys):
+    """Provider messages are arbitrary text too, and often contain brackets."""
+    from tri_review.cli import _print_result
+    from tri_review.schema import ReviewResult
+
+    _print_result(ReviewResult(model="m1", error="BadRequest: [invalid_request] too long"))
+
+    assert "[invalid_request]" in capsys.readouterr().out
