@@ -1,4 +1,8 @@
-from tri_review.context import build_context, parse_changed_files
+import pytest
+
+from tri_review import context as context_mod
+from tri_review.context import build_context, github_reader, parse_changed_files
+from tri_review.schema import ContextSummary
 
 MODIFIED = """diff --git a/src/app.py b/src/app.py
 index 111..222 100644
@@ -150,3 +154,106 @@ def test_everything_fits_when_budget_is_ample(tmp_path):
     ctx = build_context(diff, root=tmp_path, budget=100_000)
     assert ctx.dropped == []
     assert ctx.estimated_tokens > 0
+
+
+# --- the pluggable reader ---------------------------------------------------
+
+
+def test_a_custom_reader_supplies_file_contents():
+    ctx = build_context(MODIFIED, reader=lambda rel: f"contents of {rel}")
+    assert ctx.files["src/app.py"] == "contents of src/app.py"
+
+
+def test_reader_returning_none_lands_in_missing():
+    ctx = build_context(MODIFIED, reader=lambda rel: None)
+    assert ctx.missing == ["src/app.py"]
+    assert ctx.files == {}
+
+
+def test_traversal_is_refused_before_the_reader_runs():
+    """The guard is at the boundary, so a reader never sees an escaping path.
+
+    Asserted by giving it a reader that fails the test if called at all -- the
+    github reader would otherwise spend the user's credentials on the request.
+    """
+
+    def explode(rel):
+        pytest.fail(f"reader was called with an escaping path: {rel!r}")
+
+    ctx = build_context(_diff_touching("../../etc/passwd"), reader=explode)
+    assert ctx.rejected == ["../../etc/passwd"]
+    assert ctx.files == {}
+
+
+def test_absolute_path_is_refused_before_the_reader_runs():
+    def explode(rel):
+        pytest.fail(f"reader was called with an absolute path: {rel!r}")
+
+    ctx = build_context(_diff_touching("/etc/passwd"), reader=explode)
+    assert ctx.rejected == ["/etc/passwd"]
+
+
+def test_github_reader_reads_at_the_given_ref(monkeypatch):
+    seen = {}
+
+    def fake_fetch(repo, path, ref):
+        seen["args"] = (repo, path, ref)
+        return "remote contents"
+
+    monkeypatch.setattr(context_mod.github, "fetch_file_content", fake_fetch)
+
+    ctx = build_context(MODIFIED, reader=github_reader("octocat/Hello-World", "c" * 40))
+
+    assert seen["args"] == ("octocat/Hello-World", "src/app.py", "c" * 40)
+    assert ctx.files["src/app.py"] == "remote contents"
+
+
+# --- preview_context --------------------------------------------------------
+
+
+def test_preview_context_makes_no_model_calls(monkeypatch):
+    """The confirm-before-spending step must be free."""
+    monkeypatch.setattr(context_mod.github, "fetch_diff", lambda pr, repo=None: MODIFIED)
+    monkeypatch.setattr(
+        context_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"head_sha": "d" * 40}
+    )
+    monkeypatch.setattr(context_mod.github, "fetch_file_content", lambda r, p, ref: "body")
+
+    ctx = context_mod.preview_context("42", repo="octocat/Hello-World")
+
+    assert ctx.files == {"src/app.py": "body"}
+
+
+def test_preview_context_cwd_mode_needs_no_pr_metadata(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(context_mod.github, "fetch_diff", lambda pr, repo=None: MODIFIED)
+    monkeypatch.setattr(
+        context_mod.github,
+        "fetch_pr_meta",
+        lambda pr, repo=None: pytest.fail("cwd mode must not resolve a head SHA"),
+    )
+
+    ctx = context_mod.preview_context("42")
+
+    assert ctx.missing == ["src/app.py"]  # nothing on disk in the temp cwd
+
+
+# --- ContextSummary ---------------------------------------------------------
+
+
+def test_context_summary_round_trips_a_real_context(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('x')\n")
+    ctx = build_context(MODIFIED, root=tmp_path)
+
+    summary = ContextSummary.of(ctx)
+
+    assert summary.files_included == ["src/app.py"]
+    assert summary.estimated_tokens == ctx.estimated_tokens
+    assert summary.diff_lines == len(MODIFIED.splitlines())
+    assert summary.dropped == [] and summary.rejected == []
+
+
+def test_context_summary_carries_the_refusals(tmp_path):
+    ctx = build_context(_diff_touching("../secret.txt"), root=tmp_path)
+    assert ContextSummary.of(ctx).rejected == ["../secret.txt"]
