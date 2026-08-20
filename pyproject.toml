@@ -8,15 +8,29 @@ dependencies = [
     "rich>=13.7",
     "python-dotenv>=1.0",
     "pydantic>=2.7",
-    "langgraph>=0.2",
-    "langchain-core>=0.3",
-    "langchain-openai>=0.2",
-    "langchain-anthropic>=0.3",
-    "langchain-google-genai>=2.0",
+    # The langgraph/langchain floors are the versions this project was actually
+    # built and tested against, not the oldest that might work. They were `>=0.2`
+    # and `>=0.3` -- several majors below the resolved set -- which let a plain
+    # `pip install -e .` produce an environment no one had ever run. If you lower
+    # one of these, verify the provider adapters and `with_structured_output`
+    # still behave, because that is where the majors moved.
+    "langgraph>=1.2",
+    "langchain-core>=1.5",
+    "langchain-openai>=1.5",
+    "langchain-anthropic>=1.5",
+    "langchain-google-genai>=4.3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# Keeping the web server optional means `pip install -e .` still yields a pure
+# CLI with no FastAPI, SQLModel or uvicorn in the environment.
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlmodel>=0.0.22",
+    "sse-starlette>=2.1",
+]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 tri-review = "tri_review.cli:main"

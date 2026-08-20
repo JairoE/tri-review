@@ -9,6 +9,7 @@ import click
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -20,6 +21,22 @@ console = Console()
 
 @click.command()
 @click.option("--pr", default=None, help="Pull request number. Omit to detect the current branch's PR.")
+@click.option(
+    "--repo",
+    default=None,
+    metavar="OWNER/NAME",
+    help=(
+        "Review a PR in this repository instead of the current directory's. "
+        "File contents are read from GitHub at the PR's head commit, so no "
+        "checkout is needed."
+    ),
+)
+@click.option(
+    "--url",
+    default=None,
+    metavar="PR_URL",
+    help="A GitHub pull request URL. Sets --repo and --pr from it.",
+)
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -43,11 +60,20 @@ console = Console()
     help="Also write the raw Markdown report to this file.",
 )
 @click.version_option(package_name="tri-review")
-def main(pr: str | None, dry_run: bool, models: tuple[str, ...], output: Path | None) -> None:
+def main(
+    pr: str | None,
+    repo: str | None,
+    url: str | None,
+    dry_run: bool,
+    models: tuple[str, ...],
+    output: Path | None,
+) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
     load_dotenv()
     try:
-        _run(pr, dry_run, models, output)
+        if url:
+            repo, pr = github.parse_pr_url(url)
+        _run(pr, repo, dry_run, models, output)
     except TriReviewError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(exc.exit_code)
@@ -94,17 +120,23 @@ def _resolve_models(selected: tuple[str, ...]) -> list[str]:
     return models
 
 
-def _run(pr: str | None, dry_run: bool, selected: tuple[str, ...], output: Path | None) -> None:
+def _run(
+    pr: str | None,
+    repo: str | None,
+    dry_run: bool,
+    selected: tuple[str, ...],
+    output: Path | None,
+) -> None:
     # Imported here so --help and --dry-run stay fast and key-free.
     from .graph import build_review_graph
 
     models = _resolve_models(selected)
 
-    github.preflight()
-    pr_number = pr or github.detect_pr()
+    github.preflight(repo)
+    pr_number = pr or github.detect_pr(repo)
 
     if dry_run:
-        ctx = context.build_context(github.fetch_diff(pr_number))
+        ctx = context.preview_context(pr_number, repo)
         _print_context(pr_number, ctx)
         console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
         console.print("[dim]--dry-run: stopping before any model call.[/dim]")
@@ -112,14 +144,14 @@ def _run(pr: str | None, dry_run: bool, selected: tuple[str, ...], output: Path 
 
     console.print(
         Panel(
-            f"[bold cyan]tri-review[/bold cyan]  PR #{pr_number}\n"
+            f"[bold cyan]tri-review[/bold cyan]  {repo + ' ' if repo else ''}PR #{pr_number}\n"
             f"[dim]{'  ·  '.join(models)}[/dim]",
             expand=False,
         )
     )
 
     app = build_review_graph(models=models)
-    report = _stream_graph(app, pr_number, len(models))
+    report = _stream_graph(app, pr_number, repo, len(models))
 
     console.print()
     console.print(Markdown(report))
@@ -135,7 +167,7 @@ def _run(pr: str | None, dry_run: bool, selected: tuple[str, ...], output: Path 
             console.print(f"\n[green]Wrote report to[/green] {output}")
 
 
-def _stream_graph(app, pr_number: str, model_count: int) -> str:
+def _stream_graph(app, pr_number: str, repo: str | None, model_count: int) -> str:
     """Drive the graph, reporting each node's outcome as it lands."""
     report = ""
 
@@ -147,7 +179,8 @@ def _stream_graph(app, pr_number: str, model_count: int) -> str:
     ) as progress:
         task = progress.add_task("Gathering PR context...", total=None)
 
-        for chunk in app.stream({"pr_number": pr_number, "results": []}, stream_mode="updates"):
+        initial = {"pr_number": pr_number, "repo": repo or "", "results": []}
+        for chunk in app.stream(initial, stream_mode="updates"):
             for node, update in chunk.items():
                 if node == "fetch_context":
                     progress.update(task, description=f"Reviewing with {model_count} models...")
@@ -171,7 +204,7 @@ def _print_result(result, via=console) -> None:
         noun = "finding" if count == 1 else "findings"
         via.print(f"  [green]OK[/green] {result.model} — {count} {noun}")
     else:
-        via.print(f"  [red]FAIL[/red] {result.model} — {result.error}")
+        via.print(f"  [red]FAIL[/red] {result.model} — {escape(str(result.error))}")
 
 
 def _print_context(pr_number: str, ctx: context.ReviewContext, via=console) -> None:
@@ -179,25 +212,25 @@ def _print_context(pr_number: str, ctx: context.ReviewContext, via=console) -> N
     via.print(f"  diff lines:       {len(ctx.diff.splitlines())}")
     via.print(f"  files included:   {len(ctx.files)}")
     for path in ctx.files:
-        via.print(f"    [green]+[/green] {path}")
+        via.print(f"    [green]+[/green] {escape(path)}")
     if ctx.dropped:
         via.print(
             f"  [yellow]WARNING: {len(ctx.dropped)} file(s) over token budget, "
             f"diff hunks only:[/yellow]"
         )
         for path in ctx.dropped:
-            via.print(f"    [yellow]-[/yellow] {path}")
+            via.print(f"    [yellow]-[/yellow] {escape(path)}")
     if ctx.missing:
         via.print(f"  not readable locally ({len(ctx.missing)}), diff hunks only:")
         for path in ctx.missing:
-            via.print(f"    ? {path}")
+            via.print(f"    ? {escape(path)}")
     if ctx.rejected:
         via.print(
             f"  [bold red]REFUSED: {len(ctx.rejected)} diff path(s) point outside this "
             f"repository and were not read:[/bold red]"
         )
         for path in ctx.rejected:
-            via.print(f"    [red]![/red] {path}")
+            via.print(f"    [red]![/red] {escape(path)}")
     via.print(f"  estimated tokens: {ctx.estimated_tokens:,}")
     if ctx.diff_overflow:
         via.print(

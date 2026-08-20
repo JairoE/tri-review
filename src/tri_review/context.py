@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config
+from . import config, github
+
+# Reads one repository-relative path and returns its text, or None if there is
+# nothing readable there. Never receives a path that escapes the repo textually
+# -- that is filtered at the boundary in `build_context` before any reader is
+# called. A reader that discovers an escape only it can see raises PathOutsideRepo.
+Reader = Callable[[str], "str | None"]
+
+
+class PathOutsideRepo(Exception):
+    """A reader was asked for a path whose real location is outside the repository.
+
+    Distinct from returning None: None means "nothing readable here", which is
+    routine, while this means "readable, but not yours", which the user is told
+    about loudly.
+    """
 
 
 @dataclass
@@ -35,6 +51,22 @@ class ReviewContext:
         return "\n\n".join(parts)
 
 
+def preview_context(pr_number: str, repo: str | None = None) -> ReviewContext:
+    """Build the review context for a PR without calling any model.
+
+    The same work `fetch_context_node` does, minus the graph. Reviews cost real
+    money, so both the CLI's `--dry-run` and the web app's confirm step need to
+    show what would be sent before anything is spent.
+    """
+    diff = github.fetch_diff(pr_number, repo)
+    if repo:
+        head_sha = github.fetch_pr_meta(pr_number, repo)["head_sha"]
+        reader = github_reader(repo, head_sha)
+    else:
+        reader = filesystem_reader(Path.cwd())
+    return build_context(diff, reader=reader)
+
+
 def parse_changed_files(diff: str) -> list[str]:
     """Return post-image paths of files the diff touches, excluding deletions.
 
@@ -59,10 +91,10 @@ def parse_changed_files(diff: str) -> list[str]:
 def _is_inside(path: Path, root: Path) -> bool:
     """True if `path` resolves to a location inside `root`, symlinks followed.
 
-    Diff paths are written by whoever opened the PR, so they are untrusted. A
-    `+++ b/../../.ssh/id_rsa` header, or a symlink the PR adds and the user then
-    checks out, must not pull a file off the reviewer's disk into a payload
-    bound for three third-party APIs.
+    The textual guard in `github.is_repo_relative` already rejected `..` and
+    absolute paths at the boundary. This catches the case only a filesystem can
+    have: a symlink the PR adds and the user then checks out, whose *target*
+    leaves the repo even though its path never says so.
     """
     try:
         return path.resolve().is_relative_to(root)
@@ -70,26 +102,75 @@ def _is_inside(path: Path, root: Path) -> bool:
         return False
 
 
-def build_context(diff: str, root: Path | None = None, budget: int | None = None) -> ReviewContext:
-    """Assemble diff + changed-file contents, dropping largest files to fit the budget."""
-    root = root or Path.cwd()
+def filesystem_reader(root: Path | None = None) -> Reader:
+    """Read changed files from a local checkout at `root` (default: cwd)."""
+    base = (root or Path.cwd()).resolve()
+
+    def read(rel: str) -> str | None:
+        path = base / rel
+        if not _is_inside(path, base):
+            raise PathOutsideRepo(rel)
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Binary, generated-then-deleted, or outside the checkout. The diff
+            # hunk is still in the payload, so the reviewer isn't blind to it.
+            return None
+
+    return read
+
+
+def github_reader(repo: str, ref: str) -> Reader:
+    """Read changed files from GitHub at a specific ref.
+
+    `ref` must be the PR's head SHA. A branch name would drift, and the default
+    branch would pair the right diff with the wrong file bodies.
+    """
+
+    def read(rel: str) -> str | None:
+        return github.fetch_file_content(repo, rel, ref)
+
+    return read
+
+
+def build_context(
+    diff: str,
+    root: Path | None = None,
+    budget: int | None = None,
+    reader: Reader | None = None,
+) -> ReviewContext:
+    """Assemble diff + changed-file contents, dropping largest files to fit the budget.
+
+    `reader` decides where file contents come from; `root` is a shorthand for a
+    filesystem reader at that path, kept so existing callers and tests are
+    unaffected.
+    """
     budget = budget if budget is not None else config.token_budget()
-    root_resolved = root.resolve()
+    if reader is None:
+        reader = filesystem_reader(root)
 
     ctx = ReviewContext(diff=diff, files={})
     candidates: list[tuple[str, str]] = []
 
     for rel in parse_changed_files(diff):
-        path = root / rel
-        if not _is_inside(path, root_resolved):
+        # Refused once, here, for every reader. Diff paths are written by whoever
+        # opened the PR: a `+++ b/../../.ssh/id_rsa` header must not pull a file
+        # off the reviewer's disk, nor spend their GitHub credentials on a
+        # request to somewhere else, into a payload bound for three third-party
+        # APIs. Doing this at the boundary means a new reader inherits the
+        # refusal instead of having to remember it.
+        if not github.is_repo_relative(rel):
             ctx.rejected.append(rel)
             continue
         try:
-            candidates.append((rel, path.read_text(encoding="utf-8")))
-        except (OSError, UnicodeDecodeError):
-            # Binary, generated-then-deleted, or outside the checkout. The diff
-            # hunk is still in the payload, so the reviewer isn't blind to it.
+            content = reader(rel)
+        except PathOutsideRepo:
+            ctx.rejected.append(rel)
+            continue
+        if content is None:
             ctx.missing.append(rel)
+        else:
+            candidates.append((rel, content))
 
     # The diff is mandatory; files compete for whatever budget is left.
     remaining = budget - config.estimate_tokens(diff)
