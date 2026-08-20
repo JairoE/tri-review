@@ -83,7 +83,7 @@ def client(tmp_path, monkeypatch):
 
     for module in (github_mod, graph_mod.github, context_mod.github):
         monkeypatch.setattr(module, "preflight", lambda repo=None: None)
-        monkeypatch.setattr(module, "fetch_diff", lambda pr, repo=None: DIFF)
+        monkeypatch.setattr(module, "fetch_diff", lambda pr, repo=None, exclude=(): DIFF)
         monkeypatch.setattr(module, "fetch_pr_meta", lambda pr, repo=None: dict(META))
         monkeypatch.setattr(module, "fetch_file_content", lambda r, p, ref: "file body")
 

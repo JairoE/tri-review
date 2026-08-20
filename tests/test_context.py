@@ -213,7 +213,7 @@ def test_github_reader_reads_at_the_given_ref(monkeypatch):
 
 def test_preview_context_makes_no_model_calls(monkeypatch):
     """The confirm-before-spending step must be free."""
-    monkeypatch.setattr(context_mod.github, "fetch_diff", lambda pr, repo=None: MODIFIED)
+    monkeypatch.setattr(context_mod.github, "fetch_diff", lambda pr, repo=None, exclude=(): MODIFIED)
     monkeypatch.setattr(
         context_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"head_sha": "d" * 40}
     )
@@ -226,7 +226,7 @@ def test_preview_context_makes_no_model_calls(monkeypatch):
 
 def test_preview_context_cwd_mode_needs_no_pr_metadata(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(context_mod.github, "fetch_diff", lambda pr, repo=None: MODIFIED)
+    monkeypatch.setattr(context_mod.github, "fetch_diff", lambda pr, repo=None, exclude=(): MODIFIED)
     monkeypatch.setattr(
         context_mod.github,
         "fetch_pr_meta",

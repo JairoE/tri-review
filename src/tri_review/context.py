@@ -51,14 +51,16 @@ class ReviewContext:
         return "\n\n".join(parts)
 
 
-def preview_context(pr_number: str, repo: str | None = None) -> ReviewContext:
+def preview_context(
+    pr_number: str, repo: str | None = None, exclude: tuple[str, ...] = ()
+) -> ReviewContext:
     """Build the review context for a PR without calling any model.
 
     The same work `fetch_context_node` does, minus the graph. Reviews cost real
     money, so both the CLI's `--dry-run` and the web app's confirm step need to
     show what would be sent before anything is spent.
     """
-    diff = github.fetch_diff(pr_number, repo)
+    diff = github.fetch_diff(pr_number, repo, exclude)
     if repo:
         head_sha = github.fetch_pr_meta(pr_number, repo)["head_sha"]
         reader = github_reader(repo, head_sha)

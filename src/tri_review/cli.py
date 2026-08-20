@@ -59,6 +59,18 @@ console = Console()
     default=None,
     help="Also write the raw Markdown report to this file.",
 )
+@click.option(
+    "--exclude",
+    "excludes",
+    multiple=True,
+    metavar="PATTERN",
+    help=(
+        "Glob pattern to drop from the diff before sending it anywhere, e.g. "
+        "--exclude '**/*.lock'. Repeat for more patterns. Useful when a PR's diff "
+        "is too large for a model's context or rate limit -- excluding lockfiles, "
+        "generated clients, or fixtures can bring it under the line."
+    ),
+)
 @click.version_option(package_name="tri-review")
 def main(
     pr: str | None,
@@ -67,13 +79,14 @@ def main(
     dry_run: bool,
     models: tuple[str, ...],
     output: Path | None,
+    excludes: tuple[str, ...],
 ) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
     load_dotenv()
     try:
         if url:
             repo, pr = github.parse_pr_url(url)
-        _run(pr, repo, dry_run, models, output)
+        _run(pr, repo, dry_run, models, output, excludes)
     except TriReviewError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(exc.exit_code)
@@ -126,6 +139,7 @@ def _run(
     dry_run: bool,
     selected: tuple[str, ...],
     output: Path | None,
+    excludes: tuple[str, ...],
 ) -> None:
     # Imported here so --help and --dry-run stay fast and key-free.
     from .graph import build_review_graph
@@ -136,7 +150,7 @@ def _run(
     pr_number = pr or github.detect_pr(repo)
 
     if dry_run:
-        ctx = context.preview_context(pr_number, repo)
+        ctx = context.preview_context(pr_number, repo, excludes)
         _print_context(pr_number, ctx)
         console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
         console.print("[dim]--dry-run: stopping before any model call.[/dim]")
@@ -151,7 +165,7 @@ def _run(
     )
 
     app = build_review_graph(models=models)
-    report = _stream_graph(app, pr_number, repo, len(models))
+    report = _stream_graph(app, pr_number, repo, excludes, len(models))
 
     console.print()
     console.print(Markdown(report))
@@ -167,7 +181,9 @@ def _run(
             console.print(f"\n[green]Wrote report to[/green] {output}")
 
 
-def _stream_graph(app, pr_number: str, repo: str | None, model_count: int) -> str:
+def _stream_graph(
+    app, pr_number: str, repo: str | None, excludes: tuple[str, ...], model_count: int
+) -> str:
     """Drive the graph, reporting each node's outcome as it lands."""
     report = ""
 
@@ -179,7 +195,12 @@ def _stream_graph(app, pr_number: str, repo: str | None, model_count: int) -> st
     ) as progress:
         task = progress.add_task("Gathering PR context...", total=None)
 
-        initial = {"pr_number": pr_number, "repo": repo or "", "results": []}
+        initial = {
+            "pr_number": pr_number,
+            "repo": repo or "",
+            "excludes": excludes,
+            "results": [],
+        }
         for chunk in app.stream(initial, stream_mode="updates"):
             for node, update in chunk.items():
                 if node == "fetch_context":
