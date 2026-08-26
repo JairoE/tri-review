@@ -298,7 +298,11 @@ def fetch_file_content(repo: str, path: str, ref: str) -> str | None:
 
 def _is_diff_too_large(stderr: str) -> bool:
     lowered = stderr.lower()
-    return "too_large" in lowered or "maximum number of lines" in lowered
+    return (
+        "too_large" in lowered
+        or "maximum number of lines" in lowered
+        or "taking too long to generate" in lowered
+    )
 
 
 def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:

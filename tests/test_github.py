@@ -390,6 +390,44 @@ def test_fetch_diff_forwards_exclude_patterns_to_gh(monkeypatch):
 _REPO_URL = "https://github.com/octocat/Hello-World.git"
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "too_large",
+        "HTTP 406: ... too_large",
+        "maximum number of lines",
+        "Sorry, this diff is taking too long to generate.",
+    ],
+)
+def test_is_diff_too_large_recognizes_known_github_responses(stderr):
+    assert github._is_diff_too_large(stderr) is True
+
+
+def test_is_diff_too_large_rejects_unrelated_errors():
+    assert github._is_diff_too_large("authentication failed") is False
+
+
+def test_fetch_diff_falls_back_locally_on_taking_too_long_response(monkeypatch):
+    def fake_run(args):
+        if args[:3] == ["gh", "pr", "diff"]:
+            return _proc(
+                returncode=1,
+                stderr="Sorry, this diff is taking too long to generate.",
+            )
+        if args[:3] == ["gh", "pr", "view"]:
+            return _proc(stdout='{"baseRefName": "main"}')
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
+            return _proc()
+        if args[:2] == ["git", "diff"]:
+            return _proc(stdout="diff --git a/x b/x\n+hi\n")
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    assert "diff --git" in github.fetch_diff("2")
+
+
 def test_fetch_diff_local_fallback_applies_exclude_pathspecs(monkeypatch):
     def fake_run(args):
         if args[:3] == ["gh", "pr", "diff"]:

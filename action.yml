@@ -94,11 +94,11 @@ runs:
         exit 0  # pass/fail is decided in the "Enforce result" step, after the comment is posted
 
     - name: Post or update PR comment
-      if: ${{ inputs.post-comment == 'true' && github.event.pull_request.number }}
+      if: ${{ inputs.post-comment == 'true' && (inputs.pr-number || github.event.pull_request.number) }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         REPO: ${{ github.repository }}
       run: |
         marker='<!-- tri-review-report -->'
