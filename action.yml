@@ -1,0 +1,147 @@
+name: 'tri-review'
+description: 'Have three LLMs independently review a pull request, and report what they agree on.'
+author: 'JairoE'
+branding:
+  icon: 'eye'
+  color: 'purple'
+
+inputs:
+  pr-number:
+    description: 'PR number to review. Defaults to the number of the PR that triggered this run.'
+    required: false
+  models:
+    description: 'Space-separated model IDs, e.g. "gpt-5.1 claude-opus-5 gemini-2.5-pro". Leave empty for the configured defaults.'
+    required: false
+  exclude:
+    description: 'Newline-separated glob patterns to drop from the diff, e.g. "**/*.lock".'
+    required: false
+  fail-on-insufficient-reviews:
+    description: 'Fail the check if fewer than two models report (exit code 4). If false, posts a warning comment instead of failing.'
+    required: false
+    default: 'true'
+  post-comment:
+    description: 'Post, or update, a PR comment with the report.'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'Token used for gh auth and for posting the PR comment.'
+    required: false
+    default: ${{ github.token }}
+  openai-api-key:
+    description: 'OpenAI API key. At least two of the three provider keys are required.'
+    required: false
+  anthropic-api-key:
+    description: 'Anthropic API key. At least two of the three provider keys are required.'
+    required: false
+  google-api-key:
+    description: 'Google API key. At least two of the three provider keys are required.'
+    required: false
+
+outputs:
+  report-path:
+    description: 'Path to the written Markdown report, if one was produced.'
+    value: ${{ steps.run.outputs.report-path }}
+  exit-code:
+    description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install tri-review
+      shell: bash
+      run: pip install "${{ github.action_path }}"
+
+    - name: Run tri-review
+      id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GOOGLE_API_KEY: ${{ inputs.google-api-key }}
+        # Falls back to the triggering PR's number in the || expression below,
+        # rather than relying on tri-review's own git-branch autodetection --
+        # a pull_request checkout often leaves HEAD detached, where branch-based
+        # PR lookup can't resolve anything.
+        INPUT_PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+        INPUT_MODELS: ${{ inputs.models }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+      run: |
+        set +e
+        args=(--output report.md)
+        [ -n "$INPUT_PR_NUMBER" ] && args+=(--pr "$INPUT_PR_NUMBER")
+        for m in $INPUT_MODELS; do
+          args+=(--model "$m")
+        done
+        while IFS= read -r pattern; do
+          [ -n "$pattern" ] && args+=(--exclude "$pattern")
+        done <<< "$INPUT_EXCLUDE"
+
+        tri-review "${args[@]}" 2>&1 | tee tri-review-output.txt
+        exit_code="${PIPESTATUS[0]}"
+        set -e
+
+        echo "exit-code=$exit_code" >> "$GITHUB_OUTPUT"
+        if [ -f report.md ]; then
+          echo "report-path=report.md" >> "$GITHUB_OUTPUT"
+        fi
+        exit 0  # pass/fail is decided in the "Enforce result" step, after the comment is posted
+
+    - name: Post or update PR comment
+      if: ${{ inputs.post-comment == 'true' && github.event.pull_request.number }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        marker='<!-- tri-review-report -->'
+
+        if [ -f report.md ]; then
+          { echo "$marker"; echo; cat report.md; } > comment-body.md
+        else
+          {
+            echo "$marker"
+            echo
+            echo "**tri-review failed to produce a report** (exit code ${{ steps.run.outputs.exit-code }})."
+            echo
+            echo '<details><summary>Output</summary>'
+            echo
+            echo '```'
+            tail -c 60000 tri-review-output.txt 2>/dev/null
+            echo '```'
+            echo
+            echo '</details>'
+          } > comment-body.md
+        fi
+
+        existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
+          ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+
+        if [ -n "$existing" ]; then
+          gh api "repos/$REPO/issues/comments/$existing" -X PATCH -f body=@comment-body.md
+        else
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" -X POST -f body=@comment-body.md
+        fi
+
+    - name: Enforce result
+      shell: bash
+      env:
+        FAIL_ON_INSUFFICIENT: ${{ inputs.fail-on-insufficient-reviews }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+      run: |
+        if [ "$EXIT_CODE" = "0" ]; then
+          exit 0
+        fi
+        if [ "$EXIT_CODE" = "4" ] && [ "$FAIL_ON_INSUFFICIENT" != "true" ]; then
+          echo "::warning::tri-review reported fewer than two reviews (exit 4); continuing because fail-on-insufficient-reviews is false."
+          exit 0
+        fi
+        echo "::error::tri-review exited with code $EXIT_CODE"
+        exit 1
