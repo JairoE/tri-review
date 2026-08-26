@@ -17,10 +17,12 @@ def fetch_context_node(state: ReviewState) -> dict:
     read from GitHub at the PR's head SHA; without one, from the checkout the
     process is sitting in. Resolving `head_ref` here rather than at the caller
     means no caller can forget it and silently review the default branch's files.
+    `excludes` narrows the diff in either mode -- see `github.fetch_diff`.
     """
     repo = state.get("repo") or None
+    excludes = state.get("excludes", ())
     pr_number = state.get("pr_number") or github.detect_pr(repo)
-    diff = github.fetch_diff(pr_number, repo)
+    diff = github.fetch_diff(pr_number, repo, excludes)
 
     if repo:
         head_ref = state.get("head_ref") or github.fetch_pr_meta(pr_number, repo)["head_sha"]

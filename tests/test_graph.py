@@ -41,7 +41,9 @@ class StubLLM:
 def stub_context(monkeypatch):
     monkeypatch.setattr(graph_mod.github, "detect_pr", lambda repo=None: "1")
     monkeypatch.setattr(
-        graph_mod.github, "fetch_diff", lambda pr, repo=None: "diff --git a/a.py b/a.py\n"
+        graph_mod.github,
+        "fetch_diff",
+        lambda pr, repo=None, exclude=(): "diff --git a/a.py b/a.py\n",
     )
     monkeypatch.setattr(
         graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx()
@@ -62,7 +64,7 @@ def test_repo_mode_reads_files_at_the_pr_head_sha(monkeypatch):
     """
     calls = {}
 
-    def fake_fetch_diff(pr, repo=None):
+    def fake_fetch_diff(pr, repo=None, exclude=()):
         calls["diff"] = (pr, repo)
         return "diff\n"
 
@@ -93,7 +95,7 @@ def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
         chosen["root"] = root
         return lambda rel: None
 
-    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda pr, repo=None: "diff\n")
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda pr, repo=None, exclude=(): "diff\n")
     monkeypatch.setattr(
         graph_mod.github,
         "fetch_pr_meta",
@@ -111,6 +113,22 @@ def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
 
     assert "root" in chosen
     assert out["repo"] == ""
+
+
+def test_excludes_reach_fetch_diff_in_either_mode(monkeypatch):
+    calls = {}
+
+    monkeypatch.setattr(
+        graph_mod.github,
+        "fetch_diff",
+        lambda pr, repo=None, exclude=(): calls.setdefault("exclude", exclude) or "diff\n",
+    )
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", lambda root: (lambda rel: None))
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+
+    graph_mod.fetch_context_node({"pr_number": "7", "excludes": ("**/*.lock",)})
+
+    assert calls["exclude"] == ("**/*.lock",)
 
 
 def test_three_models_all_succeed(stub_context):

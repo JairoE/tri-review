@@ -183,10 +183,31 @@ def detect_pr(repo: str | None = None) -> str:
     return str(number)
 
 
-def fetch_diff(pr_number: str, repo: str | None = None) -> str:
-    """Return the unified diff for a pull request."""
-    result = _run(["gh", "pr", "diff", str(pr_number), *_repo_args(repo)])
+def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...] = ()) -> str:
+    """Return the unified diff for a pull request, minus any excluded paths.
+
+    `gh pr diff` goes through GitHub's diff API, which refuses to serve diffs
+    over ~20,000 lines (HTTP 406, `too_large`). In cwd mode (no `repo`), fall
+    back to a local `git diff` against the PR's base branch -- the PR's head is
+    already required to be the current checkout (see README), so this
+    reproduces the same three-dot diff GitHub would otherwise have returned.
+    In --repo mode there is no local checkout to fall back to, so the error
+    instead points at --exclude as the way to shrink the diff.
+    """
+    args = ["gh", "pr", "diff", str(pr_number), *_repo_args(repo)]
+    for pattern in exclude:
+        args += ["--exclude", pattern]
+    result = _run(args)
     if result.returncode != 0:
+        if _is_diff_too_large(result.stderr):
+            if repo is None:
+                return _fetch_diff_locally(pr_number, exclude)
+            raise PRNotFoundError(
+                f"PR #{pr_number}'s diff is too large for GitHub's API (over "
+                "~20,000 lines). There is no local checkout to fall back to in "
+                "--repo mode, so narrow it instead: --exclude '**/*.lock', "
+                "for example."
+            )
         raise PRNotFoundError(
             f"Could not fetch the diff for PR #{pr_number}.\n"
             f"gh said: {result.stderr.strip() or 'no detail'}"
@@ -273,3 +294,56 @@ def fetch_file_content(repo: str, path: str, ref: str) -> str | None:
         return base64.b64decode(payload.get("content") or "").decode("utf-8")
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return None  # binary, or not valid UTF-8 text
+
+
+def _is_diff_too_large(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return "too_large" in lowered or "maximum number of lines" in lowered
+
+
+def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
+    """Compute a large PR's diff locally instead of through GitHub's diff API."""
+    view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
+    if view.returncode != 0:
+        raise PRNotFoundError(
+            f"PR #{pr_number}'s diff is too large for GitHub's API, and its base "
+            "branch could not be looked up to compute it locally.\n"
+            f"gh said: {view.stderr.strip() or 'no detail'}"
+        )
+    try:
+        base_ref = json.loads(view.stdout)["baseRefName"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise PRNotFoundError(
+            f"Could not read the base branch from gh output: {view.stdout.strip()!r}"
+        ) from None
+
+    fetch = _run(["git", "fetch", "origin", base_ref])
+    if fetch.returncode != 0:
+        raise PRNotFoundError(
+            f"PR #{pr_number}'s diff is too large for GitHub's API, and "
+            f"`git fetch origin {base_ref}` failed, so it could not be computed "
+            f"locally either.\ngit said: {fetch.stderr.strip() or 'no detail'}"
+        )
+
+    diff_args = ["git", "diff", f"origin/{base_ref}...HEAD"]
+    if exclude:
+        diff_args.append("--")
+        diff_args.append(".")
+        diff_args += [f":(exclude){pattern}" for pattern in exclude]
+    diff = _run(diff_args)
+    if diff.returncode != 0:
+        raise PRNotFoundError(
+            f"PR #{pr_number}'s diff is too large for GitHub's API, and the "
+            f"local fallback (`{' '.join(diff_args)}`) failed.\n"
+            f"git said: {diff.stderr.strip() or 'no detail'}\n"
+            "This fallback requires the PR's own branch to be the current "
+            "checkout -- see README."
+        )
+    if not diff.stdout.strip():
+        raise PRNotFoundError(
+            f"PR #{pr_number} has an empty diff against origin/{base_ref} -- "
+            "nothing to review locally. This fallback requires the PR's head "
+            "branch to be checked out (see README); if it isn't, this diff "
+            "won't match the PR, or --exclude dropped every changed file."
+        )
+    return diff.stdout

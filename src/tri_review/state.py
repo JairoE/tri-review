@@ -17,6 +17,7 @@ class ReviewState(TypedDict, total=False):
     # to be resolved by the entry node is safe, but overriding it with anything
     # other than the reviewed revision silently corrupts the review.
     head_ref: str
+    excludes: tuple[str, ...]
     payload: str
     # Holds a context.ReviewContext. Typed as Any because LangGraph resolves
     # these annotations at runtime, and because the state must declare the key
