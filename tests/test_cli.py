@@ -16,7 +16,7 @@ def test_env_overrides_still_apply_when_no_flag_given(monkeypatch):
 
 
 def test_selected_models_replace_the_defaults():
-    chosen = ("gpt-5.1", "claude-opus-5", "gemini-2.5-pro")
+    chosen = ("gpt-5.1", "claude-opus-5", "gemini-3.1-pro-preview")
     assert _resolve_models(chosen) == list(chosen)
 
 
@@ -25,7 +25,7 @@ def test_two_models_are_enough():
 
 
 def test_more_than_three_models_are_allowed():
-    chosen = ("gpt-5.1", "gpt-4.1", "claude-opus-5", "gemini-2.5-pro")
+    chosen = ("gpt-5.1", "gpt-4.1", "claude-opus-5", "gemini-3.1-pro-preview")
     assert _resolve_models(chosen) == list(chosen)
 
 

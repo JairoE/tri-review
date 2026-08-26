@@ -109,7 +109,7 @@ Repeat `--model` to pick which models review the PR, overriding the configured s
 tri-review --pr 123 \
   --model gpt-5.1 \
   --model claude-opus-5 \
-  --model gemini-2.5-pro
+  --model gemini-3.1-pro-preview
 ```
 
 At least two *distinct* models are required, since one model can't corroborate
@@ -138,7 +138,7 @@ Every value is an environment variable override; defaults are in `src/tri_review
 |---|---|---|
 | `TRI_REVIEW_MODEL_A` | `gpt-5.1` | First reviewer |
 | `TRI_REVIEW_MODEL_B` | `claude-opus-5` | Second reviewer |
-| `TRI_REVIEW_MODEL_C` | `gemini-2.5-pro` | Third reviewer |
+| `TRI_REVIEW_MODEL_C` | `gemini-3.1-pro-preview` | Third reviewer |
 | `TRI_REVIEW_SYNTHESIZER` | same as model A | Model that cross-references the reviews |
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
 | `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds |

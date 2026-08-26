@@ -6,15 +6,16 @@ import os
 
 # Model IDs, one per reviewer slot.
 #
-# gpt-5.1 and claude-opus-5 were verified against their providers' live model
-# lists. The Gemini default is NOT verified -- override it with
-# TRI_REVIEW_MODEL_C if your project has access to a different Gemini model.
+# gemini-2.5-pro was retired for new API users (404, "no longer available to
+# new users" -- Google's own error names gemini-3.1-pro-preview as the
+# replacement). Provider model lists move fast; if a default 404s again,
+# override it with TRI_REVIEW_MODEL_C rather than assuming the code is wrong.
 #
 # None of these accept a custom `temperature`: the current OpenAI and Anthropic
 # flagships reject sampling parameters outright, so tri-review never sends one.
 DEFAULT_MODEL_A = "gpt-5.1"
 DEFAULT_MODEL_B = "claude-opus-5"
-DEFAULT_MODEL_C = "gemini-2.5-pro"
+DEFAULT_MODEL_C = "gemini-3.1-pro-preview"
 
 # Rough char-per-token ratio used to estimate context size without a tokenizer.
 CHARS_PER_TOKEN = 4

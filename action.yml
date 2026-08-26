@@ -10,7 +10,7 @@ inputs:
     description: 'PR number to review. Defaults to the number of the PR that triggered this run.'
     required: false
   models:
-    description: 'Space-separated model IDs, e.g. "gpt-5.1 claude-opus-5 gemini-2.5-pro". Leave empty for the configured defaults.'
+    description: 'Space-separated model IDs, e.g. "gpt-5.1 claude-opus-5 gemini-3.1-pro-preview". Leave empty for the configured defaults.'
     required: false
   exclude:
     description: 'Newline-separated glob patterns to drop from the diff, e.g. "**/*.lock".'

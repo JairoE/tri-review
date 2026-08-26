@@ -97,7 +97,7 @@ def test_unknown_model_id_is_rejected():
         ("gpt-5.1", "openai"),
         ("o3-mini", "openai"),
         ("claude-opus-5", "anthropic"),
-        ("gemini-2.5-pro", "google"),
+        ("gemini-3.1-pro-preview", "google"),
         ("llama-9000", None),
     ],
 )
