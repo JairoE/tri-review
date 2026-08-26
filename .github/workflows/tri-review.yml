@@ -11,6 +11,10 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Provider API keys are stored as secrets on the "env" GitHub Environment,
+    # not as repo-level secrets -- a job only gets access to an environment's
+    # secrets if it declares that environment explicitly.
+    environment: env
     steps:
       # actions/checkout defaults to the pull_request event's synthetic merge
       # commit, not the PR's actual head -- pin to the head SHA explicitly so
