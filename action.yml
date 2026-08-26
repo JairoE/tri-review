@@ -100,14 +100,23 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         marker='<!-- tri-review-report -->'
+        # GitHub always shows a comment's original post time, not its last edit,
+        # so an in-place update (see the PATCH below) can look stale even seconds
+        # after it ran. This line is the visible proof of freshness: which run
+        # produced this exact body, and which commit it reviewed.
+        commit_sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        attribution="_Posted by [workflow run]($RUN_URL) reviewing commit \`$commit_sha\`._"
 
         if [ -f report.md ]; then
-          { echo "$marker"; echo; cat report.md; } > comment-body.md
+          { echo "$marker"; echo; echo "$attribution"; echo; cat report.md; } > comment-body.md
         else
           {
             echo "$marker"
+            echo
+            echo "$attribution"
             echo
             echo "**tri-review failed to produce a report** (exit code ${{ steps.run.outputs.exit-code }})."
             echo
