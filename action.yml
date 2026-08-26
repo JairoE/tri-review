@@ -124,10 +124,15 @@ runs:
         existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
           ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
 
+        # `gh api -f key=@file` does not read from a file -- only `--input` does,
+        # and that replaces the whole request body. Build the JSON body ourselves
+        # so a report full of backticks/quotes/newlines can't break the request.
+        body_json=$(jq -n --rawfile body comment-body.md '{body: $body}')
+
         if [ -n "$existing" ]; then
-          gh api "repos/$REPO/issues/comments/$existing" -X PATCH -f body=@comment-body.md
+          echo "$body_json" | gh api "repos/$REPO/issues/comments/$existing" -X PATCH --input -
         else
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" -X POST -f body=@comment-body.md
+          echo "$body_json" | gh api "repos/$REPO/issues/$PR_NUMBER/comments" -X POST --input -
         fi
 
     - name: Enforce result
