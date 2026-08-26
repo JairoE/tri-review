@@ -124,10 +124,17 @@ runs:
         # Scope the marker match to our own posting identity -- otherwise anyone
         # who can comment on the PR could craft a comment starting with the same
         # marker and have it treated as "the" report comment on the next run.
-        # `gh api user` 404s for the default GITHUB_TOKEN (a bot identity, not a
+        # `gh api user` fails for the default GITHUB_TOKEN (a bot identity, not a
         # real user), which is exactly when the well-known bot login is correct;
         # a custom github-token (a PAT) resolves to its own real login instead.
-        bot_login=$(gh api user --jq '.login' 2>/dev/null || echo "github-actions[bot]")
+        #
+        # The fallback stays OUTSIDE the substitution. Inside it -- `$(cmd || echo
+        # fallback)` -- both halves' stdout are captured, and `gh api` prints its
+        # error body to stdout, not stderr: a 403 produced the literal
+        # `{"message":"Resource not accessible by integration",...}github-actions[bot]`
+        # and broke the jq filter below with `unexpected token "message"`.
+        bot_login=$(gh api user --jq '.login' 2>/dev/null) || bot_login=""
+        [ -n "$bot_login" ] || bot_login="github-actions[bot]"
 
         existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
           ".[] | select(.user.login == \"$bot_login\") | select(.body | startswith(\"$marker\")) | .id" | head -1)
