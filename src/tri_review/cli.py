@@ -49,7 +49,7 @@ console = Console()
     metavar="MODEL_ID",
     help=(
         "Model to review with. Repeat to pick the panel, e.g. "
-        "--model gpt-5.1 --model claude-opus-5 --model gemini-3.1-pro-preview. "
+        "--model gpt-5.6-terra --model claude-sonnet-5 --model gemini-3.7-flash. "
         "Defaults to the three configured slots. At least two are required."
     ),
 )

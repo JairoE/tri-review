@@ -10,7 +10,7 @@ inputs:
     description: 'PR number to review. Defaults to the number of the PR that triggered this run.'
     required: false
   models:
-    description: 'Space-separated model IDs, e.g. "gpt-5.1 claude-opus-5 gemini-3.1-pro-preview". Leave empty for the configured defaults.'
+    description: 'Space-separated model IDs, e.g. "gpt-5.6-terra claude-sonnet-5 gemini-3.7-flash". Leave empty for the configured defaults.'
     required: false
   exclude:
     description: 'Newline-separated glob patterns to drop from the diff, e.g. "**/*.lock".'
@@ -121,8 +121,16 @@ runs:
           } > comment-body.md
         fi
 
+        # Scope the marker match to our own posting identity -- otherwise anyone
+        # who can comment on the PR could craft a comment starting with the same
+        # marker and have it treated as "the" report comment on the next run.
+        # `gh api user` 404s for the default GITHUB_TOKEN (a bot identity, not a
+        # real user), which is exactly when the well-known bot login is correct;
+        # a custom github-token (a PAT) resolves to its own real login instead.
+        bot_login=$(gh api user --jq '.login' 2>/dev/null || echo "github-actions[bot]")
+
         existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
-          ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+          ".[] | select(.user.login == \"$bot_login\") | select(.body | startswith(\"$marker\")) | .id" | head -1)
 
         # `gh api -f key=@file` does not read from a file -- only `--input` does,
         # and that replaces the whole request body. Build the JSON body ourselves

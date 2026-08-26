@@ -107,9 +107,9 @@ Repeat `--model` to pick which models review the PR, overriding the configured s
 
 ```bash
 tri-review --pr 123 \
-  --model gpt-5.1 \
-  --model claude-opus-5 \
-  --model gemini-3.1-pro-preview
+  --model gpt-5.6-terra \
+  --model claude-sonnet-5 \
+  --model gemini-3.7-flash
 ```
 
 At least two *distinct* models are required, since one model can't corroborate
@@ -136,9 +136,9 @@ Every value is an environment variable override; defaults are in `src/tri_review
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TRI_REVIEW_MODEL_A` | `gpt-5.1` | First reviewer |
-| `TRI_REVIEW_MODEL_B` | `claude-opus-5` | Second reviewer |
-| `TRI_REVIEW_MODEL_C` | `gemini-3.1-pro-preview` | Third reviewer |
+| `TRI_REVIEW_MODEL_A` | `gpt-5.6-terra` | First reviewer |
+| `TRI_REVIEW_MODEL_B` | `claude-sonnet-5` | Second reviewer |
+| `TRI_REVIEW_MODEL_C` | `gemini-3.7-flash` | Third reviewer |
 | `TRI_REVIEW_SYNTHESIZER` | same as model A | Model that cross-references the reviews |
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
 | `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds |
@@ -213,7 +213,12 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
+      # Pin to the PR's actual head commit -- the default pull_request checkout
+      # is a synthetic merge commit, which would pair the diff with the wrong
+      # file contents.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: JairoE/tri-review@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}

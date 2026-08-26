@@ -12,7 +12,12 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
+      # actions/checkout defaults to the pull_request event's synthetic merge
+      # commit, not the PR's actual head -- pin to the head SHA explicitly so
+      # the checked-out file contents match the diff tri-review reviews.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Run tri-review on this PR
         uses: ./
