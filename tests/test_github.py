@@ -387,17 +387,23 @@ def test_fetch_diff_forwards_exclude_patterns_to_gh(monkeypatch):
     ]
 
 
+_REPO_URL = "https://github.com/octocat/Hello-World.git"
+
+
 def test_fetch_diff_local_fallback_applies_exclude_pathspecs(monkeypatch):
     def fake_run(args):
         if args[:3] == ["gh", "pr", "diff"]:
             return _proc(returncode=1, stderr="too_large")
         if args[:3] == ["gh", "pr", "view"]:
             return _proc(stdout='{"baseRefName": "main"}')
-        if args[:3] == ["git", "fetch", "origin"]:
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
+            assert args[2:] == [_REPO_URL, "main"]
             return _proc()
         if args[:2] == ["git", "diff"]:
             assert args[2:] == [
-                "origin/main...HEAD",
+                "FETCH_HEAD...HEAD",
                 "--",
                 ".",
                 ":(exclude)**/*.lock",
@@ -415,10 +421,40 @@ def test_fetch_diff_falls_back_locally_when_too_large(monkeypatch):
             return _proc(returncode=1, stderr="HTTP 406: ... too_large")
         if args[:3] == ["gh", "pr", "view"]:
             return _proc(stdout='{"baseRefName": "main"}')
-        if args[:3] == ["git", "fetch", "origin"]:
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
+            assert args[2:] == [_REPO_URL, "main"]
             return _proc()
         if args[:2] == ["git", "diff"]:
-            assert args[2] == "origin/main...HEAD"
+            assert args[2] == "FETCH_HEAD...HEAD"
+            return _proc(stdout="diff --git a/x b/x\n+hi\n")
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    assert "diff --git" in github.fetch_diff("2")
+
+
+def test_fetch_diff_local_fallback_works_when_origin_is_a_fork(monkeypatch):
+    """The whole point of the fetch-by-URL fix: no local remote named `origin`
+
+    is assumed to point at the right repo. Simulate `origin` being some other
+    remote entirely -- the fallback must not reference it at all.
+    """
+
+    def fake_run(args):
+        if args[:3] == ["gh", "pr", "diff"]:
+            return _proc(returncode=1, stderr="too_large")
+        if args[:3] == ["gh", "pr", "view"]:
+            return _proc(stdout='{"baseRefName": "main"}')
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
+            assert "origin" not in args
+            assert args[2:] == [_REPO_URL, "main"]
+            return _proc()
+        if args[:2] == ["git", "diff"]:
+            assert "origin" not in " ".join(args)
             return _proc(stdout="diff --git a/x b/x\n+hi\n")
         raise AssertionError(f"unexpected command: {args}")
 
@@ -439,18 +475,35 @@ def test_fetch_diff_local_fallback_base_lookup_fails(monkeypatch):
         github.fetch_diff("2")
 
 
+def test_fetch_diff_local_fallback_repo_url_lookup_fails(monkeypatch):
+    def fake_run(args):
+        if args[:3] == ["gh", "pr", "diff"]:
+            return _proc(returncode=1, stderr="too_large")
+        if args[:3] == ["gh", "pr", "view"]:
+            return _proc(stdout='{"baseRefName": "main"}')
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(returncode=1, stderr="not a repository")
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    with pytest.raises(PRNotFoundError, match="URL could not be resolved"):
+        github.fetch_diff("2")
+
+
 def test_fetch_diff_local_fallback_fetch_fails(monkeypatch):
     def fake_run(args):
         if args[:3] == ["gh", "pr", "diff"]:
             return _proc(returncode=1, stderr="too_large")
         if args[:3] == ["gh", "pr", "view"]:
             return _proc(stdout='{"baseRefName": "main"}')
-        if args[:3] == ["git", "fetch", "origin"]:
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
             return _proc(returncode=1, stderr="could not resolve host")
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr(github, "_run", fake_run)
-    with pytest.raises(PRNotFoundError, match="git fetch origin main.*failed"):
+    with pytest.raises(PRNotFoundError, match=r"git fetch .*main.*failed"):
         github.fetch_diff("2")
 
 
@@ -460,7 +513,9 @@ def test_fetch_diff_local_fallback_diff_fails(monkeypatch):
             return _proc(returncode=1, stderr="too_large")
         if args[:3] == ["gh", "pr", "view"]:
             return _proc(stdout='{"baseRefName": "main"}')
-        if args[:3] == ["git", "fetch", "origin"]:
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
             return _proc()
         if args[:2] == ["git", "diff"]:
             return _proc(returncode=1, stderr="unknown revision")
@@ -477,7 +532,9 @@ def test_fetch_diff_local_fallback_empty(monkeypatch):
             return _proc(returncode=1, stderr="too_large")
         if args[:3] == ["gh", "pr", "view"]:
             return _proc(stdout='{"baseRefName": "main"}')
-        if args[:3] == ["git", "fetch", "origin"]:
+        if args[:3] == ["gh", "repo", "view"]:
+            return _proc(stdout=f'{{"url": "{_REPO_URL}"}}')
+        if args[:2] == ["git", "fetch"]:
             return _proc()
         if args[:2] == ["git", "diff"]:
             return _proc(stdout="   \n")
