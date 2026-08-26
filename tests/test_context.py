@@ -193,6 +193,44 @@ def test_absolute_path_is_refused_before_the_reader_runs():
     assert ctx.rejected == ["/etc/passwd"]
 
 
+def test_over_budget_diff_is_not_read_at_all():
+    """Once the diff alone fills the budget, no file can fit -- so none is read.
+
+    Asserted with a reader that fails the test if it is called at all. Under
+    `github_reader` each of those calls is a network round trip whose result is
+    then discarded, so the cost of reading first and budgeting after is paid in
+    API requests, not just cycles.
+    """
+
+    def explode(rel):
+        pytest.fail(f"reader ran despite an over-budget diff: {rel!r}")
+
+    diff = _diff_touching("src/app.py") + "+" + "y" * 4_000
+    ctx = build_context(diff, reader=explode, budget=100)
+
+    assert ctx.diff_overflow > 0
+    assert ctx.dropped == ["src/app.py"]
+    assert ctx.files == {}
+
+
+def test_escaping_paths_are_refused_even_when_over_budget():
+    """The traversal guard runs before the budget shortcut, not after it.
+
+    Ordering matters for reporting: an escaping path must be named in
+    `rejected`, where the CLI shows it as a refusal, rather than disappearing
+    into `dropped` alongside the merely-too-large.
+    """
+
+    def explode(rel):
+        pytest.fail(f"reader ran with an escaping path: {rel!r}")
+
+    diff = _diff_touching("../../etc/passwd") + "+" + "y" * 4_000
+    ctx = build_context(diff, reader=explode, budget=100)
+
+    assert ctx.rejected == ["../../etc/passwd"]
+    assert ctx.dropped == []
+
+
 def test_github_reader_reads_at_the_given_ref(monkeypatch):
     seen = {}
 

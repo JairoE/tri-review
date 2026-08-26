@@ -35,7 +35,11 @@ console = Console()
     "--url",
     default=None,
     metavar="PR_URL",
-    help="A GitHub pull request URL. Sets --repo and --pr from it.",
+    help=(
+        "A GitHub pull request URL. Sets --repo and --pr from it. Passing one "
+        "that contradicts an explicit --repo or --pr is an error rather than a "
+        "silent override."
+    ),
 )
 @click.option(
     "--dry-run",
@@ -85,7 +89,7 @@ def main(
     load_dotenv()
     try:
         if url:
-            repo, pr = github.parse_pr_url(url)
+            repo, pr = _merge_url(url, repo, pr)
         _run(pr, repo, dry_run, models, output, excludes)
     except TriReviewError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
@@ -93,6 +97,31 @@ def main(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/yellow]")
         sys.exit(130)
+
+
+def _merge_url(url: str, repo: str | None, pr: str | None) -> tuple[str, str]:
+    """Resolve --url, refusing to silently overrule a conflicting --repo/--pr.
+
+    Taking the URL's word for it would discard the flag the user typed and
+    review a different pull request than they asked for, without saying so.
+    Everywhere else this CLI rejects contradictory input before the PR is
+    fetched and money is spent; this is the one place that did not.
+    """
+    url_repo, url_pr = github.parse_pr_url(url)
+
+    if repo and repo != url_repo:
+        raise click.BadParameter(
+            f"--url points at {url_repo} but --repo says {repo}. "
+            "Pass one or the other, or make them agree.",
+            param_hint="--url",
+        )
+    if pr and str(pr) != url_pr:
+        raise click.BadParameter(
+            f"--url points at PR #{url_pr} but --pr says #{pr}. "
+            "Pass one or the other, or make them agree.",
+            param_hint="--url",
+        )
+    return url_repo, url_pr
 
 
 def _resolve_models(selected: tuple[str, ...]) -> list[str]:

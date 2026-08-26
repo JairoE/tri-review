@@ -3,7 +3,7 @@ import pytest
 from click.testing import CliRunner
 
 from tri_review import config
-from tri_review.cli import _resolve_models, main
+from tri_review.cli import _merge_url, _resolve_models, main
 
 
 def test_defaults_to_the_three_configured_slots():
@@ -111,3 +111,47 @@ def test_provider_errors_survive_the_result_printout(capsys):
     _print_result(ReviewResult(model="m1", error="BadRequest: [invalid_request] too long"))
 
     assert "[invalid_request]" in capsys.readouterr().out
+
+
+# --- --url reconciliation ---------------------------------------------------
+
+URL = "https://github.com/octocat/Hello-World/pull/10856"
+
+
+def test_url_alone_supplies_repo_and_pr():
+    assert _merge_url(URL, None, None) == ("octocat/Hello-World", "10856")
+
+
+def test_url_agreeing_with_explicit_flags_is_accepted():
+    assert _merge_url(URL, "octocat/Hello-World", "10856") == (
+        "octocat/Hello-World",
+        "10856",
+    )
+
+
+def test_url_conflicting_with_repo_is_rejected():
+    """Silently preferring the URL would review a repo the user did not ask for."""
+    with pytest.raises(click.BadParameter) as exc:
+        _merge_url(URL, "someone/else", None)
+    assert "octocat/Hello-World" in str(exc.value)
+    assert "someone/else" in str(exc.value)
+
+
+def test_url_conflicting_with_pr_is_rejected():
+    with pytest.raises(click.BadParameter) as exc:
+        _merge_url(URL, None, "999")
+    assert "10856" in str(exc.value)
+    assert "999" in str(exc.value)
+
+
+def test_conflicting_url_exits_before_touching_github(monkeypatch):
+    """Like a model typo, a contradiction must fail before the PR is fetched."""
+    called = []
+    monkeypatch.setattr(
+        "tri_review.github.preflight", lambda *a, **k: called.append("preflight")
+    )
+
+    result = CliRunner().invoke(main, ["--url", URL, "--pr", "999"])
+
+    assert result.exit_code != 0
+    assert called == []
