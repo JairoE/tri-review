@@ -13,7 +13,6 @@ One model hallucinates confidently. Three models rarely hallucinate the *same* t
 - Python 3.11+
 - The [GitHub CLI](https://cli.github.com) (`gh`), authenticated once with `gh auth login`. There is no `GITHUB_TOKEN` to manage — `tri-review` uses your existing `gh` session.
 - API keys for at least two of the three providers.
-- Node.js, only if you want the web app — its frontend is a separate Next.js project. The CLI and backend need none of it.
 
 ## Install
 
@@ -195,87 +194,56 @@ a cross-provider panel would not print it:
 None. All models reported the same underlying issues.
 ```
 
-## Web app
+## GitHub Action
 
-A local web app wraps the same review engine: paste a PR URL, watch three models
-review it in parallel, and read the results side by side instead of scrolling a
-terminal. It talks to GitHub the same way `--url`/`--repo` mode does, so there is
-never a checkout to manage, and it keeps a history of past reviews in a local
-SQLite database.
+Drop `tri-review` into CI so it reviews every PR automatically, no local install
+required. This repo's own `.github/workflows/tri-review.yml` is a working example —
+it reviews `tri-review`'s own PRs.
 
-### Install
+```yaml
+name: tri-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
-The backend is a `web` optional-dependency group, so a plain CLI install still
-pulls in no FastAPI, SQLModel, or uvicorn:
+permissions:
+  pull-requests: write
 
-```bash
-uv sync --extra web --extra dev
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JairoE/tri-review@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
 ```
 
-Use `uv sync`, not a hand-rolled virtualenv. This project commits `uv.lock`, and a
-`.venv` made with `python -m venv` plus `pip install -e .` does not produce a
-working editable install for this package layout — if `import tri_review` fails
-inside a `.venv` you made yourself, that's why.
+The runner's own checkout already has the PR branch, so this runs the CLI's normal
+cwd mode — the same local-checkout path described above, no `--repo`/`--url`
+needed. The report is posted as a PR comment and updated in place on every push
+(matched by a hidden marker), rather than piling up a new comment each time.
 
-### Run
+| Input | Default | Purpose |
+|---|---|---|
+| `pr-number` | autodetected | Which PR to review; usually left unset |
+| `models` | the three configured slots | Space-separated model IDs, same rules as `--model` |
+| `exclude` | none | Newline-separated glob patterns, same as `--exclude` |
+| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
+| `post-comment` | `true` | Whether to post/update a PR comment |
+| `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
+| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
 
-```bash
-make install   # uv sync --extra web --extra dev, then npm install
-make dev       # both servers; Ctrl-C stops both
-```
+## Claude Code skill
 
-Or run the two servers yourself, in two terminals:
-
-```bash
-# backend, from the repo root
-uv run uvicorn tri_review.web.app:app --port 8000
-# or: .venv/bin/python -m uvicorn tri_review.web.app:app --port 8000
-
-# frontend
-cd web && npm install && npm run dev
-```
-
-Open http://localhost:3000. The frontend calls the backend directly rather than
-through a Next.js dev proxy — a proxy is a common place for a streaming response
-to get buffered — at `http://localhost:8000` by default; override with
-`NEXT_PUBLIC_API_BASE` if the backend runs elsewhere. The backend's CORS is
-locked to `localhost:3000`/`127.0.0.1:3000` to match, which is enough for the
-single-user, local-only scope of this app.
-
-Reviews persist to SQLite at `~/.tri-review/reviews.db`, overridable with
-`TRI_REVIEW_DB`. Provider keys work the same as the CLI — process environment or
-a `.env`, this time in the directory you launch uvicorn from — and `/api/health`
-reports which of the three are actually configured, so a missing key shows up
-before a review fails at synthesis instead of after.
-
-### The flow
-
-1. Paste a public GitHub PR URL.
-2. **Preview** — files, estimated token count, no model calls, no cost. This is
-   the `--dry-run` path as an endpoint, so you see what a review would send
-   before you pay for one.
-3. Confirm, and three models review the PR in parallel.
-4. Read the three reviews **side by side**: one column per model, each rendered
-   as Markdown, filling in live over server-sent events as each model finishes
-   rather than waiting for the slowest one. Below the three columns, a
-   synthesized **Consensus** section renders once synthesis completes — the same
-   Consensus Findings / Unique Insights split the CLI prints, now sitting under
-   the reviews that produced it instead of after them in a scrollback.
-5. Past reviews are listed on the home page and stay reachable at a permanent
-   URL, so a review survives a page refresh or a server restart — a refresh
-   mid-review reconnects the stream rather than losing progress.
-
-### API
-
-| Method & path | Purpose |
-|---|---|
-| `GET /api/health` | Which provider keys are configured, and whether that's enough to review |
-| `POST /api/pulls/resolve` | Turn a pasted PR URL into a repo + PR identity, cheaply, so a typo is caught before preview |
-| `POST /api/reviews/preview` | The `--dry-run` context summary; no model calls |
-| `POST /api/reviews` | Start a review; returns its id immediately (`202`) |
-| `GET /api/reviews` | List past reviews |
-| `GET /api/reviews/{id}` | One review's status, per-model columns, and consensus report |
-| `GET /api/reviews/{id}/events` | Server-sent events for a review in progress; replays from the database first, so a browser that refreshes mid-review sees the same thing a browser that watched from the start would |
+`.claude/skills/tri-review/` ships a skill that runs the CLI from inside a Claude
+Code session — say "review this PR with tri-review" while sitting in a checkout
+with an open PR. It's a thin wrapper: it runs the same `tri-review` command a
+person would, and relays the Markdown report back verbatim rather than
+re-summarizing it. Copy the same file to `~/.claude/skills/tri-review/` to make it
+available in every session on your machine, regardless of which repo you're in.
 
 ## Development
 
