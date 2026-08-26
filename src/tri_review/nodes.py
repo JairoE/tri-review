@@ -40,12 +40,19 @@ wording -- the same bug described differently in the same file and region is one
 finding. State each once, with file and line, and note which models found it.
 
 ## Unique Insights
-Issues reported by only one model, each attributed to that model and labeled as
-unverified by the others.
+Issues reported by only one model. Name that model in bold at the very start of
+the bullet, then the "unverified" qualifier, e.g. "**gemini-3.7-flash**
+(unverified by the other reviewers):" -- never write "unverified by the other
+reviewer(s)" without naming the reporting model in that same phrase. A reader
+must be able to tell who found the issue from the bullet itself, without
+needing a separate line below it.
 
 ## Actionable Next Steps
 The specific changes worth making, highest value first, with file and line
-references and concrete code where useful.
+references and concrete code where useful. If a step comes from a Unique
+Insight rather than a Consensus Finding, name the reporting model here too --
+do not let a single-model, unverified claim read as equally established just
+because it reached this section.
 
 If a section has nothing in it, say so in one line rather than padding it.
 Do not reproduce the raw reviews.
