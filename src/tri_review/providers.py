@@ -41,7 +41,14 @@ def build_llm(model_name: str):
 
         # Generous max_tokens: on current Anthropic models max_tokens caps
         # thinking plus response together, so a tight value truncates output.
-        return ChatAnthropic(model=model_name, timeout=timeout, max_retries=1, max_tokens=8000)
+        #
+        # max_retries=2 (vs. 1 for the other two providers): this slot has hit
+        # a bare APIConnectionError -- a network-layer connection failure, not
+        # a timeout -- on two separate live runs (PR #6, PR #8), with no
+        # corresponding Anthropic status-page incident either time. One extra
+        # retry buys another backoff-and-retry cycle against that specific
+        # flakiness without materially extending a failed run's wall time.
+        return ChatAnthropic(model=model_name, timeout=timeout, max_retries=2, max_tokens=8000)
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
