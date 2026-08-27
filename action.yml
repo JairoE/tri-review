@@ -55,7 +55,15 @@ runs:
 
     - name: Install tri-review
       shell: bash
-      run: pip install "${{ github.action_path }}"
+      # Constrained to requirements-lock.txt (generated from this repo's own
+      # uv.lock -- see the "lock-action" Makefile target) so this resolves to
+      # the exact versions the test suite runs against. An unconstrained `pip
+      # install` re-resolves floors from pyproject.toml on every run and can
+      # silently pick up a newer release the moment one is published -- that
+      # is how a prior run ended up on a langchain-anthropic release this
+      # repo had never tested against, which wrapped a routine Anthropic API
+      # connection error in a renamed exception class before it reached us.
+      run: pip install --constraint "${{ github.action_path }}/requirements-lock.txt" "${{ github.action_path }}"
 
     - name: Run tri-review
       id: run
