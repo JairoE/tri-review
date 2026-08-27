@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import os
 
-# Model IDs, one per reviewer slot.
+# Model IDs, one per reviewer slot. Deliberately mid-tier rather than each
+# provider's flagship: gpt-5.6-terra, claude-sonnet-5, and gemini-3.7-flash
+# trade some capability for materially lower per-token cost, which matters
+# for a tool that reviews a full PR diff (often 100k+ tokens) on every run.
+# Override any slot with TRI_REVIEW_MODEL_A/B/C, or via --model, for a
+# flagship panel when the extra cost is worth it.
 #
-# gpt-5.1 and claude-opus-5 were verified against their providers' live model
-# lists. The Gemini default is NOT verified -- override it with
-# TRI_REVIEW_MODEL_C if your project has access to a different Gemini model.
+# Provider model lists move fast; if a default 404s or is retired, override
+# it with the corresponding env var rather than assuming the code is wrong.
 #
 # None of these accept a custom `temperature`: the current OpenAI and Anthropic
 # flagships reject sampling parameters outright, so tri-review never sends one.
-DEFAULT_MODEL_A = "gpt-5.1"
-DEFAULT_MODEL_B = "claude-opus-5"
-DEFAULT_MODEL_C = "gemini-2.5-pro"
+DEFAULT_MODEL_A = "gpt-5.6-terra"
+DEFAULT_MODEL_B = "claude-sonnet-5"
+DEFAULT_MODEL_C = "gemini-3.7-flash"
 
 # Rough char-per-token ratio used to estimate context size without a tokenizer.
 CHARS_PER_TOKEN = 4

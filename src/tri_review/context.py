@@ -154,6 +154,15 @@ def build_context(
     ctx = ReviewContext(diff=diff, files={})
     candidates: list[tuple[str, str]] = []
 
+    # The diff is mandatory; files compete for whatever budget is left. Computed
+    # before the read loop, not after it, because when nothing is left there is
+    # no point reading: every file would be dropped below anyway. Under
+    # `github_reader` each read is a network call, so the difference is one
+    # request versus one per changed file, every one of them discarded.
+    remaining = budget - config.estimate_tokens(diff)
+    if remaining < 0:
+        ctx.diff_overflow = -remaining
+
     for rel in parse_changed_files(diff):
         # Refused once, here, for every reader. Diff paths are written by whoever
         # opened the PR: a `+++ b/../../.ssh/id_rsa` header must not pull a file
@@ -163,6 +172,11 @@ def build_context(
         # refusal instead of having to remember it.
         if not github.is_repo_relative(rel):
             ctx.rejected.append(rel)
+            continue
+        if remaining <= 0:
+            # Unread rather than unreadable: `dropped` already means "contents
+            # omitted to fit the budget", which is exactly what happened.
+            ctx.dropped.append(rel)
             continue
         try:
             content = reader(rel)
@@ -174,10 +188,6 @@ def build_context(
         else:
             candidates.append((rel, content))
 
-    # The diff is mandatory; files compete for whatever budget is left.
-    remaining = budget - config.estimate_tokens(diff)
-    if remaining < 0:
-        ctx.diff_overflow = -remaining
     for rel, content in sorted(candidates, key=lambda item: len(item[1])):
         cost = config.estimate_tokens(content)
         if cost <= remaining:

@@ -298,11 +298,23 @@ def fetch_file_content(repo: str, path: str, ref: str) -> str | None:
 
 def _is_diff_too_large(stderr: str) -> bool:
     lowered = stderr.lower()
-    return "too_large" in lowered or "maximum number of lines" in lowered
+    return (
+        "too_large" in lowered
+        or "maximum number of lines" in lowered
+        or "taking too long to generate" in lowered
+    )
 
 
 def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
-    """Compute a large PR's diff locally instead of through GitHub's diff API."""
+    """Compute a large PR's diff locally instead of through GitHub's diff API.
+
+    Fetches directly from the repo's clone URL (resolved via `gh repo view`,
+    which is fork-aware and defaults to the parent repo) rather than assuming
+    a local remote is named `origin` and points at the right repo. A fork
+    workflow (`origin` = your fork, `upstream` = the real repo) or any
+    differently-named remote would otherwise fetch the wrong content, or
+    nothing at all.
+    """
     view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
     if view.returncode != 0:
         raise PRNotFoundError(
@@ -317,15 +329,30 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
             f"Could not read the base branch from gh output: {view.stdout.strip()!r}"
         ) from None
 
-    fetch = _run(["git", "fetch", "origin", base_ref])
+    repo_view = _run(["gh", "repo", "view", "--json", "url"])
+    if repo_view.returncode != 0:
+        raise PRNotFoundError(
+            f"PR #{pr_number}'s diff is too large for GitHub's API, and this "
+            "repository's URL could not be resolved to compute it locally.\n"
+            f"gh said: {repo_view.stderr.strip() or 'no detail'}"
+        )
+    try:
+        repo_url = json.loads(repo_view.stdout)["url"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise PRNotFoundError(
+            f"Could not read this repository's URL from gh output: "
+            f"{repo_view.stdout.strip()!r}"
+        ) from None
+
+    fetch = _run(["git", "fetch", repo_url, base_ref])
     if fetch.returncode != 0:
         raise PRNotFoundError(
             f"PR #{pr_number}'s diff is too large for GitHub's API, and "
-            f"`git fetch origin {base_ref}` failed, so it could not be computed "
-            f"locally either.\ngit said: {fetch.stderr.strip() or 'no detail'}"
+            f"`git fetch {repo_url} {base_ref}` failed, so it could not be "
+            f"computed locally either.\ngit said: {fetch.stderr.strip() or 'no detail'}"
         )
 
-    diff_args = ["git", "diff", f"origin/{base_ref}...HEAD"]
+    diff_args = ["git", "diff", "FETCH_HEAD...HEAD"]
     if exclude:
         diff_args.append("--")
         diff_args.append(".")
@@ -341,7 +368,7 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
         )
     if not diff.stdout.strip():
         raise PRNotFoundError(
-            f"PR #{pr_number} has an empty diff against origin/{base_ref} -- "
+            f"PR #{pr_number} has an empty diff against {repo_url}@{base_ref} -- "
             "nothing to review locally. This fallback requires the PR's head "
             "branch to be checked out (see README); if it isn't, this diff "
             "won't match the PR, or --exclude dropped every changed file."

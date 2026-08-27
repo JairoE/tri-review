@@ -1,0 +1,32 @@
+name: tri-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Provider API keys are stored as secrets on the "env" GitHub Environment,
+    # not as repo-level secrets -- a job only gets access to an environment's
+    # secrets if it declares that environment explicitly.
+    environment: env
+    steps:
+      # actions/checkout defaults to the pull_request event's synthetic merge
+      # commit, not the PR's actual head -- pin to the head SHA explicitly so
+      # the checked-out file contents match the diff tri-review reviews.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run tri-review on this PR
+        uses: ./
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
