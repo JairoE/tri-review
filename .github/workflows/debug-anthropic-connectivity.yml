@@ -1,10 +1,18 @@
 name: debug-anthropic-connectivity
 
-# Manual-only, deliberately kept off `pull_request` -- this exists to isolate
-# whether claude-sonnet-5's recurring APIConnectionError (PR #6, PR #8) is a
-# GitHub Actions runner network-path issue or something in the Python/httpx
-# stack, without re-spending OpenAI/Google tokens on a full tri-review run
-# just to test Anthropic connectivity. See the investigation notes on PR #8.
+# Exists to isolate whether claude-sonnet-5's recurring APIConnectionError
+# (PR #6, PR #8) is a GitHub Actions runner network-path issue or something
+# in the Python/httpx stack, without re-spending OpenAI/Google tokens on a
+# full tri-review run just to test Anthropic connectivity. This workflow
+# alone stays cheap regardless of trigger -- curl plus a handful of 8-token
+# calls -- it never touches the other two providers.
+#
+# `workflow_dispatch` needs a workflow file already merged to the default
+# branch before GitHub will let it be dispatched on any ref (a hard platform
+# restriction, not a gh CLI quirk) -- unworkable for testing this before
+# merge. The `pull_request` trigger below, scoped to changes in this file,
+# is a temporary bridge so this can be exercised on its own PR; drop it once
+# this lands on main and the on-demand `workflow_dispatch` path is enough.
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +20,10 @@ on:
         description: 'Connectivity attempts per check'
         required: false
         default: '5'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/debug-anthropic-connectivity.yml'
 
 permissions:
   contents: read
@@ -26,7 +38,7 @@ jobs:
       - name: Raw network check (curl only -- zero LLM tokens)
         shell: bash
         run: |
-          attempts="${{ inputs.attempts }}"
+          attempts="${{ inputs.attempts || '5' }}"
           for i in $(seq 1 "$attempts"); do
             echo "=== curl attempt $i/$attempts ==="
             start=$(date +%s%N)
@@ -58,7 +70,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python3 - "${{ inputs.attempts }}" << 'PYEOF'
+          python3 - "${{ inputs.attempts || '5' }}" << 'PYEOF'
           import sys
           import time
 
