@@ -70,7 +70,24 @@ def review_with(model_name: str, payload: str, llm_builder=build_llm) -> ReviewR
         findings = output.findings if output is not None else []
         return ReviewResult(model=model_name, findings=findings)
     except Exception as exc:  # noqa: BLE001 - one flaky provider must not abort the run
-        return ReviewResult(model=model_name, error=f"{type(exc).__name__}: {exc}")
+        return ReviewResult(model=model_name, error=_describe_error(exc))
+
+
+def _describe_error(exc: Exception) -> str:
+    """Format a reviewer failure, including the real cause behind a chained exception.
+
+    Connection-layer SDK errors (e.g. anthropic.APIConnectionError) deliberately
+    keep their `str()` generic -- "Connection error." every time -- while the
+    actual httpx/OS-level failure (DNS lookup, TCP reset, TLS handshake, a
+    timed-out socket) lives on `__cause__` and would otherwise be discarded
+    here. Surfacing it is the difference between "connection error, cause
+    unknown" and "connection error: [Errno -2] Name or service not known" the
+    next time this happens in CI.
+    """
+    description = f"{type(exc).__name__}: {exc}"
+    if exc.__cause__ is not None:
+        description += f" (caused by {exc.__cause__!r})"
+    return description
 
 
 def make_review_node(model_name: str, llm_builder=build_llm):

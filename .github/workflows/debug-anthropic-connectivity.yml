@@ -1,0 +1,91 @@
+name: debug-anthropic-connectivity
+
+# Manual-only, deliberately kept off `pull_request` -- this exists to isolate
+# whether claude-sonnet-5's recurring APIConnectionError (PR #6, PR #8) is a
+# GitHub Actions runner network-path issue or something in the Python/httpx
+# stack, without re-spending OpenAI/Google tokens on a full tri-review run
+# just to test Anthropic connectivity. See the investigation notes on PR #8.
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: 'Connectivity attempts per check'
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    environment: env
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Raw network check (curl only -- zero LLM tokens)
+        shell: bash
+        run: |
+          attempts="${{ inputs.attempts }}"
+          for i in $(seq 1 "$attempts"); do
+            echo "=== curl attempt $i/$attempts ==="
+            start=$(date +%s%N)
+            # A 400/401 response means the connection itself succeeded --
+            # that's the point, this only tests network reachability, not
+            # whether the request is a valid one.
+            curl -sv --max-time 10 https://api.anthropic.com/v1/messages \
+              -H "x-api-key: test" \
+              -H "anthropic-version: 2023-06-01" \
+              -H "content-type: application/json" \
+              -d '{}' -o /dev/null 2>&1 | tail -40 || echo "curl exited non-zero: $?"
+            end=$(date +%s%N)
+            echo "elapsed: $(( (end - start) / 1000000 ))ms"
+            echo
+            sleep 2
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the pinned Anthropic client (same versions the Action uses)
+        shell: bash
+        run: pip install --constraint requirements-lock.txt langchain-anthropic
+
+      - name: Isolated single-token Anthropic call (no diff, no other providers)
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 - "${{ inputs.attempts }}" << 'PYEOF'
+          import sys
+          import time
+
+          from langchain_anthropic import ChatAnthropic
+          from langchain_core.messages import HumanMessage
+
+          attempts = int(sys.argv[1])
+          for i in range(1, attempts + 1):
+              print(f"=== attempt {i}/{attempts} ===", flush=True)
+              start = time.monotonic()
+              try:
+                  # max_retries=0: each attempt must be one clean, unretried
+                  # connection -- the SDK's own retry logic would blur several
+                  # real attempts together into what looks like one success.
+                  llm = ChatAnthropic(
+                      model="claude-sonnet-5", timeout=30, max_retries=0, max_tokens=8
+                  )
+                  resp = llm.invoke([HumanMessage(content="hi")])
+                  elapsed = time.monotonic() - start
+                  print(f"OK in {elapsed:.2f}s: {resp.content!r}", flush=True)
+              except Exception as exc:
+                  elapsed = time.monotonic() - start
+                  cause = getattr(exc, "__cause__", None)
+                  print(
+                      f"FAIL in {elapsed:.2f}s: {type(exc).__name__}: {exc} "
+                      f"(caused by {cause!r})",
+                      flush=True,
+                  )
+              time.sleep(2)
+          PYEOF
