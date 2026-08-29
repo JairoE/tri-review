@@ -55,6 +55,27 @@ def test_llm_exception_is_recorded_not_raised():
     assert result.findings == []
 
 
+def test_chained_exception_cause_is_recorded():
+    """A generic-message wrapper (e.g. anthropic.APIConnectionError -> "Connection
+    error.") must not swallow the real underlying failure on `__cause__`."""
+
+    def _raise_wrapped():
+        try:
+            raise OSError("Name or service not known")
+        except OSError as cause:
+            raise ConnectionError("Connection error.") from cause
+
+    try:
+        _raise_wrapped()
+    except ConnectionError as wrapped:
+        llm = FakeLLM(raises=wrapped)
+
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert not result.ok
+    assert "Connection error." in result.error
+    assert "Name or service not known" in result.error
+
+
 def test_timeout_is_recorded_not_raised():
     llm = FakeLLM(raises=TimeoutError("timed out after 120s"))
     result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
