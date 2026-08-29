@@ -8,6 +8,89 @@ One model hallucinates confidently. Three models rarely hallucinate the *same* t
 - **Unique Insights** — flagged by one model, labeled unverified.
 - **Actionable Next Steps** — the changes worth making, with file and line references.
 
+## Quickstart: use tri-review in your own repo
+
+You don't need to clone this repo to use `tri-review` on your project. Pick whichever of these fits — they're ordered from least to most setup.
+
+### Option A: GitHub Action (easiest, zero local install)
+
+Reviews every PR automatically. Nothing to install on your machine.
+
+1. In your repo, add `.github/workflows/tri-review.yml`:
+
+   ```yaml
+   name: tri-review
+   on:
+     pull_request:
+       types: [opened, synchronize, reopened]
+
+   permissions:
+     pull-requests: write
+
+   jobs:
+     review:
+       runs-on: ubuntu-latest
+       steps:
+         # Pin to the PR's actual head commit -- the default pull_request checkout
+         # is a synthetic merge commit, which would pair the diff with the wrong
+         # file contents.
+         - uses: actions/checkout@v4
+           with:
+             ref: ${{ github.event.pull_request.head.sha }}
+         - uses: JairoE/tri-review@v1
+           with:
+             openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+             anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+             google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+   ```
+
+2. Add at least two of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` as
+   repository (or organization) secrets under **Settings → Secrets and variables →
+   Actions**.
+3. Open a pull request. `tri-review` runs automatically and posts its report as a
+   PR comment, updating the same comment on every subsequent push.
+
+No `gh` login, no Python install, no per-developer setup — the workflow does all
+of it inside CI. See [GitHub Action](#github-action) below for the full list of
+inputs (choosing models, excluding files, etc.).
+
+### Option B: CLI, no checkout (one-off reviews)
+
+Good for trying a single PR out before wiring up CI, or for reviewing PRs in repos
+you don't want to check out locally.
+
+1. Install once, anywhere on your machine:
+
+   ```bash
+   git clone https://github.com/JairoE/tri-review.git
+   cd tri-review && uv sync   # or: pip install -e .
+   ```
+2. Authenticate `gh` if you haven't already: `gh auth login`.
+3. Export at least two provider API keys in your shell (`OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`).
+4. From anywhere — no `cd` into the target repo required — run:
+
+   ```bash
+   tri-review --repo your-org/your-repo --pr 123
+   # or paste the PR URL directly:
+   tri-review --url https://github.com/your-org/your-repo/pull/123
+   ```
+
+This fetches the diff and file contents straight from GitHub at the PR's head
+commit, so it works against any repo `gh` can see — public or private, as long as
+you're authenticated.
+
+### Option C: Claude Code skill (review from inside a Claude Code session)
+
+Lets you say "review this PR with tri-review" while working in Claude Code.
+
+1. Install `tri-review` per Option B, steps 1–3 (the skill just runs the CLI).
+2. Copy `.claude/skills/tri-review/` from this repo to `~/.claude/skills/tri-review/`
+   so it's available in every project, not just this one.
+3. In any repo, with the PR's branch checked out, ask Claude Code to review it —
+   e.g. "review this PR with tri-review." Claude runs the CLI and relays the
+   Markdown report back verbatim.
+
 ## Requirements
 
 - Python 3.11+
