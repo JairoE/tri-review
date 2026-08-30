@@ -25,6 +25,7 @@ Reviews every PR automatically. Nothing to install on your machine.
        types: [opened, synchronize, reopened]
 
    permissions:
+     contents: read
      pull-requests: write
 
    jobs:
@@ -37,6 +38,8 @@ Reviews every PR automatically. Nothing to install on your machine.
          - uses: actions/checkout@v4
            with:
              ref: ${{ github.event.pull_request.head.sha }}
+         # @v1 is a mutable tag; pin to a release commit SHA instead if you want
+         # the run to be immune to the tag being retargeted.
          - uses: JairoE/tri-review@v1
            with:
              openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -59,11 +62,12 @@ inputs (choosing models, excluding files, etc.).
 Good for trying a single PR out before wiring up CI, or for reviewing PRs in repos
 you don't want to check out locally.
 
-1. Install once, anywhere on your machine:
+1. Install once, anywhere on your machine, as a global command:
 
    ```bash
    git clone https://github.com/JairoE/tri-review.git
-   cd tri-review && uv sync   # or: pip install -e .
+   cd tri-review
+   uv tool install .   # puts `tri-review` on PATH; or activate a venv and `pip install -e .`
    ```
 2. Authenticate `gh` if you haven't already: `gh auth login`.
 3. Export at least two provider API keys in your shell (`OPENAI_API_KEY`,
@@ -290,6 +294,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
@@ -302,6 +307,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+      # @v1 is a mutable tag; pin to a release commit SHA instead if you want
+      # the run to be immune to the tag being retargeted.
       - uses: JairoE/tri-review@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
