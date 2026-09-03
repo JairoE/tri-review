@@ -54,6 +54,14 @@ Insight rather than a Consensus Finding, name the reporting model here too --
 do not let a single-model, unverified claim read as equally established just
 because it reached this section.
 
+Tag every step **Blocking** or **Optional** at the start of the bullet, before
+any other text. A step is Blocking only if it traces back to a Consensus
+Finding of critical or major severity. Everything else -- minor-severity
+findings, single-model Unique Insights, and any suggestion you are adding
+yourself rather than lifting from a specific finding -- is Optional. A reader
+skimming just the bold tags should be able to tell what has to be fixed before
+merge and what can wait.
+
 If a section has nothing in it, say so in one line rather than padding it.
 Do not reproduce the raw reviews.
 """
