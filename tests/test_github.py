@@ -589,3 +589,120 @@ def test_fetch_diff_local_fallback_empty(monkeypatch):
     monkeypatch.setattr(github, "_run", fake_run)
     with pytest.raises(NothingToReview, match="empty diff against"):
         github.fetch_diff("2")
+
+
+# --- fetch_changed_files: completeness is asked, never guessed ---------------
+
+
+def _files_payload(paths, changed_files):
+    body = {"files": [{"path": p} for p in paths]}
+    if changed_files is not None:
+        body["changedFiles"] = changed_files
+    return json.dumps(body)
+
+
+def test_a_full_file_list_is_reported_complete(monkeypatch):
+    monkeypatch.setattr(
+        github, "_run", lambda args: _proc(stdout=_files_payload(["a.py", "b.py"], 2))
+    )
+    paths, complete = github.fetch_changed_files("1")
+    assert paths == ["a.py", "b.py"]
+    assert complete is True
+
+
+def test_a_truncated_page_is_reported_incomplete(monkeypatch):
+    """The case a hardcoded page size got wrong: fewer listed than the PR changed."""
+    monkeypatch.setattr(
+        github, "_run", lambda args: _proc(stdout=_files_payload(["a.py"], 137))
+    )
+    paths, complete = github.fetch_changed_files("1")
+    assert len(paths) == 1
+    assert complete is False
+
+
+def test_a_missing_count_is_never_assumed_complete(monkeypatch):
+    monkeypatch.setattr(
+        github, "_run", lambda args: _proc(stdout=_files_payload(["a.py"], None))
+    )
+    assert github.fetch_changed_files("1")[1] is False
+
+
+def test_a_boolean_count_is_not_mistaken_for_a_number(monkeypatch):
+    """`True == 1` in Python, so a one-file PR could otherwise read as complete."""
+    monkeypatch.setattr(
+        github, "_run", lambda args: _proc(stdout=_files_payload(["a.py"], True))
+    )
+    assert github.fetch_changed_files("1")[1] is False
+
+
+def test_the_count_is_requested_from_gh_at_all(monkeypatch):
+    seen = {}
+
+    def fake_run(args):
+        seen["args"] = args
+        return _proc(stdout=_files_payload(["a.py"], 1))
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.fetch_changed_files("1")
+    assert "files,changedFiles" in seen["args"]
+
+
+def test_a_failed_file_listing_is_an_error(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args: _proc(returncode=1, stderr="nope"))
+    with pytest.raises(PRNotFoundError, match="Could not list the files"):
+        github.fetch_changed_files("1")
+
+
+# --- working_tree_reason ----------------------------------------------------
+
+
+def _git_stub(head="abc123def456", head_rc=0, dirty="", dirty_rc=0):
+    def fake_run(args):
+        if args[:2] == ["git", "rev-parse"]:
+            return _proc(returncode=head_rc, stdout=head + "\n")
+        if args[:2] == ["git", "status"]:
+            return _proc(returncode=dirty_rc, stdout=dirty)
+        raise AssertionError(f"unexpected command: {args}")
+
+    return fake_run
+
+
+def test_a_clean_checkout_at_the_pr_head_has_no_objection(monkeypatch):
+    monkeypatch.setattr(github, "_run", _git_stub())
+    assert github.working_tree_reason("abc123def456") is None
+
+
+def test_the_wrong_commit_is_named(monkeypatch):
+    monkeypatch.setattr(github, "_run", _git_stub(head="999fff000111"))
+    reason = github.working_tree_reason("abc123def456")
+    assert reason is not None and "999fff00" in reason and "abc123de" in reason
+
+
+def test_uncommitted_changes_block_replay(monkeypatch):
+    monkeypatch.setattr(github, "_run", _git_stub(dirty=" M src/auth.py\n"))
+    assert github.working_tree_reason("abc123def456") == "the working tree has uncommitted changes"
+
+
+def test_untracked_files_alone_do_not_block_replay(monkeypatch):
+    """Every diff path is tracked at the PR head, so a stray scratch dir is irrelevant."""
+    seen = {}
+
+    def fake_run(args):
+        if args[:2] == ["git", "status"]:
+            seen["args"] = args
+            return _proc(stdout="")
+        return _proc(stdout="abc123def456\n")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    assert github.working_tree_reason("abc123def456") is None
+    assert "--untracked-files=no" in seen["args"]
+
+
+def test_an_unreadable_head_is_an_objection_not_a_pass(monkeypatch):
+    monkeypatch.setattr(github, "_run", _git_stub(head_rc=1))
+    assert github.working_tree_reason("abc123def456") is not None
+
+
+def test_an_unreadable_status_is_an_objection_not_a_pass(monkeypatch):
+    monkeypatch.setattr(github, "_run", _git_stub(dirty_rc=1))
+    assert github.working_tree_reason("abc123def456") is not None

@@ -183,13 +183,6 @@ def detect_pr(repo: str | None = None) -> str:
     return str(number)
 
 
-# GitHub's GraphQL file connection is paginated, and `gh pr view --json files`
-# takes the first page. A list at exactly this length may therefore be truncated,
-# and a gate that skipped a review on a truncated list would skip real code it
-# never saw. Callers treat that case as "cannot decide" rather than "nothing here".
-FILE_PAGE_SIZE = 100
-
-
 def fetch_changed_files(pr_number: str, repo: str | None = None) -> tuple[list[str], bool]:
     """Return (paths, complete) for a PR, without fetching the diff body.
 
@@ -197,11 +190,24 @@ def fetch_changed_files(pr_number: str, repo: str | None = None) -> tuple[list[s
     one metadata call, where the diff is a second call and the file contents are
     one network read per changed file on top of that.
 
-    `complete` is False when the list may have been cut off by pagination, which
-    is the caller's signal not to make a skip decision from it.
+    `complete` says whether the list is the whole story. GitHub's GraphQL file
+    connection is paginated and `gh pr view --json files` returns one page of it,
+    so the count is checked against `changedFiles`, which the PR reports for
+    itself. An earlier version compared the length to a hardcoded page size of
+    100 instead -- which is safe only if that guess is not larger than the real
+    page size, and is a silent skip of unseen code if it is. Asking the PR how
+    many files it changed needs no guess at all.
+
+    Anything short of a confirmed match reads as incomplete, because the cost of
+    the two mistakes is not symmetric: reviewing a PR that did not need it wastes
+    money, while skipping one that did is the failure this tool exists to prevent.
     """
     result = _run(
-        ["gh", "pr", "view", str(pr_number), "--json", "files", *_repo_args(repo)]
+        [
+            "gh", "pr", "view", str(pr_number),
+            "--json", "files,changedFiles",
+            *_repo_args(repo),
+        ]
     )
     if result.returncode != 0:
         raise PRNotFoundError(
@@ -210,13 +216,47 @@ def fetch_changed_files(pr_number: str, repo: str | None = None) -> tuple[list[s
             + f".\ngh said: {result.stderr.strip() or 'no detail'}"
         )
     try:
-        files = json.loads(result.stdout).get("files") or []
+        payload = json.loads(result.stdout)
+        files = payload.get("files") or []
         paths = [str(f["path"]) for f in files if f.get("path")]
     except (json.JSONDecodeError, AttributeError, TypeError, KeyError):
         raise PRNotFoundError(
             f"Could not read a file list from gh output: {result.stdout.strip()!r}"
         ) from None
-    return paths, len(paths) < FILE_PAGE_SIZE
+
+    total = payload.get("changedFiles")
+    complete = isinstance(total, int) and not isinstance(total, bool) and len(paths) == total
+    return paths, complete
+
+
+def working_tree_reason(head_sha: str) -> str | None:
+    """Why the local checkout is not exactly `head_sha`, or None if it is.
+
+    Only meaningful in cwd mode, where file bodies are read from the working tree
+    rather than from GitHub. The stored review is keyed on the PR's head SHA, so
+    replaying it is only sound if the tree those bodies came from *was* that
+    commit. Review a PR from the wrong branch once and, without this, the wrong
+    review is cached under the right SHA and replayed long after the mistake is
+    fixed -- a caching layer turning a transient error into a durable one.
+
+    Untracked files are deliberately ignored. If HEAD is the PR head then every
+    path in the diff is tracked at that commit, so an untracked file cannot be
+    one of them; counting them would block replay for anyone with a stray
+    scratch directory, which is nearly everyone.
+    """
+    head = _run(["git", "rev-parse", "HEAD"])
+    if head.returncode != 0:
+        return "the local HEAD could not be read"
+    local = head.stdout.strip()
+    if local != head_sha:
+        return f"the checkout is at {local[:8]}, not the PR head {head_sha[:8]}"
+
+    dirty = _run(["git", "status", "--porcelain", "--untracked-files=no"])
+    if dirty.returncode != 0:
+        return "the working tree status could not be read"
+    if dirty.stdout.strip():
+        return "the working tree has uncommitted changes"
+    return None
 
 
 def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...] = ()) -> str:
@@ -251,7 +291,8 @@ def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...]
     if not result.stdout.strip():
         raise NothingToReview(
             f"PR #{pr_number} has an empty diff"
-            + (" once the exclude patterns are applied." if exclude else ".")
+            + (" once the exclude patterns are applied." if exclude else "."),
+            gate="empty-diff",
         )
     return result.stdout
 

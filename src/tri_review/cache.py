@@ -38,6 +38,17 @@ def key_for(model: str, payload: str, prompt: str, output_schema: str) -> str:
     REVIEW_PROMPT or adding a field to `Finding` invalidates every stored entry
     automatically, which is the behaviour you want and the one nobody remembers
     to trigger manually.
+
+    Deliberately *not* scoped by repository. The payload contains the diff and
+    the full text of every file in it, so two repositories can only collide here
+    by containing identical code -- in which case the same review is the correct
+    answer for both. The store lives in one user's own cache directory, so this
+    shares nothing between people; it only avoids re-reviewing a file that was
+    vendored, forked, or moved between repos.
+
+    What is *not* in the key is a model alias resolving to a new snapshot behind
+    the same name. TRI_REVIEW_CACHE_TTL_DAYS bounds how long such an entry can
+    survive; --fresh discards it immediately.
     """
     digest = hashlib.sha256()
     for part in (str(SCHEMA_VERSION), model, prompt, output_schema, payload):
@@ -64,6 +75,17 @@ def load(key: str) -> ReviewResult | None:
 
     try:
         obj = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    # Checked before parsing, not left to `model_validate` to reject as a side
+    # effect. A future version's entry can easily still satisfy today's model --
+    # adding an optional field would do it -- and would then be replayed as
+    # though it had been written by this version.
+    if not isinstance(obj, dict) or obj.get("schema") != SCHEMA_VERSION:
+        return None
+
+    try:
         result = ReviewResult.model_validate(obj["result"])
     except Exception:  # noqa: BLE001 - unreadable is indistinguishable from absent
         return None

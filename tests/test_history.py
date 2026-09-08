@@ -114,3 +114,30 @@ def test_an_empty_stored_report_is_not_worth_replaying():
         _record(report="  "), "abc123def456", ["gpt-5.6-terra", "claude-sonnet-5"], ("**/*.md",)
     )
     assert reason is not None and "no report" in reason
+
+
+def test_identities_that_flatten_alike_do_not_share_a_file(tmp_path):
+    """`a/b` and `a-b` flatten to the same slug; they must not share a record."""
+    first = history.path_for("octo/cat-repo", "1", tmp_path)
+    second = history.path_for("octo-cat/repo", "1", tmp_path)
+    assert first != second
+
+
+def test_a_record_written_for_another_repo_is_never_replayed(tmp_path):
+    """Whatever the filename says, a record only answers for its own identity."""
+    history.save(_record(repo="octocat/Hello-World", pr="42"), tmp_path)
+    stored = history.path_for("octocat/Hello-World", "42", tmp_path)
+    impostor = history.path_for("evilcorp/Hello-World", "42", tmp_path)
+    impostor.write_bytes(stored.read_bytes())
+
+    assert history.load("evilcorp/Hello-World", "42", tmp_path) is None
+    assert history.load("octocat/Hello-World", "42", tmp_path) is not None
+
+
+def test_a_record_for_another_pr_number_is_never_replayed(tmp_path):
+    history.save(_record(pr="42"), tmp_path)
+    stored = history.path_for("octocat/Hello-World", "42", tmp_path)
+    impostor = history.path_for("octocat/Hello-World", "43", tmp_path)
+    impostor.write_bytes(stored.read_bytes())
+
+    assert history.load("octocat/Hello-World", "43", tmp_path) is None

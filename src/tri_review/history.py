@@ -10,6 +10,7 @@ alongside them because replaying a report should not require re-synthesising it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -89,8 +90,15 @@ def path_for(repo: str, pr: str, directory: Path | None = None) -> Path:
     `github.is_repo_relative` applies to untrusted paths.
     """
     base = directory if directory is not None else config.history_dir()
+    identity = f"{repo}:{pr}"
     slug = _UNSAFE.sub("-", f"{repo}-pr{pr}").strip("-.") or "unknown"
-    return base / f"{slug}.json"
+    # Flattening every separator is what keeps the name from escaping `base`,
+    # but it also maps distinct identities onto one name -- `a/b` and `a-b` land
+    # in the same file, and replaying one repository's report for another is a
+    # wrong answer, not a cosmetic clash. The digest restores what flattening
+    # destroyed without letting any of it reach the filesystem as structure.
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return base / f"{slug}-{digest}.json"
 
 
 def load(repo: str, pr: str, directory: Path | None = None) -> RunRecord | None:
@@ -101,9 +109,15 @@ def load(repo: str, pr: str, directory: Path | None = None) -> RunRecord | None:
     except (OSError, UnicodeDecodeError):
         return None
     try:
-        return RunRecord.from_obj(json.loads(raw))
+        record = RunRecord.from_obj(json.loads(raw))
     except json.JSONDecodeError:
         return None
+
+    # Belt and braces with the digest in the filename: whatever the path says,
+    # a record only answers for the identity it was written under.
+    if record is not None and (record.repo != repo or record.pr != str(pr)):
+        return None
+    return record
 
 
 def save(record: RunRecord, directory: Path | None = None) -> Path | None:

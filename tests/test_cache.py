@@ -89,8 +89,26 @@ def test_a_corrupt_entry_is_a_miss():
 
 
 def test_a_future_schema_is_a_miss():
+    """The payload is deliberately valid under today's model.
+
+    An earlier version of this test used `{}` as the result, which fails
+    validation for an unrelated reason -- so it passed while the schema version
+    was never checked at all. A future entry that still parses is exactly the
+    case that must be rejected.
+    """
     key = cache.key_for(*BASE)
     path = cache._directory() / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema": 99, "result": {}}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"schema": 99, "result": {"model": "m", "findings": []}}),
+        encoding="utf-8",
+    )
+    assert cache.load(key) is None
+
+
+def test_an_entry_with_no_schema_at_all_is_a_miss():
+    key = cache.key_for(*BASE)
+    path = cache._directory() / f"{key}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"result": {"model": "m", "findings": []}}), encoding="utf-8")
     assert cache.load(key) is None

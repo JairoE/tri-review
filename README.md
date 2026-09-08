@@ -216,6 +216,23 @@ the built-in set off when the prose itself is what you want reviewed;
 `TRI_REVIEW_EXCLUDE` replaces the set with your own. `--exclude` always *adds*
 to whatever is in effect.
 
+Being dropped from the payload and being grounds for skipping the PR are two
+different claims, and the defaults keep them apart. Prose, snapshots and images
+are both — a PR of nothing but those has nothing to triangulate. **Lockfiles are
+only the first.** They are machine-written and not worth tokens alongside real
+code, but a PR that changes *only* a lockfile is exactly the shape of a
+dependency bump, accidental or otherwise, and that is the last thing that should
+pass unreviewed. So a lockfile-only PR is reviewed, and says so:
+
+```
+Every changed file is excluded from the payload, but 2 of them are not grounds
+for skipping a review (dependency or generated files that still record a
+decision). Reviewing uv.lock, package-lock.json.
+```
+
+Patterns *you* name are taken at face value in both roles: `--exclude '**/*.py'`
+on an all-Python PR skips it, because you said so.
+
 Note the gate is strictly path-based. A glob cannot be wrong about whether
 `README.md` is Markdown, which is what makes skipping on it safe to do
 automatically. Guessing that a change to `deploy.sh` is "only a comment" is a
@@ -232,6 +249,14 @@ $ tri-review --pr 51
 No change since the last review of a1b2c3d4 on 2026-09-08T14:02:11+00:00.
 Replaying it — pass --fresh to buy a new one.
 ```
+
+In cwd mode there is a fourth condition, because the file bodies come from your
+working tree while the stored review is keyed on the PR's head commit. Replay
+requires `HEAD` to *be* that commit with no uncommitted changes — otherwise
+review a PR from the wrong branch once and the wrong review is cached under the
+right SHA and replayed long after the mistake is fixed. For the same reason a
+run from a mismatched tree is not written to history at all. `--repo` and `--url`
+mode read contents at the SHA itself, so nothing there can disagree.
 
 The stored run is only reused when the head SHA, the model panel, and the
 exclude patterns all still match. Any of them changing makes the old report an
@@ -285,6 +310,12 @@ the model that failed:
   OK claude-sonnet-5 — 2 findings (cached)
   OK gemini-3.7-flash — 3 findings
 ```
+
+The key is not scoped by repository, and that is deliberate: the payload holds
+the diff and the full text of every file in it, so two repositories can only
+collide by containing identical code — where the same review is the right answer
+for both. The store lives in your own cache directory, so nothing is shared
+between people.
 
 Failures are never stored, which is what makes that retry a real retry. Editing
 `REVIEW_PROMPT` or adding a field to `Finding` changes the hash and invalidates
@@ -432,7 +463,7 @@ cwd mode — the same local-checkout path described above, no `--repo`/`--url`
 needed. The report is posted as a PR comment and updated in place on every push
 (matched by a hidden marker), rather than piling up a new comment each time.
 
-A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. The action also exposes a `skipped` output (`'true'` when no models were called) alongside `report-path` and `exit-code`.
+A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, or `triage`). The distinction matters: `path` and `empty-diff` mean nothing was sent to any provider, while `triage` means one cheap call was spent reaching a verdict that can be wrong — so the two get different comment text.
 
 | Input | Default | Purpose |
 |---|---|---|

@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from . import config, context, gating, github, history, triage
-from .errors import NothingToReview, TriReviewError
+from .errors import NothingToReview, PRNotFoundError, TriReviewError
 
 console = Console()
 
@@ -129,6 +129,9 @@ def main(
         # Not a failure: nothing was found worth spending on, and nothing was
         # spent. Exiting non-zero here would fail a CI check on a docs-only PR.
         console.print(f"[bold green]Nothing to review.[/bold green] {exc}")
+        # Stable and unstyled, for the Action (and anything else parsing output)
+        # to tell a free path skip from a triage skip that did pay for a call.
+        console.print(f"tri-review-status: skipped:{exc.gate}", highlight=False)
         sys.exit(0)
     except TriReviewError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
@@ -201,18 +204,33 @@ def _resolve_models(selected: tuple[str, ...]) -> list[str]:
     return models
 
 
-def _resolve_excludes(explicit: tuple[str, ...], skip_defaults: bool) -> tuple[str, ...]:
-    """Combine the built-in exclude set with the user's, unless they opted out.
+def _resolve_excludes(
+    explicit: tuple[str, ...], skip_defaults: bool
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return (payload patterns, patterns that justify skipping the run).
 
     --exclude always adds rather than replaces: someone narrowing a huge diff
     with `--exclude '**/fixtures/**'` is not also asking to start reviewing
     lockfiles. Replacing the whole set is what TRI_REVIEW_EXCLUDE is for.
+
+    The two sets differ only in the built-ins. Whatever the user names is taken
+    at face value in both roles -- they are stating what they do not want
+    reviewed, and second-guessing that would be worse than honouring it.
     """
-    base = () if skip_defaults else config.default_excludes()
-    return tuple(dict.fromkeys((*base, *explicit)))
+    if skip_defaults:
+        patterns = tuple(dict.fromkeys(explicit))
+        return patterns, patterns
+    payload = tuple(dict.fromkeys((*config.default_excludes(), *explicit)))
+    skippable = tuple(dict.fromkeys((*config.skip_eligible_excludes(), *explicit)))
+    return payload, skippable
 
 
-def _gate_paths(pr_number: str, repo: str | None, patterns: tuple[str, ...]) -> list[str]:
+def _gate_paths(
+    pr_number: str,
+    repo: str | None,
+    patterns: tuple[str, ...],
+    skippable: tuple[str, ...],
+) -> tuple[list[str], tuple[str, ...]]:
     """Stop before spending anything if nothing the PR touches is worth reviewing.
 
     The cheapest gate there is: one metadata call, no diff body, no file reads,
@@ -226,17 +244,33 @@ def _gate_paths(pr_number: str, repo: str | None, patterns: tuple[str, ...]) -> 
     if reviewable or not paths:
         # An empty file list is not a skip decision -- let the diff fetch report
         # what is actually going on with the PR.
-        return excluded
+        return excluded, patterns
     if not complete:
-        # The list may have been truncated by pagination, so "everything is
-        # excluded" might only be true of the part we were shown. Reviewing a
-        # PR that did not need it costs money; not reviewing one that did costs
-        # the user the entire point of the tool.
+        # The file list is not the whole PR, so "everything is excluded" may only
+        # be true of the part we were shown. Reviewing a PR that did not need it
+        # costs money; not reviewing one that did costs the user the entire point
+        # of the tool.
         console.print(
-            "[yellow]Note: this PR changes too many files to list in one page, "
-            "so the skip check was inconclusive. Reviewing.[/yellow]"
+            "[yellow]Note: this PR's file list came back incomplete, so the skip "
+            "check was inconclusive. Reviewing.[/yellow]"
         )
-        return excluded
+        return excluded, patterns
+
+    # Nothing is left to review -- but being dropped from the payload is not the
+    # same as being grounds for skipping the PR. A lockfile-only change is the
+    # case this separates out: not worth tokens alongside real code, and exactly
+    # the shape of a dependency bump that must not pass unreviewed on its own.
+    remaining, still_excluded = gating.partition(paths, skippable)
+    if remaining:
+        console.print(
+            f"[yellow]Every changed file is excluded from the payload, but "
+            f"{len(remaining)} of them are not grounds for skipping a review "
+            f"(dependency or generated files that still record a decision). "
+            f"Reviewing {escape(', '.join(remaining[:5]))}"
+            + (f" and {len(remaining) - 5} more" if len(remaining) > 5 else "")
+            + ".[/yellow]"
+        )
+        return still_excluded, skippable
 
     listing = "\n".join(f"  - {escape(path)}" for path in excluded[:20])
     if len(excluded) > 20:
@@ -276,7 +310,8 @@ def _triage_gate(
         f"Triage ({config.triage_model()}) found no behaviour change in PR "
         f"#{pr_number}: {verdict.reason}\n"
         "This is a model's judgement, not a path rule, so it can be wrong. "
-        "Re-run with --no-triage to review anyway."
+        "Re-run with --no-triage to review anyway.",
+        gate="triage",
     )
 
 
@@ -291,7 +326,10 @@ def _repo_identity(repo: str | None, meta: dict) -> str | None:
         return repo
     try:
         return github.parse_pr_url(meta.get("url") or "")[0]
-    except Exception:  # noqa: BLE001 - no identity just means no cache
+    except PRNotFoundError:
+        # The only thing parse_pr_url raises. Anything else is a bug worth
+        # seeing rather than a run that quietly stops caching.
+        console.print("[dim]Could not identify this PR's repository; not storing history.[/dim]")
         return None
 
 
@@ -307,12 +345,12 @@ def _run(
     use_triage: bool | None = None,
 ) -> None:
     models = _resolve_models(selected)
-    patterns = _resolve_excludes(excludes, no_default_excludes)
+    patterns, skippable = _resolve_excludes(excludes, no_default_excludes)
 
     github.preflight(repo)
     pr_number = pr or github.detect_pr(repo)
 
-    skipped = _gate_paths(pr_number, repo, patterns)
+    skipped, patterns = _gate_paths(pr_number, repo, patterns, skippable)
     if skipped:
         console.print(
             f"[dim]Skipping {len(skipped)} excluded file(s): "
@@ -332,7 +370,16 @@ def _run(
     head_sha = meta["head_sha"]
     identity = _repo_identity(repo, meta)
 
-    if identity and not fresh and _replay(identity, pr_number, head_sha, models, patterns, output):
+    # In cwd mode the file bodies come from the working tree while the stored
+    # review is keyed on the PR's head SHA. If those two disagree, the review
+    # this run produces is not a review of that commit -- so it must neither be
+    # replayed from nor written to history. In --repo mode the contents are read
+    # at the SHA itself, so there is nothing to disagree with.
+    tree_reason = github.working_tree_reason(head_sha) if repo is None else None
+
+    if identity and not fresh and _replay(
+        identity, pr_number, head_sha, models, patterns, output, tree_reason
+    ):
         return
 
     diff = _triage_gate(pr_number, repo, patterns, use_triage)
@@ -363,7 +410,12 @@ def _run(
 
     _write_output(report, output)
 
-    if identity:
+    if identity and tree_reason:
+        console.print(
+            f"[dim]Not storing this review: {tree_reason}, so it is not a review "
+            f"of {head_sha[:8]} and must not be replayed as one.[/dim]"
+        )
+    elif identity:
         saved = history.save(
             history.RunRecord(
                 repo=identity,
@@ -391,6 +443,7 @@ def _replay(
     models: list[str],
     patterns: tuple[str, ...],
     output: Path | None,
+    tree_reason: str | None = None,
 ) -> bool:
     """Print the stored review if it still answers the question. True if it did."""
     record = history.load(identity, str(pr_number))
@@ -400,6 +453,15 @@ def _replay(
     reason = history.stale_reason(record, head_sha, models, patterns)
     if reason is not None:
         console.print(f"[dim]Stored review is out of date ({reason}). Reviewing.[/dim]")
+        return False
+
+    if tree_reason is not None:
+        # Checked here rather than before loading, so the message only appears
+        # when there was actually something to replay.
+        console.print(
+            f"[dim]Not replaying the stored review: {tree_reason}, so the files "
+            "on disk are not the ones it was written about.[/dim]"
+        )
         return False
 
     console.print(

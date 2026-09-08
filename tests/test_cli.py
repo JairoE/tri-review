@@ -319,7 +319,7 @@ def test_a_new_commit_invalidates_the_stored_review(monkeypatch, tmp_path):
 def test_explicit_excludes_add_to_the_defaults_rather_than_replacing_them():
     from tri_review.cli import _resolve_excludes
 
-    patterns = _resolve_excludes(("**/fixtures/**",), skip_defaults=False)
+    patterns, _ = _resolve_excludes(("**/fixtures/**",), skip_defaults=False)
     assert "**/fixtures/**" in patterns
     assert "**/*.md" in patterns
 
@@ -327,14 +327,169 @@ def test_explicit_excludes_add_to_the_defaults_rather_than_replacing_them():
 def test_opting_out_of_the_defaults_keeps_only_what_was_asked_for():
     from tri_review.cli import _resolve_excludes
 
-    assert _resolve_excludes(("**/fixtures/**",), skip_defaults=True) == ("**/fixtures/**",)
+    patterns, skippable = _resolve_excludes(("**/fixtures/**",), skip_defaults=True)
+    assert patterns == ("**/fixtures/**",)
+    assert skippable == ("**/fixtures/**",)
 
 
 def test_duplicate_patterns_are_collapsed():
     from tri_review.cli import _resolve_excludes
 
-    patterns = _resolve_excludes(("**/*.md",), skip_defaults=False)
+    patterns, _ = _resolve_excludes(("**/*.md",), skip_defaults=False)
     assert patterns.count("**/*.md") == 1
+
+
+def test_lockfiles_leave_the_payload_but_do_not_justify_skipping():
+    """The two roles an exclude pattern can play, kept apart."""
+    from tri_review.cli import _resolve_excludes
+
+    patterns, skippable = _resolve_excludes((), skip_defaults=False)
+    assert "**/*.lock" in patterns
+    assert "**/*.lock" not in skippable
+    assert "**/*.md" in patterns and "**/*.md" in skippable
+
+
+def test_a_users_own_pattern_counts_in_both_roles():
+    """Someone naming a pattern is saying what they do not want reviewed."""
+    from tri_review.cli import _resolve_excludes
+
+    _, skippable = _resolve_excludes(("**/*.py",), skip_defaults=False)
+    assert "**/*.py" in skippable
+
+
+def test_a_lockfile_only_pr_is_reviewed_rather_than_skipped(monkeypatch):
+    """The shape of a dependency bump. It must not pass unreviewed on its own."""
+    _stub_github(monkeypatch, ["uv.lock", "package-lock.json"])
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    # Asserted on fragments: rich hard-wraps the notice mid-phrase.
+    assert "not grounds" in result.output
+    assert "uv.lock" in result.output
+
+
+def test_a_docs_and_lockfile_pr_still_reviews_the_lockfile(monkeypatch):
+    _stub_github(monkeypatch, ["README.md", "uv.lock"])
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)
+
+
+def test_a_docs_only_pr_is_still_skipped(monkeypatch):
+    """The relaxation must not have made the ordinary docs case reviewable."""
+    _stub_github(monkeypatch, ["README.md", "docs/a.md"])
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert result.exit_code == 0
+    assert "Nothing to review" in result.output
+
+
+def test_a_user_excluding_everything_is_taken_at_their_word(monkeypatch):
+    _stub_github(monkeypatch, ["src/auth.py"])
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--exclude", "**/*.py"]
+    )
+
+    assert result.exit_code == 0
+    assert "Nothing to review" in result.output
+
+
+def test_the_skip_status_line_names_the_gate(monkeypatch):
+    _stub_github(monkeypatch, ["README.md"])
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert "tri-review-status: skipped:path" in result.output
+
+
+def test_a_triage_skip_is_labelled_distinctly(monkeypatch, tmp_path):
+    from tri_review.triage import TriageVerdict
+
+    _stub_for_triage(
+        monkeypatch,
+        tmp_path,
+        verdict=TriageVerdict(changes_behavior=False, reason="comments only"),
+    )
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--triage"]
+    )
+
+    assert "tri-review-status: skipped:triage" in result.output
+
+
+# --- cwd mode: the working tree must be the commit the review is keyed on -----
+
+
+def _stub_cwd_mode(monkeypatch, tmp_path, tree_reason):
+    from tri_review import config, history
+
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr("tri_review.github.detect_pr", lambda *a, **k: "42")
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {
+            "head_sha": "abc123def456",
+            "url": "https://github.com/octocat/Hello-World/pull/42",
+        },
+    )
+    monkeypatch.setattr("tri_review.github.working_tree_reason", lambda sha: tree_reason)
+    history.save(
+        history.RunRecord(
+            repo="octocat/Hello-World",
+            pr="42",
+            head_sha="abc123def456",
+            models=[config.model_a(), config.model_b(), config.model_c()],
+            excludes=list(config.default_excludes()),
+            report="## Consensus Findings\n\nStored report from the last run.",
+        )
+    )
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph",
+        lambda **k: (_ for _ in ()).throw(_ReachedTheModels()),
+    )
+
+
+def test_a_matching_checkout_replays_in_cwd_mode(monkeypatch, tmp_path):
+    _stub_cwd_mode(monkeypatch, tmp_path, tree_reason=None)
+
+    result = CliRunner().invoke(main, ["--pr", "42"])
+
+    assert result.exit_code == 0
+    assert "Stored report from the last run" in result.output
+
+
+def test_a_wrong_checkout_never_replays_a_stored_review(monkeypatch, tmp_path):
+    """Reviewing from the wrong branch must not be made durable by the cache."""
+    _stub_cwd_mode(
+        monkeypatch, tmp_path, tree_reason="the checkout is at 999fffff, not the PR head abc123de"
+    )
+
+    result = CliRunner().invoke(main, ["--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "not the ones it was written about" in result.output
+
+
+def test_repo_mode_does_not_consult_the_working_tree(monkeypatch, tmp_path):
+    """--repo reads bodies at the SHA itself, so there is nothing to disagree with."""
+    called = []
+    _stub_cwd_mode(monkeypatch, tmp_path, tree_reason=None)
+    monkeypatch.setattr(
+        "tri_review.github.working_tree_reason", lambda sha: called.append(sha) or None
+    )
+
+    CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert called == []
 
 
 # --- the triage gate --------------------------------------------------------

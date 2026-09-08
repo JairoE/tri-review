@@ -52,8 +52,15 @@ outputs:
     description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
     value: ${{ steps.run.outputs.exit-code }}
   skipped:
-    description: "'true' when the PR held nothing worth reviewing (docs, lockfiles, generated files only) and no models were called."
+    description: "'true' when no review was produced because nothing in the PR needed one."
     value: ${{ steps.run.outputs.skipped }}
+  skip-reason:
+    description: >
+      Which gate stopped the run: 'path' (every changed file is documentation or
+      generated), 'empty-diff', or 'triage' (a model judged the diff to change no
+      behaviour). Only 'path' and 'empty-diff' mean no provider call was made at
+      all; 'triage' means one cheap call was spent reaching that verdict.
+    value: ${{ steps.run.outputs.skip-reason }}
 
 runs:
   using: 'composite'
@@ -111,10 +118,13 @@ runs:
         if [ -f report.md ]; then
           echo "report-path=report.md" >> "$GITHUB_OUTPUT"
         elif [ "$exit_code" -eq 0 ]; then
-          # Exited clean without writing a report: every changed file matched an
-          # exclude pattern, so nothing was sent to any provider. That is a
-          # success, and must not be reported as "failed to produce a report".
+          # Exited clean without writing a report: a gate decided the PR did not
+          # need one. That is a success, and must not be reported as "failed to
+          # produce a report". The CLI prints a stable status line naming the
+          # gate, because a path skip and a triage skip are not the same event.
           echo "skipped=true" >> "$GITHUB_OUTPUT"
+          reason="$(sed -n 's/^tri-review-status: skipped:\(.*\)$/\1/p' tri-review-output.txt | tail -1)"
+          echo "skip-reason=${reason:-unknown}" >> "$GITHUB_OUTPUT"
         fi
         exit 0  # pass/fail is decided in the "Enforce result" step, after the comment is posted
 
@@ -138,13 +148,20 @@ runs:
         if [ -f report.md ]; then
           { echo "$marker"; echo; echo "$attribution"; echo; cat report.md; } > comment-body.md
         elif [ "${{ steps.run.outputs.skipped }}" = "true" ]; then
+          # A path skip and a triage skip are not the same event and must not
+          # read as though they were: one spent nothing, the other spent a model
+          # call on a judgement that can be wrong.
+          if [ "${{ steps.run.outputs.skip-reason }}" = "triage" ]; then
+            headline="**Nothing to review.** A model read the diff and judged that it changes no behaviour. That is a judgement, not a path rule, so it can be wrong -- re-run with \`--no-triage\` (or set the \`triage\` input to \`false\`) to review it anyway."
+          else
+            headline="**Nothing to review.** Every file this PR changes is documentation or generated output, so no models were called."
+          fi
           {
             echo "$marker"
             echo
             echo "$attribution"
             echo
-            echo "**Nothing to review.** Nothing in this PR needed three opinions, so"
-            echo "no review was bought. The details are below."
+            echo "$headline"
             echo
             echo '<details><summary>What was skipped</summary>'
             echo

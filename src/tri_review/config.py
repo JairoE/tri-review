@@ -21,29 +21,19 @@ DEFAULT_MODEL_A = "gpt-5.6-terra"
 DEFAULT_MODEL_B = "claude-sonnet-5"
 DEFAULT_MODEL_C = "gemini-3.7-flash"
 
-# Paths that are never worth three model calls. Documentation, lockfiles, and
-# generated or binary blobs either contain no program logic at all or contain
-# machine-written logic no reviewer would hand-edit. Excluding them by default
-# means a PR that only touches them is skipped outright, and a mixed PR spends
-# its token budget on the code instead of on prose.
+# Paths that do not earn a place in the review payload. Two tiers, because
+# "not worth spending tokens on" and "grounds for skipping the PR entirely" are
+# different claims and conflating them is how a review goes missing.
 #
-# Deliberately absent: `requirements.txt`, `CODEOWNERS`, and anything else that
-# looks like documentation but changes behaviour or access. A dependency bump
-# and an ownership change are both exactly the kind of small, quiet diff worth
-# a second opinion.
-DEFAULT_EXCLUDES = (
+# Tier one: prose and generated artifacts that carry no decision. A PR touching
+# only these has nothing to triangulate, so it is safe to skip outright.
+SKIP_ELIGIBLE_EXCLUDES = (
     "**/*.md",
     "**/*.mdx",
     "**/*.rst",
     "docs/**",
     "**/LICENSE",
     "**/CHANGELOG*",
-    "**/*.lock",
-    "package-lock.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "go.sum",
-    "requirements-lock.txt",
     "**/*.snap",
     "**/__snapshots__/**",
     "**/*.png",
@@ -53,6 +43,26 @@ DEFAULT_EXCLUDES = (
     "**/*.ico",
     "**/*.pdf",
 )
+
+# Tier two: machine-written files that nobody hand-edits, but which do record a
+# decision. Reviewing a resolved dependency graph line by line is waste when
+# there is real code in the PR -- and a PR that changes *only* a lockfile is the
+# exact shape of a malicious or accidental dependency bump, which is the last
+# thing that should pass unreviewed. So these are dropped from the payload but
+# never count as grounds for skipping the run.
+#
+# Deliberately absent from both tiers: `requirements.txt`, `CODEOWNERS`, and
+# anything else that looks like documentation but changes behaviour or access.
+DEPENDENCY_EXCLUDES = (
+    "**/*.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "go.sum",
+    "requirements-lock.txt",
+)
+
+DEFAULT_EXCLUDES = SKIP_ELIGIBLE_EXCLUDES + DEPENDENCY_EXCLUDES
 
 # Rough char-per-token ratio used to estimate context size without a tokenizer.
 CHARS_PER_TOKEN = 4
@@ -99,19 +109,35 @@ def estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 
 
+def _env_excludes() -> tuple[str, ...] | None:
+    raw = os.environ.get("TRI_REVIEW_EXCLUDE")
+    if raw is None or raw.strip() == "":
+        return None
+    parts = [p.strip() for p in raw.replace(",", "\n").splitlines()]
+    return tuple(p for p in parts if p) or None
+
+
 def default_excludes() -> tuple[str, ...]:
-    """The built-in exclude set, or TRI_REVIEW_EXCLUDE in its place.
+    """Patterns kept out of the review payload, or TRI_REVIEW_EXCLUDE instead.
 
     Replaces rather than extends, mirroring how TRI_REVIEW_MODEL_A replaces a
     slot: this is the knob for "my standing default set", and a user who wants
     the built-ins plus their own can pass the extras as --exclude, which always
     adds. Accepts a comma- or newline-separated list.
     """
-    raw = os.environ.get("TRI_REVIEW_EXCLUDE")
-    if raw is None or raw.strip() == "":
-        return DEFAULT_EXCLUDES
-    parts = [p.strip() for p in raw.replace(",", "\n").splitlines()]
-    return tuple(p for p in parts if p)
+    return _env_excludes() or DEFAULT_EXCLUDES
+
+
+def skip_eligible_excludes() -> tuple[str, ...]:
+    """Patterns whose presence alone justifies skipping the whole review.
+
+    A subset of `default_excludes`, which is the point: everything here is also
+    dropped from the payload, but not everything dropped from the payload
+    belongs here. A user-supplied TRI_REVIEW_EXCLUDE is taken at face value in
+    both roles -- someone naming their own patterns is stating what they do not
+    want reviewed, and it is not this function's place to overrule them.
+    """
+    return _env_excludes() or SKIP_ELIGIBLE_EXCLUDES
 
 
 def history_dir() -> Path:
