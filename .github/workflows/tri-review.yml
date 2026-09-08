@@ -7,6 +7,12 @@ on:
 permissions:
   pull-requests: write
   contents: read
+  # Posting a comment needs only `pull-requests: write`; marking the previous
+  # run's comment outdated is a moderation action and needs `issues: write` too.
+  # Without it the Action still works -- it falls back to folding the old report
+  # into a <details> block -- but the native "marked as outdated" collapse is
+  # what you get with this line present.
+  issues: write
 
 jobs:
   review:
