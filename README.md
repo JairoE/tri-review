@@ -239,6 +239,59 @@ answer to a different question, so it is discarded and the reason is printed.
 Push a fix and the SHA moves, so the next run is a real one — which is the
 normal loop: review, fix, push, review again.
 
+**Optionally, a model can be asked whether the diff changes behaviour at all.**
+Path globs cannot tell a rewrite of `deploy.sh` from a typo fix in a comment
+above it. `--triage` puts that question to the cheapest configured model before
+the panel runs:
+
+```bash
+tri-review --pr 51 --triage
+```
+
+It is **off by default, and deliberately so**. It is the only gate that costs a
+model call, and the only one that can be wrong — and being wrong here means
+silently not reviewing real code, which is the worst thing this tool can do. So
+the prompt is asymmetric on purpose: anything uncertain, anything truncated, and
+anything that only *looks* like a comment (`# noqa`, `# type: ignore`,
+`// eslint-disable`, `#!/usr/bin/env`, build pragmas, framework annotations)
+answers "review it". A provider error or an unparseable answer reviews too. When
+it does skip, it says out loud that a model decided, and how to override:
+
+```
+Nothing to review. Triage (gemini-3.7-flash) found no behaviour change in PR #51:
+the only change is a docstring.
+This is a model's judgement, not a path rule, so it can be wrong. Re-run with
+--no-triage to review anyway.
+```
+
+Turn it on for every run with `TRI_REVIEW_TRIAGE=1`, or in CI with the Action's
+`triage: true` input. `--no-triage` overrides either.
+
+`--dry-run` never runs triage — it would mean a model call, and a dry run is documented as costing nothing and needing no keys.
+
+### What gets reused
+
+Individual reviewer calls are cached on an exact content hash — the model, the
+payload, the reviewer prompt, and the output schema. Not similarity: two diffs
+that are 99% alike can differ in exactly the line that introduces the bug, so
+"close enough" would mean confidently reviewing code that was never read.
+
+The payoff is the partial retry. When one provider flakes, the run exits `4` —
+but the two reviews that *did* land are already paid for. Re-running calls only
+the model that failed:
+
+```
+  OK gpt-5.6-terra — 3 findings (cached)
+  OK claude-sonnet-5 — 2 findings (cached)
+  OK gemini-3.7-flash — 3 findings
+```
+
+Failures are never stored, which is what makes that retry a real retry. Editing
+`REVIEW_PROMPT` or adding a field to `Finding` changes the hash and invalidates
+every entry automatically. Entries expire after 14 days
+(`TRI_REVIEW_CACHE_TTL_DAYS`, `0` to disable), and the cache directory is safe to
+delete at any time. `--fresh` bypasses both this and the stored report.
+
 ### Choosing the panel
 
 Repeat `--model` to pick which models review the PR, overriding the configured slots:
@@ -282,6 +335,9 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds |
 | `TRI_REVIEW_EXCLUDE` | see `DEFAULT_EXCLUDES` | Comma- or newline-separated globs that replace the built-in skip set |
 | `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where per-PR review history is stored |
+| `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long a cached reviewer call stays usable; `0` never expires |
+| `TRI_REVIEW_TRIAGE` | unset | Set to `1` to run the behaviour-change gate on every run |
+| `TRI_REVIEW_TRIAGE_MODEL` | same as model C | Model asked whether the diff changes behaviour |
 
 The provider is chosen from the model ID prefix (`gpt-`, `o1`, `o3`, `o4`, `claude-`,
 `gemini`), so
@@ -294,6 +350,7 @@ standing default panel, and the flag for a one-off.
 ## How it behaves
 
 - **A PR with nothing to review is a success, not an error.** If every changed file is documentation, a lockfile, or generated output, the run stops at exit `0` before any model is called and names what it skipped. Exiting non-zero there would fail a CI check on a docs-only pull request, which is backwards.
+- **A retry after a flake only re-calls what failed.** Reviews are cached on an exact content hash, so when a provider drops out and the run exits `4`, re-running reuses the reviews already paid for and buys just the missing one.
 - **A model that fails does not sink the run.** If one provider is down, rate-limited, or missing a key, the other two still produce a report and the failure is noted at the top.
 - **Fewer than two reviews is an error.** A single-model review is just a code review, so `tri-review` exits non-zero rather than pretending it triangulated anything.
 - **Large PRs degrade rather than fail.** If the diff plus changed-file contents exceed the token budget, the largest files' contents are dropped (their diff hunks are kept) and the dropped files are named in a warning. If the diff *alone* busts the budget, that is called out too — no file contents can be included and the providers may reject the payload.
@@ -382,6 +439,7 @@ A PR the gates skip posts a short "Nothing to review" comment and passes, rather
 | `pr-number` | autodetected | Which PR to review; usually left unset |
 | `models` | the three configured slots | Space-separated model IDs, same rules as `--model` |
 | `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
+| `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
 | `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
 | `post-comment` | `true` | Whether to post/update a PR comment |
 | `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |

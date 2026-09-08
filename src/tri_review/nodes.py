@@ -6,7 +6,7 @@ import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import config
+from . import cache, config
 from .errors import InsufficientReviewsError
 from .providers import build_llm, provider_of
 from .schema import ReviewOutput, ReviewResult
@@ -67,8 +67,36 @@ Do not reproduce the raw reviews.
 """
 
 
-def review_with(model_name: str, payload: str, llm_builder=build_llm) -> ReviewResult:
-    """Run one reviewer. Returns a ReviewResult on success or failure — never raises."""
+def _output_fingerprint() -> str:
+    """A stable rendering of the schema reviewers are held to.
+
+    Part of the cache key: widening `Finding` changes what a reviewer can say,
+    so entries written against the old shape must not be replayed against the
+    new one.
+    """
+    return json.dumps(ReviewOutput.model_json_schema(), sort_keys=True)
+
+
+def review_with(
+    model_name: str, payload: str, llm_builder=build_llm, use_cache: bool = True
+) -> ReviewResult:
+    """Run one reviewer. Returns a ReviewResult on success or failure — never raises.
+
+    A cache hit here is exact: same model, same payload, same prompt, same output
+    schema. That matters most on a retry after a provider flakes -- the reviews
+    that already landed are not bought a second time, only the one that failed.
+    """
+    key = (
+        cache.key_for(model_name, payload, REVIEW_PROMPT, _output_fingerprint())
+        if use_cache
+        else None
+    )
+    if key is not None:
+        hit = cache.load(key)
+        if hit is not None:
+            hit.cached = True
+            return hit
+
     try:
         llm = llm_builder(model_name)
         structured = llm.with_structured_output(ReviewOutput)
@@ -76,9 +104,15 @@ def review_with(model_name: str, payload: str, llm_builder=build_llm) -> ReviewR
             [SystemMessage(content=REVIEW_PROMPT), HumanMessage(content=payload)]
         )
         findings = output.findings if output is not None else []
-        return ReviewResult(model=model_name, findings=findings)
+        result = ReviewResult(model=model_name, findings=findings)
     except Exception as exc:  # noqa: BLE001 - one flaky provider must not abort the run
+        # Deliberately not cached. Storing a failure would make the retry this
+        # cache exists to cheapen return the same failure for free.
         return ReviewResult(model=model_name, error=_describe_error(exc))
+
+    if key is not None:
+        cache.save(key, result)
+    return result
 
 
 def _describe_error(exc: Exception) -> str:
@@ -98,11 +132,15 @@ def _describe_error(exc: Exception) -> str:
     return description
 
 
-def make_review_node(model_name: str, llm_builder=build_llm):
+def make_review_node(model_name: str, llm_builder=build_llm, use_cache: bool = True):
     """Build a LangGraph node that appends exactly one ReviewResult to state."""
 
     def node(state: ReviewState) -> dict:
-        return {"results": [review_with(model_name, state["payload"], llm_builder)]}
+        return {
+            "results": [
+                review_with(model_name, state["payload"], llm_builder, use_cache)
+            ]
+        }
 
     return node
 

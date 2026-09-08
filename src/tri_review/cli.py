@@ -13,7 +13,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from . import config, context, gating, github, history
+from . import config, context, gating, github, history, triage
 from .errors import NothingToReview, TriReviewError
 
 console = Console()
@@ -92,6 +92,17 @@ console = Console()
         "has changed since the last run."
     ),
 )
+@click.option(
+    "--triage/--no-triage",
+    "use_triage",
+    default=None,
+    help=(
+        "Before reviewing, ask the cheapest model whether the diff changes "
+        "behaviour at all, and skip the review if it plainly does not (a "
+        "comment-only or formatting-only change). Off unless TRI_REVIEW_TRIAGE "
+        "is set: it is the one gate that costs money and can be wrong."
+    ),
+)
 @click.version_option(package_name="tri-review")
 def main(
     pr: str | None,
@@ -103,13 +114,17 @@ def main(
     excludes: tuple[str, ...],
     no_default_excludes: bool,
     fresh: bool,
+    use_triage: bool | None,
 ) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
     load_dotenv()
     try:
         if url:
             repo, pr = _merge_url(url, repo, pr)
-        _run(pr, repo, dry_run, models, output, excludes, no_default_excludes, fresh)
+        _run(
+            pr, repo, dry_run, models, output, excludes,
+            no_default_excludes, fresh, use_triage,
+        )
     except NothingToReview as exc:
         # Not a failure: nothing was found worth spending on, and nothing was
         # spent. Exiting non-zero here would fail a CI check on a docs-only PR.
@@ -233,6 +248,38 @@ def _gate_paths(pr_number: str, repo: str | None, patterns: tuple[str, ...]) -> 
     )
 
 
+def _triage_gate(
+    pr_number: str, repo: str | None, patterns: tuple[str, ...], use_triage: bool | None
+) -> str:
+    """Optionally ask a cheap model whether the diff is worth reviewing.
+
+    Returns the diff when it fetched one, so the graph does not ask GitHub for
+    the same bytes a second time. Returns "" when triage is off.
+
+    Unlike the path gate, this one can be wrong, which is why it is opt-in and
+    why every outcome except a confident "no behaviour change" leads to a review.
+    """
+    enabled = config.triage_enabled() if use_triage is None else use_triage
+    if not enabled:
+        return ""
+
+    diff = github.fetch_diff(pr_number, repo, patterns)
+    verdict = triage.assess(diff)
+
+    if verdict is None:
+        console.print("[dim]Triage could not reach a verdict. Reviewing.[/dim]")
+        return diff
+    if verdict.changes_behavior:
+        return diff
+
+    raise NothingToReview(
+        f"Triage ({config.triage_model()}) found no behaviour change in PR "
+        f"#{pr_number}: {verdict.reason}\n"
+        "This is a model's judgement, not a path rule, so it can be wrong. "
+        "Re-run with --no-triage to review anyway."
+    )
+
+
 def _repo_identity(repo: str | None, meta: dict) -> str | None:
     """The "owner/name" this PR belongs to, for keying its stored history.
 
@@ -257,6 +304,7 @@ def _run(
     excludes: tuple[str, ...],
     no_default_excludes: bool = False,
     fresh: bool = False,
+    use_triage: bool | None = None,
 ) -> None:
     models = _resolve_models(selected)
     patterns = _resolve_excludes(excludes, no_default_excludes)
@@ -287,6 +335,8 @@ def _run(
     if identity and not fresh and _replay(identity, pr_number, head_sha, models, patterns, output):
         return
 
+    diff = _triage_gate(pr_number, repo, patterns, use_triage)
+
     console.print(
         Panel(
             f"[bold cyan]tri-review[/bold cyan]  {repo + ' ' if repo else ''}PR #{pr_number}\n"
@@ -303,8 +353,10 @@ def _run(
     # where its "keeps --dry-run fast" comment was not actually true.)
     from .graph import build_review_graph
 
-    app = build_review_graph(models=models)
-    report, results = _stream_graph(app, pr_number, repo, patterns, len(models), head_sha)
+    app = build_review_graph(models=models, use_cache=not fresh)
+    report, results = _stream_graph(
+        app, pr_number, repo, patterns, len(models), head_sha, diff
+    )
 
     console.print()
     console.print(Markdown(report))
@@ -380,6 +432,7 @@ def _stream_graph(
     excludes: tuple[str, ...],
     model_count: int,
     head_sha: str = "",
+    diff: str = "",
 ) -> tuple[str, list]:
     """Drive the graph, reporting each node's outcome as it lands.
 
@@ -404,6 +457,8 @@ def _stream_graph(
             # Already resolved by the caller, which needed it for the no-op
             # gate. Passing it on saves the context node a second lookup.
             "head_ref": head_sha,
+            # Only set when the triage gate already fetched it.
+            "diff": diff,
             "excludes": excludes,
             "results": [],
         }
@@ -430,7 +485,8 @@ def _print_result(result, via=console) -> None:
     if result.ok:
         count = len(result.findings)
         noun = "finding" if count == 1 else "findings"
-        via.print(f"  [green]OK[/green] {result.model} — {count} {noun}")
+        suffix = " [dim](cached)[/dim]" if getattr(result, "cached", False) else ""
+        via.print(f"  [green]OK[/green] {result.model} — {count} {noun}{suffix}")
     else:
         via.print(f"  [red]FAIL[/red] {result.model} — {escape(str(result.error))}")
 

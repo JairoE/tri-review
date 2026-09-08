@@ -335,3 +335,164 @@ def test_duplicate_patterns_are_collapsed():
 
     patterns = _resolve_excludes(("**/*.md",), skip_defaults=False)
     assert patterns.count("**/*.md") == 1
+
+
+# --- the triage gate --------------------------------------------------------
+
+
+def _stub_for_triage(monkeypatch, tmp_path, verdict, diff="diff --git a/x b/x"):
+    """Get a run as far as the triage gate, with everything before it satisfied."""
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["deploy.sh"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    monkeypatch.setattr("tri_review.github.fetch_diff", lambda *a, **k: diff)
+    monkeypatch.setattr("tri_review.triage.assess", lambda *a, **k: verdict)
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph",
+        lambda **k: (_ for _ in ()).throw(_ReachedTheModels()),
+    )
+
+
+def test_triage_is_off_unless_asked_for(monkeypatch, tmp_path):
+    """It costs money and can be wrong, so it is never the silent default."""
+    called = []
+    _stub_for_triage(monkeypatch, tmp_path, verdict=None)
+    monkeypatch.setattr("tri_review.triage.assess", lambda *a, **k: called.append(1))
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert called == []
+
+
+def test_a_comment_only_change_is_skipped_when_triage_is_on(monkeypatch, tmp_path):
+    from tri_review.triage import TriageVerdict
+
+    _stub_for_triage(
+        monkeypatch,
+        tmp_path,
+        verdict=TriageVerdict(changes_behavior=False, reason="only a docstring changed"),
+    )
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--triage"]
+    )
+
+    assert result.exit_code == 0
+    assert "only a docstring changed" in result.output
+
+
+def test_a_triage_skip_says_it_is_a_judgement_call(monkeypatch, tmp_path):
+    """A model's guess must not be presented with the authority of a path rule."""
+    from tri_review.triage import TriageVerdict
+
+    _stub_for_triage(
+        monkeypatch,
+        tmp_path,
+        verdict=TriageVerdict(changes_behavior=False, reason="comments only"),
+    )
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--triage"]
+    )
+
+    assert "can be wrong" in result.output
+    assert "--no-triage" in result.output
+
+
+def test_a_behaviour_change_verdict_proceeds_to_the_review(monkeypatch, tmp_path):
+    from tri_review.triage import TriageVerdict
+
+    _stub_for_triage(
+        monkeypatch,
+        tmp_path,
+        verdict=TriageVerdict(changes_behavior=True, reason="control flow changed"),
+    )
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--triage"]
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+
+
+def test_an_inconclusive_triage_reviews_anyway(monkeypatch, tmp_path):
+    """No verdict and "yes review it" must land in the same place."""
+    _stub_for_triage(monkeypatch, tmp_path, verdict=None)
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--triage"]
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "could not reach a verdict" in result.output.lower()
+
+
+def test_triage_can_be_switched_on_by_environment(monkeypatch, tmp_path):
+    from tri_review.triage import TriageVerdict
+
+    _stub_for_triage(
+        monkeypatch,
+        tmp_path,
+        verdict=TriageVerdict(changes_behavior=False, reason="formatting only"),
+    )
+    monkeypatch.setenv("TRI_REVIEW_TRIAGE", "1")
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert result.exit_code == 0
+    assert "formatting only" in result.output
+
+
+def test_no_triage_beats_the_environment_switch(monkeypatch, tmp_path):
+    from tri_review.triage import TriageVerdict
+
+    _stub_for_triage(
+        monkeypatch,
+        tmp_path,
+        verdict=TriageVerdict(changes_behavior=False, reason="formatting only"),
+    )
+    monkeypatch.setenv("TRI_REVIEW_TRIAGE", "1")
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--no-triage"]
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+
+
+def test_fresh_bypasses_the_reviewer_cache_too(monkeypatch, tmp_path):
+    """--fresh means "buy a new review", not "skip only the stored report"."""
+    seen = {}
+
+    def fake_build(**kwargs):
+        seen.update(kwargs)
+        raise _ReachedTheModels()
+
+    _stub_for_triage(monkeypatch, tmp_path, verdict=None)
+    monkeypatch.setattr("tri_review.graph.build_review_graph", fake_build)
+
+    CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42", "--fresh"])
+
+    assert seen["use_cache"] is False
+
+
+def test_a_normal_run_keeps_the_reviewer_cache_on(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_build(**kwargs):
+        seen.update(kwargs)
+        raise _ReachedTheModels()
+
+    _stub_for_triage(monkeypatch, tmp_path, verdict=None)
+    monkeypatch.setattr("tri_review.graph.build_review_graph", fake_build)
+
+    CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert seen["use_cache"] is True

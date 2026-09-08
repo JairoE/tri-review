@@ -18,6 +18,10 @@ class ReviewState(TypedDict, total=False):
     # other than the reviewed revision silently corrupts the review.
     head_ref: str
     excludes: tuple[str, ...]
+    # The PR diff, when the caller already fetched it (the triage gate needs it
+    # before the graph starts). Present to avoid asking GitHub for the same diff
+    # twice, never to substitute a different one.
+    diff: str
     payload: str
     # Holds a context.ReviewContext. Typed as Any because LangGraph resolves
     # these annotations at runtime, and because the state must declare the key

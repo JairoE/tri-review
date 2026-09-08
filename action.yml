@@ -19,6 +19,13 @@ inputs:
     description: 'Fail the check if fewer than two models report (exit code 4). If false, posts a warning comment instead of failing.'
     required: false
     default: 'true'
+  triage:
+    description: >
+      Ask the cheapest model whether the diff changes behaviour at all, and skip
+      the review when it plainly does not. Off by default: it costs a model call
+      and, unlike the path-based skip, it can be wrong.
+    required: false
+    default: 'false'
   post-comment:
     description: 'Post, or update, a PR comment with the report.'
     required: false
@@ -83,6 +90,7 @@ runs:
         INPUT_PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         INPUT_MODELS: ${{ inputs.models }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_TRIAGE: ${{ inputs.triage }}
       run: |
         set +e
         args=(--output report.md)
@@ -93,6 +101,7 @@ runs:
         while IFS= read -r pattern; do
           [ -n "$pattern" ] && args+=(--exclude "$pattern")
         done <<< "$INPUT_EXCLUDE"
+        [ "$INPUT_TRIAGE" = "true" ] && args+=(--triage)
 
         tri-review "${args[@]}" 2>&1 | tee tri-review-output.txt
         exit_code="${PIPESTATUS[0]}"
@@ -134,8 +143,8 @@ runs:
             echo
             echo "$attribution"
             echo
-            echo "**Nothing to review.** Every file this PR changes is documentation, a"
-            echo "lockfile, or generated output, so no models were called."
+            echo "**Nothing to review.** Nothing in this PR needed three opinions, so"
+            echo "no review was bought. The details are below."
             echo
             echo '<details><summary>What was skipped</summary>'
             echo

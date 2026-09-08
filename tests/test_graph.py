@@ -189,3 +189,52 @@ def test_two_failures_abort_the_run(stub_context):
     app = graph_mod.build_review_graph(models=["m1", "m2", "m3"], llm_builder=builder)
     with pytest.raises(InsufficientReviewsError, match="nothing to triangulate"):
         app.invoke({"pr_number": "1", "results": []})
+
+
+def test_a_retry_after_two_flakes_only_re_calls_the_models_that_failed(stub_context):
+    """The headline claim of the reviewer cache, end to end through the graph.
+
+    Two of three providers drop out, so the run exits 4 with nothing to
+    triangulate -- but the review that did land was already paid for. Re-running
+    must buy only the two that failed.
+    """
+    calls = []
+
+    def builder(model_name):
+        calls.append(model_name)
+        if model_name in ("flaky-one", "flaky-two"):
+            return StubLLM(model_name, raises=RuntimeError("connection error"))
+        return StubLLM(model_name)
+
+    models = ["steady", "flaky-one", "flaky-two"]
+
+    for _ in range(2):
+        app = graph_mod.build_review_graph(models=models, llm_builder=builder)
+        with pytest.raises(InsufficientReviewsError):
+            app.invoke({"pr_number": "1", "repo": "", "results": []})
+
+    assert calls.count("steady") == 1
+    assert calls.count("flaky-one") == 2
+    assert calls.count("flaky-two") == 2
+
+
+def test_a_prefetched_diff_is_not_fetched_again(monkeypatch):
+    """The triage gate already paid for the diff; the graph must not re-ask."""
+    fetched = []
+
+    monkeypatch.setattr(graph_mod.github, "detect_pr", lambda repo=None: "1")
+    monkeypatch.setattr(
+        graph_mod.github,
+        "fetch_diff",
+        lambda pr, repo=None, exclude=(): fetched.append(pr) or "diff\n",
+    )
+    monkeypatch.setattr(
+        graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx()
+    )
+
+    state = graph_mod.fetch_context_node(
+        {"pr_number": "1", "repo": "", "diff": "diff --git a/already.py b/already.py\n"}
+    )
+
+    assert fetched == []
+    assert state["diff"].startswith("diff --git a/already.py")

@@ -127,3 +127,29 @@ def history_dir() -> Path:
         return Path(override.strip()).expanduser()
     base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
     return Path(base).expanduser() / "tri-review"
+
+
+def cache_ttl_days() -> int:
+    """How long a cached reviewer call stays usable. 0 disables expiry."""
+    return _env_int("TRI_REVIEW_CACHE_TTL_DAYS", 14)
+
+
+def triage_model() -> str:
+    """Model asked whether a diff changes behaviour at all.
+
+    Defaults to slot C, the cheapest of the three. Triage is a gate in front of
+    a much larger spend, so it only makes sense while it stays a rounding error
+    against the review it might avoid.
+    """
+    return os.environ.get("TRI_REVIEW_TRIAGE_MODEL") or model_c()
+
+
+def triage_enabled() -> bool:
+    """Whether the behaviour-change gate runs when no flag says otherwise.
+
+    Off by default. It is the only gate that costs money and the only one that
+    can be wrong, so turning it on is a decision the user makes rather than one
+    they discover after a review they wanted was skipped.
+    """
+    raw = (os.environ.get("TRI_REVIEW_TRIAGE") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")

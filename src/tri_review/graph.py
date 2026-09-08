@@ -22,7 +22,7 @@ def fetch_context_node(state: ReviewState) -> dict:
     repo = state.get("repo") or None
     excludes = state.get("excludes", ())
     pr_number = state.get("pr_number") or github.detect_pr(repo)
-    diff = github.fetch_diff(pr_number, repo, excludes)
+    diff = state.get("diff") or github.fetch_diff(pr_number, repo, excludes)
 
     if repo:
         head_ref = state.get("head_ref") or github.fetch_pr_meta(pr_number, repo)["head_sha"]
@@ -36,13 +36,22 @@ def fetch_context_node(state: ReviewState) -> dict:
         "pr_number": pr_number,
         "repo": repo or "",
         "head_ref": head_ref,
+        "diff": diff,
         "payload": ctx.render(),
         "context": ctx,
     }
 
 
-def build_review_graph(models: list[str] | None = None, llm_builder=providers.build_llm):
-    """Compile the review graph. `models` defaults to the three configured slots."""
+def build_review_graph(
+    models: list[str] | None = None,
+    llm_builder=providers.build_llm,
+    use_cache: bool = True,
+):
+    """Compile the review graph. `models` defaults to the three configured slots.
+
+    `use_cache` off is what --fresh threads down to: it forces every reviewer to
+    call its provider even when an identical payload was reviewed before.
+    """
     models = models or [config.model_a(), config.model_b(), config.model_c()]
 
     workflow = StateGraph(ReviewState)
@@ -56,7 +65,9 @@ def build_review_graph(models: list[str] | None = None, llm_builder=providers.bu
     # concurrently, so wall time is the slowest model rather than their sum.
     for index, model_name in enumerate(models):
         node_name = f"review_{index}"
-        workflow.add_node(node_name, nodes.make_review_node(model_name, llm_builder))
+        workflow.add_node(
+            node_name, nodes.make_review_node(model_name, llm_builder, use_cache)
+        )
         workflow.add_edge("fetch_context", node_name)
         workflow.add_edge(node_name, "synthesize")
 
