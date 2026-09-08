@@ -195,8 +195,11 @@ tokens, so `tri-review` decides whether a PR is worth that **before** it spends
 anything. Two gates run first, both from the changed-file list alone — no diff
 body, no file contents, no provider calls:
 
-**Documentation and generated files are excluded by default.** Markdown, `docs/`,
-lockfiles, snapshots and images hold no program logic worth triangulating. On a
+**Documentation and generated files are excluded by default.** Markdown, prose
+under `docs/`, lockfiles, snapshots and images hold no program logic worth
+triangulating. Every pattern that can skip a PR outright is anchored to a file
+extension or an exact filename, never to a directory: `docs/conf.py` and
+`docs/scripts/deploy.sh` are code, and are reviewed like any other code. On a
 mixed PR they are simply dropped from the payload, so the token budget goes to
 the code. On a PR that changes *nothing else*, the run stops:
 
@@ -301,9 +304,10 @@ payload, the reviewer prompt, and the output schema. Not similarity: two diffs
 that are 99% alike can differ in exactly the line that introduces the bug, so
 "close enough" would mean confidently reviewing code that was never read.
 
-The payoff is the partial retry. When one provider flakes, the run exits `4` —
-but the two reviews that *did* land are already paid for. Re-running calls only
-the model that failed:
+The payoff is the partial retry. When a provider flakes, the reviews that *did*
+land are already paid for, and re-running calls only the model that failed. (A
+run missing a reviewer is never replayed wholesale from the stored report —
+that would reprint the degraded panel and never re-call the model that flaked.)
 
 ```
   OK gpt-5.6-terra — 3 findings (cached)
@@ -463,7 +467,7 @@ cwd mode — the same local-checkout path described above, no `--repo`/`--url`
 needed. The report is posted as a PR comment and updated in place on every push
 (matched by a hidden marker), rather than piling up a new comment each time.
 
-A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, or `triage`). The distinction matters: `path` and `empty-diff` mean nothing was sent to any provider, while `triage` means one cheap call was spent reaching a verdict that can be wrong — so the two get different comment text.
+A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, or `triage`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, and `triage` means one cheap call was spent reaching a verdict that can be wrong.
 
 | Input | Default | Purpose |
 |---|---|---|

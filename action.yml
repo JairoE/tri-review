@@ -148,14 +148,27 @@ runs:
         if [ -f report.md ]; then
           { echo "$marker"; echo; echo "$attribution"; echo; cat report.md; } > comment-body.md
         elif [ "${{ steps.run.outputs.skipped }}" = "true" ]; then
-          # A path skip and a triage skip are not the same event and must not
-          # read as though they were: one spent nothing, the other spent a model
-          # call on a judgement that can be wrong.
-          if [ "${{ steps.run.outputs.skip-reason }}" = "triage" ]; then
-            headline="**Nothing to review.** A model read the diff and judged that it changes no behaviour. That is a judgement, not a path rule, so it can be wrong -- re-run with \`--no-triage\` (or set the \`triage\` input to \`false\`) to review it anyway."
-          else
-            headline="**Nothing to review.** Every file this PR changes is documentation or generated output, so no models were called."
-          fi
+          # Each gate is a different event and must not read as another one.
+          # A path skip spent nothing and knows exactly why; a triage skip spent
+          # a model call on a judgement that can be wrong; an empty diff is not a
+          # claim about file types at all. This branch used to assert
+          # "documentation or generated output" for every non-triage reason,
+          # including the `unknown` fallback the sed above writes when it finds
+          # no status line -- a specific, checkable, false claim about the PR.
+          case "${{ steps.run.outputs.skip-reason }}" in
+            triage)
+              headline="**Nothing to review.** A model read the diff and judged that it changes no behaviour. That is a judgement, not a path rule, so it can be wrong -- re-run with \`--no-triage\` (or set the \`triage\` input to \`false\`) to review it anyway."
+              ;;
+            path)
+              headline="**Nothing to review.** Every file this PR changes is documentation or generated output, so no models were called."
+              ;;
+            empty-diff)
+              headline="**Nothing to review.** This PR's diff came back empty, so there was nothing to send to any model. This is not a statement about what kind of files it changes -- see the output below for what was asked for and what came back."
+              ;;
+            *)
+              headline="**Nothing to review.** A gate stopped this run before any model was called, but it did not name itself (skip-reason: \`${{ steps.run.outputs.skip-reason }}\`). Treat this as unreviewed and check the output below."
+              ;;
+          esac
           {
             echo "$marker"
             echo

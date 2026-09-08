@@ -1,5 +1,7 @@
 """Stored runs must replay only when they still answer the same question."""
 
+import json
+
 from tri_review import history
 from tri_review.schema import Finding, ReviewResult
 
@@ -54,9 +56,20 @@ def test_corrupt_history_is_a_miss_not_a_crash(tmp_path):
 
 
 def test_a_future_schema_is_a_miss(tmp_path):
-    path = history.path_for("octocat/Hello-World", "42", tmp_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"schema": 999, "repo": "x/y"}', encoding="utf-8")
+    """The record must be rejected for its version, not for being unparseable.
+
+    The old fixture here was `{"schema": 999, "repo": "x/y"}` -- too incomplete
+    for the dataclass to build, so it would have passed just as well with the
+    version check deleted. The check is real; this test was not testing it. Give
+    it a body that parses cleanly, so only the version can do the rejecting.
+    """
+    record = _record()
+    path = history.save(record, tmp_path)
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert history.load("octocat/Hello-World", "42", tmp_path) is not None
+
+    stored["schema"] = history.SCHEMA_VERSION + 998
+    path.write_text(json.dumps(stored), encoding="utf-8")
     assert history.load("octocat/Hello-World", "42", tmp_path) is None
 
 
@@ -141,3 +154,39 @@ def test_a_record_for_another_pr_number_is_never_replayed(tmp_path):
     impostor.write_bytes(stored.read_bytes())
 
     assert history.load("octocat/Hello-World", "43", tmp_path) is None
+
+
+def test_a_run_missing_a_reviewer_is_not_replayed_as_a_full_one(tmp_path):
+    """A 2-of-3 report replayed forever means the flaked model is never re-called.
+
+    The README promises the opposite: that a re-run after a flake re-buys only
+    the model that failed. Report-level replay defeated it -- `stale_reason`
+    compared the *requested* panel, which still matched. Marking the record stale
+    hands the retry to the per-model cache, which is where that promise lives.
+    """
+    degraded = _record(
+        results=[
+            ReviewResult(model="gpt-5.6-terra", findings=[]),
+            ReviewResult(model="claude-sonnet-5", ok=False, error="connection error"),
+        ]
+    )
+    reason = history.stale_reason(
+        degraded, degraded.head_sha, degraded.models, tuple(degraded.excludes)
+    )
+    assert reason is not None and "claude-sonnet-5" in reason
+
+
+def test_a_run_where_every_model_reported_still_replays(tmp_path):
+    """The guard above must not turn every stored run into a miss."""
+    healthy = _record(
+        results=[
+            ReviewResult(model="gpt-5.6-terra", findings=[]),
+            ReviewResult(model="claude-sonnet-5", findings=[]),
+        ]
+    )
+    assert (
+        history.stale_reason(
+            healthy, healthy.head_sha, healthy.models, tuple(healthy.excludes)
+        )
+        is None
+    )

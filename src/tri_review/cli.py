@@ -254,7 +254,15 @@ def _gate_paths(
             "[yellow]Note: this PR's file list came back incomplete, so the skip "
             "check was inconclusive. Reviewing.[/yellow]"
         )
-        return excluded, patterns
+        # Fall back to the *skippable* set, not the payload set. Returning
+        # `patterns` here re-applied the dependency excludes to a PR we just
+        # admitted we cannot see all of: on a lockfile-only PR whose list came
+        # back short, they strip every changed file, the diff fetch finds
+        # nothing, and the run exits 0 as a skip -- after printing "Reviewing."
+        # Keeping lockfiles in the payload costs tokens; dropping them here
+        # costs the review.
+        remaining, still_excluded = gating.partition(paths, skippable)
+        return still_excluded, skippable
 
     # Nothing is left to review -- but being dropped from the payload is not the
     # same as being grounds for skipping the PR. A lockfile-only change is the
@@ -275,10 +283,20 @@ def _gate_paths(
     listing = "\n".join(f"  - {escape(path)}" for path in excluded[:20])
     if len(excluded) > 20:
         listing += f"\n  ... and {len(excluded) - 20} more"
+    # Only offer the flag that would actually change the outcome. When every
+    # match came from a pattern the user typed, --no-default-excludes is inert
+    # advice, and inert advice reads as a dead end.
+    from_defaults = gating.matches_any_of_each(excluded, config.default_excludes())
+    remedy = (
+        "Re-run with --no-default-excludes to review them anyway."
+        if from_defaults
+        else "These matched patterns you supplied, not the built-in set; drop "
+        "the --exclude pattern (or the `exclude` input) to review them."
+    )
     raise NothingToReview(
         f"All {len(excluded)} file(s) changed by PR #{pr_number} match the "
         f"exclude patterns, so there is no code to triangulate:\n{listing}\n"
-        "Re-run with --no-default-excludes to review them anyway."
+        + remedy
     )
 
 

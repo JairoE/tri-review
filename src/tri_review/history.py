@@ -166,6 +166,15 @@ def stale_reason(
         return "the exclude patterns changed"
     if not record.report.strip():
         return "the stored run has no report"
+    failed = [r.model for r in record.results if not r.ok]
+    if failed:
+        # The README promises that a re-run after a flake re-calls only the model
+        # that failed. Report-level replay defeats that: it reprints the degraded
+        # 2-of-3 report and the flaked model is never called again. Marking the
+        # record stale hands the run to the per-model cache, which replays the
+        # two that succeeded and buys only the one that did not -- which is the
+        # documented behaviour.
+        return f"the last run did not get a review from {', '.join(failed)}"
     return None
 
 

@@ -77,3 +77,12 @@ def partition(
     for path in paths:
         (excluded if matches_any(path, patterns) else reviewable).append(path)
     return reviewable, excluded
+
+
+def matches_any_of_each(paths: list[str], patterns: tuple[str, ...]) -> bool:
+    """True if at least one of `paths` matches at least one of `patterns`.
+
+    Used to tell a skip caused by the built-in exclude set apart from one caused
+    entirely by patterns the operator supplied -- the two have different remedies.
+    """
+    return any(matches_any(path, patterns) for path in paths)

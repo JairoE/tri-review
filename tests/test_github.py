@@ -572,7 +572,11 @@ def test_fetch_diff_local_fallback_diff_fails(monkeypatch):
         github.fetch_diff("2")
 
 
-def test_fetch_diff_local_fallback_empty(monkeypatch):
+def test_fetch_diff_local_fallback_empty_is_an_error_not_a_clean_skip(monkeypatch):
+    """The fallback only runs for PRs GitHub refused as >20,000 lines. An empty
+    result there is a contradiction -- a wrong checkout, or excludes that ate the
+    whole PR -- and must never exit 0 as "nothing to review"."""
+
     def fake_run(args):
         if args[:3] == ["gh", "pr", "diff"]:
             return _proc(returncode=1, stderr="too_large")
@@ -587,7 +591,7 @@ def test_fetch_diff_local_fallback_empty(monkeypatch):
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr(github, "_run", fake_run)
-    with pytest.raises(NothingToReview, match="empty diff against"):
+    with pytest.raises(PRNotFoundError, match="cannot have an empty diff"):
         github.fetch_diff("2")
 
 

@@ -447,10 +447,17 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
             "checkout -- see README."
         )
     if not diff.stdout.strip():
-        raise NothingToReview(
-            f"PR #{pr_number} has an empty diff against {repo_url}@{base_ref}. "
-            "This fallback requires the PR's head "
-            "branch to be checked out (see README); if it isn't, this diff "
-            "won't match the PR, or --exclude dropped every changed file."
+        # NOT a NothingToReview. Reaching here means GitHub refused this diff for
+        # being over ~20,000 lines, and the local recomputation of that same diff
+        # came back empty -- a contradiction. The only ways to produce it are a
+        # wrong checkout (the usual one: running `--pr N` from the base branch)
+        # or excludes that dropped all 20,000 lines. Exiting 0 here would post
+        # "Nothing to review" on the largest PR the tool ever sees.
+        raise PRNotFoundError(
+            f"PR #{pr_number}'s diff is too large for GitHub's API, and the "
+            f"local fallback produced an empty diff against {repo_url}@{base_ref}. "
+            "A PR that large cannot have an empty diff, so this is not a PR with "
+            "nothing in it: either the PR's head branch is not the current "
+            "checkout (see README), or --exclude dropped every changed file."
         )
     return diff.stdout

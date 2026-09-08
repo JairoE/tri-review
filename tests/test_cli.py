@@ -651,3 +651,63 @@ def test_a_normal_run_keeps_the_reviewer_cache_on(monkeypatch, tmp_path):
     CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
 
     assert seen["use_cache"] is True
+
+
+# --- adversarial review: the gates must not hand a skip to the diff fetch ----
+
+
+def test_a_truncated_file_list_keeps_lockfiles_in_the_payload(monkeypatch):
+    """The inconclusive branch used to return the payload exclude set.
+
+    On a lockfile-only PR whose file list came back short, those patterns strip
+    every changed file, `gh pr diff` returns nothing, and the run exits 0 as
+    `skipped:empty-diff` -- immediately after printing "Reviewing." The branch
+    that admits it cannot see the whole PR must be the most conservative one,
+    not the one that applies the widest exclude set.
+    """
+    from tri_review import cli as cli_module
+    from tri_review.config import default_excludes, skip_eligible_excludes
+
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files",
+        lambda *a, **k: (["uv.lock", "package-lock.json"], False),
+    )
+
+    _, effective = cli_module._gate_paths(
+        "42", "octocat/Hello-World", default_excludes(), skip_eligible_excludes()
+    )
+
+    assert "**/*.lock" not in effective
+    assert "package-lock.json" not in effective
+
+
+def test_the_skip_remedy_matches_who_did_the_excluding(monkeypatch):
+    """--no-default-excludes cannot lift a pattern the user typed themselves."""
+    _stub_github(monkeypatch, ["src/auth.py"])
+
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42", "--exclude", "src/**"],
+    )
+
+    assert result.exit_code == 0
+    assert "--no-default-excludes" not in result.output
+    assert "patterns you supplied" in result.output
+
+
+def test_code_under_docs_is_not_grounds_for_skipping(monkeypatch):
+    """`docs/**` was skip-eligible, so a Sphinx conf.py skipped at exit 0."""
+    _stub_github(monkeypatch, ["docs/conf.py", "docs/scripts/publish.sh"])
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)
+
+
+def test_a_source_file_named_after_the_changelog_is_still_source(monkeypatch):
+    """`**/CHANGELOG*` matched any basename starting with the word."""
+    _stub_github(monkeypatch, ["tools/CHANGELOG_generator.py"])
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)

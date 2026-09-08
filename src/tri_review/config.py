@@ -27,13 +27,24 @@ DEFAULT_MODEL_C = "gemini-3.7-flash"
 #
 # Tier one: prose and generated artifacts that carry no decision. A PR touching
 # only these has nothing to triangulate, so it is safe to skip outright.
+#
+# Every pattern here is anchored to an extension or an exact filename, and that
+# is the rule, not a coincidence: this tier's licence to skip a PR outright rests
+# on a glob being unable to be wrong about what it matched. A directory pattern
+# cannot make that promise. `docs/**` was here and matched `docs/conf.py` (Sphinx
+# config: executable Python, sys.path manipulation) and `docs/scripts/*.sh`
+# (deploy paths) -- code, skipped at exit 0 with no model call, under a comment
+# promising that only prose reached this tier. Prose under `docs/` is already
+# covered by the extension rules below; nothing was lost by removing it.
 SKIP_ELIGIBLE_EXCLUDES = (
     "**/*.md",
     "**/*.mdx",
     "**/*.rst",
-    "docs/**",
     "**/LICENSE",
-    "**/CHANGELOG*",
+    # `CHANGELOG*` (no separator) also matched `CHANGELOG_generator.py` and
+    # `CHANGELOGS.py` -- source files whose basename merely starts with the word.
+    "**/CHANGELOG",
+    "**/CHANGELOG.*",
     "**/*.snap",
     "**/__snapshots__/**",
     "**/*.png",
