@@ -44,6 +44,9 @@ outputs:
   exit-code:
     description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
     value: ${{ steps.run.outputs.exit-code }}
+  skipped:
+    description: "'true' when the PR held nothing worth reviewing (docs, lockfiles, generated files only) and no models were called."
+    value: ${{ steps.run.outputs.skipped }}
 
 runs:
   using: 'composite'
@@ -98,6 +101,11 @@ runs:
         echo "exit-code=$exit_code" >> "$GITHUB_OUTPUT"
         if [ -f report.md ]; then
           echo "report-path=report.md" >> "$GITHUB_OUTPUT"
+        elif [ "$exit_code" -eq 0 ]; then
+          # Exited clean without writing a report: every changed file matched an
+          # exclude pattern, so nothing was sent to any provider. That is a
+          # success, and must not be reported as "failed to produce a report".
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
         fi
         exit 0  # pass/fail is decided in the "Enforce result" step, after the comment is posted
 
@@ -120,6 +128,23 @@ runs:
 
         if [ -f report.md ]; then
           { echo "$marker"; echo; echo "$attribution"; echo; cat report.md; } > comment-body.md
+        elif [ "${{ steps.run.outputs.skipped }}" = "true" ]; then
+          {
+            echo "$marker"
+            echo
+            echo "$attribution"
+            echo
+            echo "**Nothing to review.** Every file this PR changes is documentation, a"
+            echo "lockfile, or generated output, so no models were called."
+            echo
+            echo '<details><summary>What was skipped</summary>'
+            echo
+            echo '```'
+            tail -c 60000 tri-review-output.txt 2>/dev/null
+            echo '```'
+            echo
+            echo '</details>'
+          } > comment-body.md
         else
           {
             echo "$marker"

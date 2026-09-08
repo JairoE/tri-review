@@ -188,6 +188,57 @@ this one; in repo/url mode it could be anywhere, including `/tmp`. Either way,
 exporting the keys in your shell profile is usually less trouble than keeping a
 `.env` in every directory you might run from.
 
+### What gets skipped
+
+A review costs three model calls against a payload that often runs past 100k
+tokens, so `tri-review` decides whether a PR is worth that **before** it spends
+anything. Two gates run first, both from the changed-file list alone — no diff
+body, no file contents, no provider calls:
+
+**Documentation and generated files are excluded by default.** Markdown, `docs/`,
+lockfiles, snapshots and images hold no program logic worth triangulating. On a
+mixed PR they are simply dropped from the payload, so the token budget goes to
+the code. On a PR that changes *nothing else*, the run stops:
+
+```
+$ tri-review --pr 51
+Nothing to review. All 3 file(s) changed by PR #51 match the exclude patterns,
+so there is no code to triangulate:
+  - README.md
+  - docs/setup.md
+  - CHANGELOG.md
+Re-run with --no-default-excludes to review them anyway.
+```
+
+That exits `0`, not an error — a docs-only PR is a pass, not a failure, and in
+CI it leaves a green check rather than a red one. `--no-default-excludes` turns
+the built-in set off when the prose itself is what you want reviewed;
+`TRI_REVIEW_EXCLUDE` replaces the set with your own. `--exclude` always *adds*
+to whatever is in effect.
+
+Note the gate is strictly path-based. A glob cannot be wrong about whether
+`README.md` is Markdown, which is what makes skipping on it safe to do
+automatically. Guessing that a change to `deploy.sh` is "only a comment" is a
+different problem with a much worse failure mode — silently not reviewing real
+code — so `tri-review` does not do it.
+
+**An unchanged PR replays its last review instead of buying a new one.** Each
+completed run is stored under `~/.cache/tri-review/`, keyed by repository and PR
+number, holding the report and every model's structured findings. Re-run against
+the same head commit and you get that report back instantly, for free:
+
+```
+$ tri-review --pr 51
+No change since the last review of a1b2c3d4 on 2026-09-08T14:02:11+00:00.
+Replaying it — pass --fresh to buy a new one.
+```
+
+The stored run is only reused when the head SHA, the model panel, and the
+exclude patterns all still match. Any of them changing makes the old report an
+answer to a different question, so it is discarded and the reason is printed.
+Push a fix and the SHA moves, so the next run is a real one — which is the
+normal loop: review, fix, push, review again.
+
 ### Choosing the panel
 
 Repeat `--model` to pick which models review the PR, overriding the configured slots:
@@ -229,6 +280,8 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_SYNTHESIZER` | same as model A | Model that cross-references the reviews |
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
 | `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds |
+| `TRI_REVIEW_EXCLUDE` | see `DEFAULT_EXCLUDES` | Comma- or newline-separated globs that replace the built-in skip set |
+| `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where per-PR review history is stored |
 
 The provider is chosen from the model ID prefix (`gpt-`, `o1`, `o3`, `o4`, `claude-`,
 `gemini`), so
@@ -240,13 +293,14 @@ standing default panel, and the flag for a one-off.
 
 ## How it behaves
 
+- **A PR with nothing to review is a success, not an error.** If every changed file is documentation, a lockfile, or generated output, the run stops at exit `0` before any model is called and names what it skipped. Exiting non-zero there would fail a CI check on a docs-only pull request, which is backwards.
 - **A model that fails does not sink the run.** If one provider is down, rate-limited, or missing a key, the other two still produce a report and the failure is noted at the top.
 - **Fewer than two reviews is an error.** A single-model review is just a code review, so `tri-review` exits non-zero rather than pretending it triangulated anything.
 - **Large PRs degrade rather than fail.** If the diff plus changed-file contents exceed the token budget, the largest files' contents are dropped (their diff hunks are kept) and the dropped files are named in a warning. If the diff *alone* busts the budget, that is called out too — no file contents can be included and the providers may reject the payload.
 - **Consensus between same-family models is labeled as weak.** If every reviewer that reported came from one provider, the report opens with a banner saying so rather than presenting their agreement as corroboration.
 - **The diff is untrusted input.** Paths in it are written by whoever opened the PR, so a diff header pointing outside the repository — via `../` or a symlink the PR adds — is refused and named in the run output instead of being read and shipped to the model providers.
 
-Exit codes: `0` success, `2` environment problem (no `gh`, not authenticated, not a repo, or a bad flag), `3` no such PR, `4` fewer than two reviews, `130` interrupted.
+Exit codes: `0` success — including a PR that held nothing worth reviewing, `2` environment problem (no `gh`, not authenticated, not a repo, or a bad flag), `3` no such PR, `4` fewer than two reviews, `130` interrupted.
 
 ## Sample output
 
@@ -321,11 +375,13 @@ cwd mode — the same local-checkout path described above, no `--repo`/`--url`
 needed. The report is posted as a PR comment and updated in place on every push
 (matched by a hidden marker), rather than piling up a new comment each time.
 
+A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. The action also exposes a `skipped` output (`'true'` when no models were called) alongside `report-path` and `exit-code`.
+
 | Input | Default | Purpose |
 |---|---|---|
 | `pr-number` | autodetected | Which PR to review; usually left unset |
 | `models` | the three configured slots | Space-separated model IDs, same rules as `--model` |
-| `exclude` | none | Newline-separated glob patterns, same as `--exclude` |
+| `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
 | `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
 | `post-comment` | `true` | Whether to post/update a PR comment |
 | `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |

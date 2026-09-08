@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from tri_review import github
-from tri_review.errors import PreflightError, PRNotFoundError
+from tri_review.errors import NothingToReview, PreflightError, PRNotFoundError
 
 
 def _proc(returncode=0, stdout="", stderr=""):
@@ -124,9 +124,17 @@ def test_fetch_diff_failure(monkeypatch):
 
 
 def test_fetch_diff_empty(monkeypatch):
+    """An empty diff is an outcome, not a missing PR -- it must not exit non-zero."""
     monkeypatch.setattr(github, "_run", lambda args: _proc(stdout="   \n"))
-    with pytest.raises(PRNotFoundError, match="empty diff"):
+    with pytest.raises(NothingToReview, match="empty diff"):
         github.fetch_diff("42")
+    assert NothingToReview.exit_code == 0
+
+
+def test_fetch_diff_empty_names_the_excludes_as_the_cause(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args: _proc(stdout=""))
+    with pytest.raises(NothingToReview, match="exclude patterns are applied"):
+        github.fetch_diff("42", exclude=("**/*.md",))
 
 
 # --- parse_pr_url -----------------------------------------------------------
@@ -579,5 +587,5 @@ def test_fetch_diff_local_fallback_empty(monkeypatch):
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr(github, "_run", fake_run)
-    with pytest.raises(PRNotFoundError, match="nothing to review locally"):
+    with pytest.raises(NothingToReview, match="empty diff against"):
         github.fetch_diff("2")

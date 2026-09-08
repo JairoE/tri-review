@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # Model IDs, one per reviewer slot. Deliberately mid-tier rather than each
 # provider's flagship: gpt-5.6-terra, claude-sonnet-5, and gemini-3.7-flash
@@ -19,6 +20,39 @@ import os
 DEFAULT_MODEL_A = "gpt-5.6-terra"
 DEFAULT_MODEL_B = "claude-sonnet-5"
 DEFAULT_MODEL_C = "gemini-3.7-flash"
+
+# Paths that are never worth three model calls. Documentation, lockfiles, and
+# generated or binary blobs either contain no program logic at all or contain
+# machine-written logic no reviewer would hand-edit. Excluding them by default
+# means a PR that only touches them is skipped outright, and a mixed PR spends
+# its token budget on the code instead of on prose.
+#
+# Deliberately absent: `requirements.txt`, `CODEOWNERS`, and anything else that
+# looks like documentation but changes behaviour or access. A dependency bump
+# and an ownership change are both exactly the kind of small, quiet diff worth
+# a second opinion.
+DEFAULT_EXCLUDES = (
+    "**/*.md",
+    "**/*.mdx",
+    "**/*.rst",
+    "docs/**",
+    "**/LICENSE",
+    "**/CHANGELOG*",
+    "**/*.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "go.sum",
+    "requirements-lock.txt",
+    "**/*.snap",
+    "**/__snapshots__/**",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.ico",
+    "**/*.pdf",
+)
 
 # Rough char-per-token ratio used to estimate context size without a tokenizer.
 CHARS_PER_TOKEN = 4
@@ -63,3 +97,33 @@ def model_timeout() -> int:
 
 def estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
+
+
+def default_excludes() -> tuple[str, ...]:
+    """The built-in exclude set, or TRI_REVIEW_EXCLUDE in its place.
+
+    Replaces rather than extends, mirroring how TRI_REVIEW_MODEL_A replaces a
+    slot: this is the knob for "my standing default set", and a user who wants
+    the built-ins plus their own can pass the extras as --exclude, which always
+    adds. Accepts a comma- or newline-separated list.
+    """
+    raw = os.environ.get("TRI_REVIEW_EXCLUDE")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_EXCLUDES
+    parts = [p.strip() for p in raw.replace(",", "\n").splitlines()]
+    return tuple(p for p in parts if p)
+
+
+def history_dir() -> Path:
+    """Where per-PR review history is kept.
+
+    A user cache directory rather than the repository, so it works identically
+    in --repo mode (where there is no checkout to write into) and never needs a
+    .gitignore entry. CI runners get a fresh one each run, which is correct: a
+    new push is a new head SHA and would miss the cache anyway.
+    """
+    override = os.environ.get("TRI_REVIEW_HISTORY_DIR")
+    if override and override.strip():
+        return Path(override.strip()).expanduser()
+    base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
+    return Path(base).expanduser() / "tri-review"

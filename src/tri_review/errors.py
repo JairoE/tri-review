@@ -25,3 +25,16 @@ class InsufficientReviewsError(TriReviewError):
     """Fewer than two models returned a review, so there is nothing to triangulate."""
 
     exit_code = 4
+
+
+class NothingToReview(Exception):
+    """The PR holds nothing worth spending a review on.
+
+    Deliberately *not* a `TriReviewError`. This is an outcome, not a failure:
+    the tool looked, correctly determined there was no code to triangulate, and
+    stopped before spending anything. Reporting it as an error would fail a CI
+    check on a docs-only pull request, which is precisely backwards -- and it is
+    what exit code 3 (`PRNotFoundError`, "no such PR") used to do here.
+    """
+
+    exit_code = 0

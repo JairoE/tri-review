@@ -13,8 +13,8 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from . import context, github
-from .errors import TriReviewError
+from . import config, context, gating, github, history
+from .errors import NothingToReview, TriReviewError
 
 console = Console()
 
@@ -75,6 +75,23 @@ console = Console()
         "generated clients, or fixtures can bring it under the line."
     ),
 )
+@click.option(
+    "--no-default-excludes",
+    is_flag=True,
+    help=(
+        "Review documentation, lockfiles and generated blobs too, instead of "
+        "skipping them. Use this when the prose itself is what you want a "
+        "second opinion on."
+    ),
+)
+@click.option(
+    "--fresh",
+    is_flag=True,
+    help=(
+        "Ignore any stored review of this PR and buy a new one, even if nothing "
+        "has changed since the last run."
+    ),
+)
 @click.version_option(package_name="tri-review")
 def main(
     pr: str | None,
@@ -84,13 +101,20 @@ def main(
     models: tuple[str, ...],
     output: Path | None,
     excludes: tuple[str, ...],
+    no_default_excludes: bool,
+    fresh: bool,
 ) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
     load_dotenv()
     try:
         if url:
             repo, pr = _merge_url(url, repo, pr)
-        _run(pr, repo, dry_run, models, output, excludes)
+        _run(pr, repo, dry_run, models, output, excludes, no_default_excludes, fresh)
+    except NothingToReview as exc:
+        # Not a failure: nothing was found worth spending on, and nothing was
+        # spent. Exiting non-zero here would fail a CI check on a docs-only PR.
+        console.print(f"[bold green]Nothing to review.[/bold green] {exc}")
+        sys.exit(0)
     except TriReviewError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(exc.exit_code)
@@ -162,6 +186,68 @@ def _resolve_models(selected: tuple[str, ...]) -> list[str]:
     return models
 
 
+def _resolve_excludes(explicit: tuple[str, ...], skip_defaults: bool) -> tuple[str, ...]:
+    """Combine the built-in exclude set with the user's, unless they opted out.
+
+    --exclude always adds rather than replaces: someone narrowing a huge diff
+    with `--exclude '**/fixtures/**'` is not also asking to start reviewing
+    lockfiles. Replacing the whole set is what TRI_REVIEW_EXCLUDE is for.
+    """
+    base = () if skip_defaults else config.default_excludes()
+    return tuple(dict.fromkeys((*base, *explicit)))
+
+
+def _gate_paths(pr_number: str, repo: str | None, patterns: tuple[str, ...]) -> list[str]:
+    """Stop before spending anything if nothing the PR touches is worth reviewing.
+
+    The cheapest gate there is: one metadata call, no diff body, no file reads,
+    no model calls. Only path globs decide here -- a pattern cannot be wrong
+    about whether `README.md` is Markdown, which is what makes skipping on it
+    safe to do automatically.
+    """
+    paths, complete = github.fetch_changed_files(pr_number, repo)
+    reviewable, excluded = gating.partition(paths, patterns)
+
+    if reviewable or not paths:
+        # An empty file list is not a skip decision -- let the diff fetch report
+        # what is actually going on with the PR.
+        return excluded
+    if not complete:
+        # The list may have been truncated by pagination, so "everything is
+        # excluded" might only be true of the part we were shown. Reviewing a
+        # PR that did not need it costs money; not reviewing one that did costs
+        # the user the entire point of the tool.
+        console.print(
+            "[yellow]Note: this PR changes too many files to list in one page, "
+            "so the skip check was inconclusive. Reviewing.[/yellow]"
+        )
+        return excluded
+
+    listing = "\n".join(f"  - {escape(path)}" for path in excluded[:20])
+    if len(excluded) > 20:
+        listing += f"\n  ... and {len(excluded) - 20} more"
+    raise NothingToReview(
+        f"All {len(excluded)} file(s) changed by PR #{pr_number} match the "
+        f"exclude patterns, so there is no code to triangulate:\n{listing}\n"
+        "Re-run with --no-default-excludes to review them anyway."
+    )
+
+
+def _repo_identity(repo: str | None, meta: dict) -> str | None:
+    """The "owner/name" this PR belongs to, for keying its stored history.
+
+    In --repo mode the caller already said. In cwd mode it is read back off the
+    PR's own URL rather than by asking gh a second question. Returns None if it
+    cannot be determined, which costs the run its history and nothing else.
+    """
+    if repo:
+        return repo
+    try:
+        return github.parse_pr_url(meta.get("url") or "")[0]
+    except Exception:  # noqa: BLE001 - no identity just means no cache
+        return None
+
+
 def _run(
     pr: str | None,
     repo: str | None,
@@ -169,20 +255,36 @@ def _run(
     selected: tuple[str, ...],
     output: Path | None,
     excludes: tuple[str, ...],
+    no_default_excludes: bool = False,
+    fresh: bool = False,
 ) -> None:
-    # Imported here so --help and --dry-run stay fast and key-free.
-    from .graph import build_review_graph
-
     models = _resolve_models(selected)
+    patterns = _resolve_excludes(excludes, no_default_excludes)
 
     github.preflight(repo)
     pr_number = pr or github.detect_pr(repo)
 
+    skipped = _gate_paths(pr_number, repo, patterns)
+    if skipped:
+        console.print(
+            f"[dim]Skipping {len(skipped)} excluded file(s): "
+            f"{escape(', '.join(skipped[:5]))}"
+            + (f", +{len(skipped) - 5} more" if len(skipped) > 5 else "")
+            + "[/dim]"
+        )
+
     if dry_run:
-        ctx = context.preview_context(pr_number, repo, excludes)
+        ctx = context.preview_context(pr_number, repo, patterns)
         _print_context(pr_number, ctx)
         console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
         console.print("[dim]--dry-run: stopping before any model call.[/dim]")
+        return
+
+    meta = github.fetch_pr_meta(pr_number, repo)
+    head_sha = meta["head_sha"]
+    identity = _repo_identity(repo, meta)
+
+    if identity and not fresh and _replay(identity, pr_number, head_sha, models, patterns, output):
         return
 
     console.print(
@@ -193,28 +295,100 @@ def _run(
         )
     )
 
+    # Imported here, and below every path that returns early, because pulling in
+    # langgraph drags langchain_core's runnables in with it -- tens of seconds
+    # before a single line is printed. A run that decides to spend nothing must
+    # not pay for the machinery it decided not to use, which is the whole point
+    # of the gates above. (The import used to sit at the top of this function,
+    # where its "keeps --dry-run fast" comment was not actually true.)
+    from .graph import build_review_graph
+
     app = build_review_graph(models=models)
-    report = _stream_graph(app, pr_number, repo, excludes, len(models))
+    report, results = _stream_graph(app, pr_number, repo, patterns, len(models), head_sha)
 
     console.print()
     console.print(Markdown(report))
 
-    if output:
-        try:
-            output.write_text(report, encoding="utf-8")
-        except OSError as exc:
-            # The report is already on screen and the models are already paid
-            # for, so a bad path is a warning, not a failed run.
-            console.print(f"\n[yellow]Could not write {output}: {exc}[/yellow]")
-        else:
-            console.print(f"\n[green]Wrote report to[/green] {output}")
+    _write_output(report, output)
+
+    if identity:
+        saved = history.save(
+            history.RunRecord(
+                repo=identity,
+                pr=str(pr_number),
+                head_sha=head_sha,
+                models=list(models),
+                excludes=list(patterns),
+                report=report,
+                results=results,
+            )
+        )
+        if saved is None:
+            # Said out loud, because the visible consequence is the next run
+            # paying for this same review again with no explanation.
+            console.print(
+                "[yellow]Could not store this review, so re-running will not "
+                "replay it. Set TRI_REVIEW_HISTORY_DIR to a writable path.[/yellow]"
+            )
+
+
+def _replay(
+    identity: str,
+    pr_number: str,
+    head_sha: str,
+    models: list[str],
+    patterns: tuple[str, ...],
+    output: Path | None,
+) -> bool:
+    """Print the stored review if it still answers the question. True if it did."""
+    record = history.load(identity, str(pr_number))
+    if record is None:
+        return False
+
+    reason = history.stale_reason(record, head_sha, models, patterns)
+    if reason is not None:
+        console.print(f"[dim]Stored review is out of date ({reason}). Reviewing.[/dim]")
+        return False
+
+    console.print(
+        f"[bold green]No change since the last review[/bold green] of "
+        f"{head_sha[:8]} on {record.created_at}. Replaying it — pass --fresh to "
+        "buy a new one.\n"
+    )
+    console.print(Markdown(record.report))
+    _write_output(record.report, output)
+    return True
+
+
+def _write_output(report: str, output: Path | None) -> None:
+    if not output:
+        return
+    try:
+        output.write_text(report, encoding="utf-8")
+    except OSError as exc:
+        # The report is already on screen and the models are already paid
+        # for, so a bad path is a warning, not a failed run.
+        console.print(f"\n[yellow]Could not write {output}: {exc}[/yellow]")
+    else:
+        console.print(f"\n[green]Wrote report to[/green] {output}")
 
 
 def _stream_graph(
-    app, pr_number: str, repo: str | None, excludes: tuple[str, ...], model_count: int
-) -> str:
-    """Drive the graph, reporting each node's outcome as it lands."""
+    app,
+    pr_number: str,
+    repo: str | None,
+    excludes: tuple[str, ...],
+    model_count: int,
+    head_sha: str = "",
+) -> tuple[str, list]:
+    """Drive the graph, reporting each node's outcome as it lands.
+
+    Returns the report and the individual results. The results are what a later
+    run compares against to say which findings were resolved, so they have to
+    survive the graph rather than being folded into prose and discarded.
+    """
     report = ""
+    results: list = []
 
     with Progress(
         SpinnerColumn(),
@@ -227,6 +401,9 @@ def _stream_graph(
         initial = {
             "pr_number": pr_number,
             "repo": repo or "",
+            # Already resolved by the caller, which needed it for the no-op
+            # gate. Passing it on saves the context node a second lookup.
+            "head_ref": head_sha,
             "excludes": excludes,
             "results": [],
         }
@@ -240,12 +417,13 @@ def _stream_graph(
                     # In "updates" mode each chunk carries only that node's
                     # own contribution, so this is exactly one result.
                     for result in update.get("results", []):
+                        results.append(result)
                         _print_result(result, via=progress.console)
                 elif node == "synthesize":
                     progress.update(task, description="Synthesizing...")
                     report = update["final_report"]
 
-    return report
+    return report, results
 
 
 def _print_result(result, via=console) -> None:

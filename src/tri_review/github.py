@@ -19,7 +19,7 @@ import shutil
 import subprocess
 from urllib.parse import quote, urlparse
 
-from .errors import PreflightError, PRNotFoundError
+from .errors import NothingToReview, PreflightError, PRNotFoundError
 
 _GH_TIMEOUT = 60
 
@@ -183,6 +183,42 @@ def detect_pr(repo: str | None = None) -> str:
     return str(number)
 
 
+# GitHub's GraphQL file connection is paginated, and `gh pr view --json files`
+# takes the first page. A list at exactly this length may therefore be truncated,
+# and a gate that skipped a review on a truncated list would skip real code it
+# never saw. Callers treat that case as "cannot decide" rather than "nothing here".
+FILE_PAGE_SIZE = 100
+
+
+def fetch_changed_files(pr_number: str, repo: str | None = None) -> tuple[list[str], bool]:
+    """Return (paths, complete) for a PR, without fetching the diff body.
+
+    Cheap enough to run before deciding whether a review is worth buying: it is
+    one metadata call, where the diff is a second call and the file contents are
+    one network read per changed file on top of that.
+
+    `complete` is False when the list may have been cut off by pagination, which
+    is the caller's signal not to make a skip decision from it.
+    """
+    result = _run(
+        ["gh", "pr", "view", str(pr_number), "--json", "files", *_repo_args(repo)]
+    )
+    if result.returncode != 0:
+        raise PRNotFoundError(
+            f"Could not list the files changed by PR #{pr_number}"
+            + (f" in {repo}" if repo else "")
+            + f".\ngh said: {result.stderr.strip() or 'no detail'}"
+        )
+    try:
+        files = json.loads(result.stdout).get("files") or []
+        paths = [str(f["path"]) for f in files if f.get("path")]
+    except (json.JSONDecodeError, AttributeError, TypeError, KeyError):
+        raise PRNotFoundError(
+            f"Could not read a file list from gh output: {result.stdout.strip()!r}"
+        ) from None
+    return paths, len(paths) < FILE_PAGE_SIZE
+
+
 def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...] = ()) -> str:
     """Return the unified diff for a pull request, minus any excluded paths.
 
@@ -213,7 +249,10 @@ def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...]
             f"gh said: {result.stderr.strip() or 'no detail'}"
         )
     if not result.stdout.strip():
-        raise PRNotFoundError(f"PR #{pr_number} has an empty diff -- nothing to review.")
+        raise NothingToReview(
+            f"PR #{pr_number} has an empty diff"
+            + (" once the exclude patterns are applied." if exclude else ".")
+        )
     return result.stdout
 
 
@@ -367,9 +406,9 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
             "checkout -- see README."
         )
     if not diff.stdout.strip():
-        raise PRNotFoundError(
-            f"PR #{pr_number} has an empty diff against {repo_url}@{base_ref} -- "
-            "nothing to review locally. This fallback requires the PR's head "
+        raise NothingToReview(
+            f"PR #{pr_number} has an empty diff against {repo_url}@{base_ref}. "
+            "This fallback requires the PR's head "
             "branch to be checked out (see README); if it isn't, this diff "
             "won't match the PR, or --exclude dropped every changed file."
         )
