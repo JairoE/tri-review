@@ -19,6 +19,13 @@ inputs:
     description: 'Fail the check if fewer than two models report (exit code 4). If false, posts a warning comment instead of failing.'
     required: false
     default: 'true'
+  triage:
+    description: >
+      Ask the cheapest model whether the diff changes behaviour at all, and skip
+      the review when it plainly does not. Off by default: it costs a model call
+      and, unlike the path-based skip, it can be wrong.
+    required: false
+    default: 'false'
   post-comment:
     description: 'Post, or update, a PR comment with the report.'
     required: false
@@ -44,6 +51,16 @@ outputs:
   exit-code:
     description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
     value: ${{ steps.run.outputs.exit-code }}
+  skipped:
+    description: "'true' when no review was produced because nothing in the PR needed one."
+    value: ${{ steps.run.outputs.skipped }}
+  skip-reason:
+    description: >
+      Which gate stopped the run: 'path' (every changed file is documentation or
+      generated), 'empty-diff', or 'triage' (a model judged the diff to change no
+      behaviour). Only 'path' and 'empty-diff' mean no provider call was made at
+      all; 'triage' means one cheap call was spent reaching that verdict.
+    value: ${{ steps.run.outputs.skip-reason }}
 
 runs:
   using: 'composite'
@@ -80,6 +97,7 @@ runs:
         INPUT_PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         INPUT_MODELS: ${{ inputs.models }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_TRIAGE: ${{ inputs.triage }}
       run: |
         set +e
         args=(--output report.md)
@@ -90,6 +108,7 @@ runs:
         while IFS= read -r pattern; do
           [ -n "$pattern" ] && args+=(--exclude "$pattern")
         done <<< "$INPUT_EXCLUDE"
+        [ "$INPUT_TRIAGE" = "true" ] && args+=(--triage)
 
         tri-review "${args[@]}" 2>&1 | tee tri-review-output.txt
         exit_code="${PIPESTATUS[0]}"
@@ -98,6 +117,14 @@ runs:
         echo "exit-code=$exit_code" >> "$GITHUB_OUTPUT"
         if [ -f report.md ]; then
           echo "report-path=report.md" >> "$GITHUB_OUTPUT"
+        elif [ "$exit_code" -eq 0 ]; then
+          # Exited clean without writing a report: a gate decided the PR did not
+          # need one. That is a success, and must not be reported as "failed to
+          # produce a report". The CLI prints a stable status line naming the
+          # gate, because a path skip and a triage skip are not the same event.
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          reason="$(sed -n 's/^tri-review-status: skipped:\(.*\)$/\1/p' tri-review-output.txt | tail -1)"
+          echo "skip-reason=${reason:-unknown}" >> "$GITHUB_OUTPUT"
         fi
         exit 0  # pass/fail is decided in the "Enforce result" step, after the comment is posted
 
@@ -120,6 +147,43 @@ runs:
 
         if [ -f report.md ]; then
           { echo "$marker"; echo; echo "$attribution"; echo; cat report.md; } > comment-body.md
+        elif [ "${{ steps.run.outputs.skipped }}" = "true" ]; then
+          # Each gate is a different event and must not read as another one.
+          # A path skip spent nothing and knows exactly why; a triage skip spent
+          # a model call on a judgement that can be wrong; an empty diff is not a
+          # claim about file types at all. This branch used to assert
+          # "documentation or generated output" for every non-triage reason,
+          # including the `unknown` fallback the sed above writes when it finds
+          # no status line -- a specific, checkable, false claim about the PR.
+          case "${{ steps.run.outputs.skip-reason }}" in
+            triage)
+              headline="**Nothing to review.** A model read the diff and judged that it changes no behaviour. That is a judgement, not a path rule, so it can be wrong -- re-run with \`--no-triage\` (or set the \`triage\` input to \`false\`) to review it anyway."
+              ;;
+            path)
+              headline="**Nothing to review.** Every file this PR changes is documentation or generated output, so no models were called."
+              ;;
+            empty-diff)
+              headline="**Nothing to review.** This PR's diff came back empty, so there was nothing to send to any model. This is not a statement about what kind of files it changes -- see the output below for what was asked for and what came back."
+              ;;
+            *)
+              headline="**Nothing to review.** A gate stopped this run before any model was called, but it did not name itself (skip-reason: \`${{ steps.run.outputs.skip-reason }}\`). Treat this as unreviewed and check the output below."
+              ;;
+          esac
+          {
+            echo "$marker"
+            echo
+            echo "$attribution"
+            echo
+            echo "$headline"
+            echo
+            echo '<details><summary>What was skipped</summary>'
+            echo
+            echo '```'
+            tail -c 60000 tri-review-output.txt 2>/dev/null
+            echo '```'
+            echo
+            echo '</details>'
+          } > comment-body.md
         else
           {
             echo "$marker"

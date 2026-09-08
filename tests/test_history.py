@@ -1,0 +1,192 @@
+"""Stored runs must replay only when they still answer the same question."""
+
+import json
+
+from tri_review import history
+from tri_review.schema import Finding, ReviewResult
+
+
+def _record(**overrides):
+    base = dict(
+        repo="octocat/Hello-World",
+        pr="42",
+        head_sha="abc123def456",
+        models=["gpt-5.6-terra", "claude-sonnet-5"],
+        excludes=["**/*.md"],
+        report="## Consensus Findings\n\nNone.",
+        results=[
+            ReviewResult(
+                model="gpt-5.6-terra",
+                findings=[
+                    Finding(
+                        file="auth.py",
+                        line=7,
+                        severity="critical",
+                        category="security",
+                        title="MD5 password hash",
+                        detail="Fast and unsalted.",
+                    )
+                ],
+            )
+        ],
+    )
+    base.update(overrides)
+    return history.RunRecord(**base)
+
+
+def test_findings_survive_the_roundtrip(tmp_path):
+    """Structured findings, not just the prose, are what a later diff compares."""
+    history.save(_record(), tmp_path)
+    loaded = history.load("octocat/Hello-World", "42", tmp_path)
+    assert loaded is not None
+    assert loaded.results[0].findings[0].title == "MD5 password hash"
+    assert loaded.results[0].findings[0].line == 7
+    assert loaded.head_sha == "abc123def456"
+
+
+def test_missing_history_is_a_miss_not_an_error(tmp_path):
+    assert history.load("octocat/Hello-World", "1", tmp_path) is None
+
+
+def test_corrupt_history_is_a_miss_not_a_crash(tmp_path):
+    path = history.path_for("octocat/Hello-World", "42", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json at all", encoding="utf-8")
+    assert history.load("octocat/Hello-World", "42", tmp_path) is None
+
+
+def test_a_future_schema_is_a_miss(tmp_path):
+    """The record must be rejected for its version, not for being unparseable.
+
+    The old fixture here was `{"schema": 999, "repo": "x/y"}` -- too incomplete
+    for the dataclass to build, so it would have passed just as well with the
+    version check deleted. The check is real; this test was not testing it. Give
+    it a body that parses cleanly, so only the version can do the rejecting.
+    """
+    record = _record()
+    path = history.save(record, tmp_path)
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert history.load("octocat/Hello-World", "42", tmp_path) is not None
+
+    stored["schema"] = history.SCHEMA_VERSION + 998
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    assert history.load("octocat/Hello-World", "42", tmp_path) is None
+
+
+def test_repo_name_cannot_escape_the_history_directory(tmp_path):
+    path = history.path_for("../../etc/passwd", "1", tmp_path)
+    assert path.parent == tmp_path
+    assert ".." not in path.name
+
+
+def test_an_unwritable_directory_does_not_sink_a_paid_run(tmp_path):
+    blocker = tmp_path / "cache"
+    blocker.write_text("I am a file, not a directory", encoding="utf-8")
+    assert history.save(_record(), blocker) is None
+
+
+def test_replays_when_nothing_changed():
+    record = _record()
+    assert (
+        history.stale_reason(
+            record, "abc123def456", ["gpt-5.6-terra", "claude-sonnet-5"], ("**/*.md",)
+        )
+        is None
+    )
+
+
+def test_a_new_head_sha_is_different_code():
+    reason = history.stale_reason(
+        _record(), "999fff", ["gpt-5.6-terra", "claude-sonnet-5"], ("**/*.md",)
+    )
+    assert reason is not None and "moved on" in reason
+
+
+def test_a_changed_panel_answers_a_different_question():
+    """Replaying Sonnet's review when Opus was asked for would be a wrong answer."""
+    reason = history.stale_reason(
+        _record(), "abc123def456", ["gpt-5.6-terra", "claude-opus-5"], ("**/*.md",)
+    )
+    assert reason is not None and "panel changed" in reason
+
+
+def test_changed_excludes_mean_a_different_slice_of_the_pr():
+    reason = history.stale_reason(
+        _record(), "abc123def456", ["gpt-5.6-terra", "claude-sonnet-5"], ()
+    )
+    assert reason is not None and "exclude" in reason
+
+
+def test_an_unknown_head_sha_never_replays():
+    """Without a SHA to compare, "unchanged" cannot be established."""
+    assert history.stale_reason(_record(), "", ["gpt-5.6-terra", "claude-sonnet-5"], ("**/*.md",))
+
+
+def test_an_empty_stored_report_is_not_worth_replaying():
+    reason = history.stale_reason(
+        _record(report="  "), "abc123def456", ["gpt-5.6-terra", "claude-sonnet-5"], ("**/*.md",)
+    )
+    assert reason is not None and "no report" in reason
+
+
+def test_identities_that_flatten_alike_do_not_share_a_file(tmp_path):
+    """`a/b` and `a-b` flatten to the same slug; they must not share a record."""
+    first = history.path_for("octo/cat-repo", "1", tmp_path)
+    second = history.path_for("octo-cat/repo", "1", tmp_path)
+    assert first != second
+
+
+def test_a_record_written_for_another_repo_is_never_replayed(tmp_path):
+    """Whatever the filename says, a record only answers for its own identity."""
+    history.save(_record(repo="octocat/Hello-World", pr="42"), tmp_path)
+    stored = history.path_for("octocat/Hello-World", "42", tmp_path)
+    impostor = history.path_for("evilcorp/Hello-World", "42", tmp_path)
+    impostor.write_bytes(stored.read_bytes())
+
+    assert history.load("evilcorp/Hello-World", "42", tmp_path) is None
+    assert history.load("octocat/Hello-World", "42", tmp_path) is not None
+
+
+def test_a_record_for_another_pr_number_is_never_replayed(tmp_path):
+    history.save(_record(pr="42"), tmp_path)
+    stored = history.path_for("octocat/Hello-World", "42", tmp_path)
+    impostor = history.path_for("octocat/Hello-World", "43", tmp_path)
+    impostor.write_bytes(stored.read_bytes())
+
+    assert history.load("octocat/Hello-World", "43", tmp_path) is None
+
+
+def test_a_run_missing_a_reviewer_is_not_replayed_as_a_full_one(tmp_path):
+    """A 2-of-3 report replayed forever means the flaked model is never re-called.
+
+    The README promises the opposite: that a re-run after a flake re-buys only
+    the model that failed. Report-level replay defeated it -- `stale_reason`
+    compared the *requested* panel, which still matched. Marking the record stale
+    hands the retry to the per-model cache, which is where that promise lives.
+    """
+    degraded = _record(
+        results=[
+            ReviewResult(model="gpt-5.6-terra", findings=[]),
+            ReviewResult(model="claude-sonnet-5", ok=False, error="connection error"),
+        ]
+    )
+    reason = history.stale_reason(
+        degraded, degraded.head_sha, degraded.models, tuple(degraded.excludes)
+    )
+    assert reason is not None and "claude-sonnet-5" in reason
+
+
+def test_a_run_where_every_model_reported_still_replays(tmp_path):
+    """The guard above must not turn every stored run into a miss."""
+    healthy = _record(
+        results=[
+            ReviewResult(model="gpt-5.6-terra", findings=[]),
+            ReviewResult(model="claude-sonnet-5", findings=[]),
+        ]
+    )
+    assert (
+        history.stale_reason(
+            healthy, healthy.head_sha, healthy.models, tuple(healthy.excludes)
+        )
+        is None
+    )

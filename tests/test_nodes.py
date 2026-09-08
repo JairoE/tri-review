@@ -124,3 +124,94 @@ def test_unknown_model_id_is_rejected():
 )
 def test_provider_is_read_from_the_model_id(model_name, expected):
     assert provider_of(model_name) == expected
+
+
+# --- the exact reviewer cache ----------------------------------------------
+
+
+class _CountingBuilder:
+    """Builds an LLM and records how many times a provider was actually reached."""
+
+    def __init__(self, output=None, raises=None):
+        self.calls = 0
+        self._output = output
+        self._raises = raises
+
+    def __call__(self, _model):
+        self.calls += 1
+        return FakeLLM(output=self._output, raises=self._raises)
+
+
+def test_an_identical_call_is_not_bought_twice():
+    builder = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+
+    first = review_with("cache-model", "same payload", llm_builder=builder)
+    second = review_with("cache-model", "same payload", llm_builder=builder)
+
+    assert builder.calls == 1
+    assert second.cached is True and first.cached is False
+    assert second.findings[0].title == first.findings[0].title
+
+
+def test_a_changed_payload_is_a_different_question():
+    """One line different is a different review, however similar it looks."""
+    builder = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+
+    review_with("cache-model", "payload v1", llm_builder=builder)
+    review_with("cache-model", "payload v2", llm_builder=builder)
+
+    assert builder.calls == 2
+
+
+def test_a_different_model_does_not_inherit_another_models_opinion():
+    builder = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+
+    review_with("model-a", "same payload", llm_builder=builder)
+    review_with("model-b", "same payload", llm_builder=builder)
+
+    assert builder.calls == 2
+
+
+def test_a_failure_is_retried_rather_than_replayed():
+    """The point of the cache is that a flaked provider is the only one re-called."""
+    failing = _CountingBuilder(raises=RuntimeError("provider exploded"))
+
+    first = review_with("flaky-model", "payload", llm_builder=failing)
+    second = review_with("flaky-model", "payload", llm_builder=failing)
+
+    assert not first.ok and not second.ok
+    assert failing.calls == 2
+
+
+def test_a_retry_after_a_flake_reuses_the_reviews_already_paid_for():
+    """Two models landed, one did not. The retry must only re-call the one."""
+    good = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+    bad = _CountingBuilder(raises=RuntimeError("connection error"))
+
+    review_with("steady-model", "shared payload", llm_builder=good)
+    review_with("flaky-model", "shared payload", llm_builder=bad)
+
+    review_with("steady-model", "shared payload", llm_builder=good)
+    review_with("flaky-model", "shared payload", llm_builder=bad)
+
+    assert good.calls == 1
+    assert bad.calls == 2
+
+
+def test_the_cache_can_be_switched_off():
+    builder = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+
+    review_with("cache-model", "payload", llm_builder=builder)
+    review_with("cache-model", "payload", llm_builder=builder, use_cache=False)
+
+    assert builder.calls == 2
+
+
+def test_review_nodes_pass_the_cache_setting_through():
+    builder = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+    state = {"payload": "node payload"}
+
+    make_review_node("node-model", builder, use_cache=False)(state)
+    make_review_node("node-model", builder, use_cache=False)(state)
+
+    assert builder.calls == 2

@@ -39,6 +39,10 @@ class ReviewResult(BaseModel):
     model: str
     findings: list[Finding] = Field(default_factory=list)
     error: str | None = None
+    # Set when this came from the on-disk cache rather than a provider call.
+    # Reported to the user because "3 models agreed" reads differently once you
+    # know two of them last ran an hour ago against the same bytes.
+    cached: bool = False
 
     @property
     def ok(self) -> bool:
