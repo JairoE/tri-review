@@ -4,6 +4,17 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Cancel a still-running review for this PR when a newer commit arrives, rather
+# than letting both finish. Two runs racing to post and minimize comments on the
+# same PR is not a hard-constraint failure -- nothing goes unreviewed -- but it
+# can leave two "current" reports visible if neither run sees the other's post
+# before it lists prior comments. A cancelled run is also a wasted set of model
+# calls the newer commit's own run is about to repeat, so this cuts real cost
+# too, not just comment-history noise.
+concurrency:
+  group: tri-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   pull-requests: write
   contents: read

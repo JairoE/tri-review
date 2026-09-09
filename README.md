@@ -27,6 +27,11 @@ Reviews every PR automatically. Nothing to install on your machine.
    permissions:
      contents: read
      pull-requests: write
+     # `pull-requests: write` is enough to post the report comment. Without
+     # `issues: write` too, a superseded report is folded into a collapsed
+     # <details> block instead of GitHub's native "marked as outdated" -- see
+     # "Each run posts its own comment" under GitHub Action, below.
+     issues: write
 
    jobs:
      review:
@@ -443,6 +448,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   review:

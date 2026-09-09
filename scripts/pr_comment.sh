@@ -35,11 +35,15 @@ resolve_bot_login() {
   printf '%s' "$login"
 }
 
-# Our prior report comments, oldest first, as `id<TAB>node_id`.
+# Our prior report comments, oldest first, as `id<TAB>node_id<TAB>base64(body)`.
+# The body rides along from this one listing call so nothing downstream needs a
+# second GET per comment -- a PR with a long review history would otherwise pay
+# for that on every single run, forever, once the token lacks `issues: write`
+# (see collapse_comment).
 prior_comments() {
   local login="$1"
   gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
-    ".[] | select(.user.login == \"$login\") | select(.body | startswith(\"$MARKER\")) | [.id, .node_id] | @tsv"
+    ".[] | select(.user.login == \"$login\") | select(.body | startswith(\"$MARKER\")) | [.id, .node_id, (.body | @base64)] | @tsv"
 }
 
 # `gh api -f key=@file` does not read from a file -- only `--input` does, and
@@ -58,14 +62,26 @@ patch_comment() {
 # Of the given node ids, print those GitHub does not already consider hidden.
 # Without this every run would re-minimize every previous run's comment: harmless
 # but a mutation per comment per commit, growing with the length of the PR.
+#
+# GitHub's node(ids:) lookup accepts at most 100 ids per call -- silently fewer
+# results, not an error, if handed more -- so a PR with a longer review history
+# than that is batched rather than truncated. The `-f "ids[]=$id"` repeated-flag
+# form of building a GraphQL list argument was checked against the live API
+# before relying on it here (a single node id round-tripped through `gh api
+# graphql` with real comment ids on this repo's own PR history).
 not_yet_minimized() {
-  local args=() id
-  for id in "$@"; do args+=(-f "ids[]=$id"); done
-  [ ${#args[@]} -eq 0 ] && return 0
-  gh api graphql "${args[@]}" -f query='
-    query($ids: [ID!]!) {
-      nodes(ids: $ids) { ... on IssueComment { id isMinimized } }
-    }' --jq '.data.nodes[] | select(.isMinimized == false) | .id' 2>/dev/null || true
+  local all=("$@") start=0 batch id args
+  [ ${#all[@]} -eq 0 ] && return 0
+  while [ "$start" -lt "${#all[@]}" ]; do
+    batch=("${all[@]:$start:100}")
+    args=()
+    for id in "${batch[@]}"; do args+=(-f "ids[]=$id"); done
+    gh api graphql "${args[@]}" -f query='
+      query($ids: [ID!]!) {
+        nodes(ids: $ids) { ... on IssueComment { id isMinimized } }
+      }' --jq '.data.nodes[] | select(.isMinimized == false) | .id' 2>/dev/null || true
+    start=$((start + 100))
+  done
 }
 
 # GitHub has no "resolve" for issue comments -- resolvable threads exist only for
@@ -86,10 +102,11 @@ minimize_comment() {
 # `pull-requests: write` that posting needs, and a token that cannot do it must
 # still not leave two reports looking equally current. Folding the old body into
 # a <details> is the degraded form of the same idea, done with the PATCH
-# permission we are already known to have.
+# permission we are already known to have. The body is passed in rather than
+# fetched here -- see prior_comments and reconcile_older -- but the check stays
+# as a guard in case a future caller ever invokes this directly.
 collapse_comment() {
-  local id="$1" body superseded
-  body=$(gh api "repos/$REPO/issues/comments/$id" --jq '.body' 2>/dev/null) || return 1
+  local id="$1" body="$2" superseded
   case "$body" in *"$SUPERSEDED_MARKER"*) return 0 ;; esac
 
   superseded="Superseded by the review of \`${COMMIT_SHA:-a later commit}\`"
@@ -107,20 +124,91 @@ collapse_comment() {
     | gh api "repos/$REPO/issues/comments/$id" -X PATCH --input - >/dev/null
 }
 
+# Hide every comment described by oldest-first `id<TAB>node_id<TAB>base64(body)`
+# lines on stdin: minimize it natively where the token allows, otherwise fold
+# it. Shared by append mode (reconciling every prior report) and update mode
+# (reconciling append-mode history left behind by a mode switch).
+#
+# Reads its own input rather than taking array arguments -- bash namerefs
+# (`local -n`) need bash 4.3+, and this script's own shebang is `env bash`:
+# a consumer running the Action on a macOS runner, or testing it against the
+# system bash on a Mac, gets bash 3.2, which does not have them.
+#
+# A comment already folded into a <details> block is skipped entirely -- no
+# GraphQL retry, no PATCH -- rather than re-attempted every run. That check is a
+# plain string match on the body already in hand, so it costs nothing, and it is
+# a one-way trip: this script has no way to notice a permission grant after the
+# fact and go back to natively minimize something already folded. Given the
+# choice between that and paying for a failing mutation on every historical
+# comment on every future run, the folded comment staying folded is the
+# better trade.
+reconcile_older() {
+  local pending_ids=() pending_nodes=() pending_bodies=()
+  local id node_id body_b64 body
+
+  while IFS=$'\t' read -r id node_id body_b64; do
+    [ -n "$id" ] || continue
+    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || true)
+    case "$body" in *"$SUPERSEDED_MARKER"*) continue ;; esac
+    pending_ids+=("$id")
+    pending_nodes+=("$node_id")
+    pending_bodies+=("$body_b64")
+  done
+  [ ${#pending_nodes[@]} -eq 0 ] && return 0
+
+  local target j
+  while read -r target; do
+    [ -n "$target" ] || continue
+    # One retry before treating this as a permission problem -- a rate limit
+    # or a momentary API hiccup is not the same fact as the token lacking
+    # `issues: write`, and folding is a one-way trip (see above), so a
+    # transient failure should not spend it.
+    if minimize_comment "$target" || minimize_comment "$target"; then
+      continue
+    fi
+    for j in "${!pending_nodes[@]}"; do
+      if [ "${pending_nodes[$j]}" = "$target" ]; then
+        body=$(printf '%s' "${pending_bodies[$j]}" | base64 --decode 2>/dev/null || true)
+        collapse_comment "${pending_ids[$j]}" "$body" || true
+        break
+      fi
+    done
+  done <<< "$(not_yet_minimized "${pending_nodes[@]}")"
+}
+
 main() {
-  local login prior ids=() node_ids=() line id node_id
+  local login prior ids=() node_ids=() bodies=() id node_id body_b64
+
   login=$(resolve_bot_login)
   prior=$(prior_comments "$login" || true)
 
-  while IFS=$'\t' read -r id node_id; do
+  while IFS=$'\t' read -r id node_id body_b64; do
     [ -n "$id" ] || continue
     ids+=("$id")
     node_ids+=("$node_id")
+    bodies+=("$body_b64")
   done <<< "$prior"
 
   if [ "$MODE" = "update" ]; then
     if [ ${#ids[@]} -gt 0 ]; then
-      patch_comment "${ids[0]}"
+      # Prior comments are oldest-first (see prior_comments) -- the current
+      # report is the LAST one, not the first. Picking ids[0] here edited the
+      # oldest comment forever once append-mode history existed on the PR: the
+      # edit landed on a comment nobody was looking at, and every real report
+      # after it was left sitting there unminimized.
+      local last=$(( ${#ids[@]} - 1 ))
+      patch_comment "${ids[$last]}"
+      # A PR that switched from append mode to update mode still has whatever
+      # append-mode history it accumulated. Reconcile it the same way append
+      # mode would, so the switch actually yields one current visible report
+      # rather than one edited comment plus a trail of untouched ones.
+      if [ "$last" -gt 0 ]; then
+        local blob="" k
+        for ((k = 0; k < last; k++)); do
+          blob+="${ids[$k]}"$'\t'"${node_ids[$k]}"$'\t'"${bodies[$k]}"$'\n'
+        done
+        reconcile_older <<< "$blob"
+      fi
     else
       post_comment
     fi
@@ -131,23 +219,7 @@ main() {
   # fails, the PR is left with two visible reports; if posting is what fails
   # after a minimize, the PR is left with none visible at all.
   post_comment
-
-  [ ${#node_ids[@]} -eq 0 ] && return 0
-  local target
-  while read -r target; do
-    [ -n "$target" ] || continue
-    if ! minimize_comment "$target"; then
-      # Map the node id back to the REST id for the PATCH fallback.
-      local i=0
-      while [ $i -lt ${#node_ids[@]} ]; do
-        if [ "${node_ids[$i]}" = "$target" ]; then
-          collapse_comment "${ids[$i]}" || true
-          break
-        fi
-        i=$((i + 1))
-      done
-    fi
-  done <<< "$(not_yet_minimized "${node_ids[@]}")"
+  reconcile_older <<< "$prior"
 }
 
 main "$@"
