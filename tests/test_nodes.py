@@ -5,18 +5,30 @@ from tri_review.providers import build_llm, provider_of
 from tri_review.schema import Finding, ReviewOutput
 
 
+class _FakeRaw:
+    """Stands in for the raw AIMessage `include_raw=True` hands back."""
+
+    def __init__(self, usage_metadata=None):
+        self.usage_metadata = usage_metadata
+
+
 class FakeLLM:
-    def __init__(self, output=None, raises=None):
+    def __init__(self, output=None, raises=None, usage_metadata=None):
         self._output = output
         self._raises = raises
+        self._usage_metadata = usage_metadata
 
-    def with_structured_output(self, _schema):
+    def with_structured_output(self, _schema, include_raw=False):
         return self
 
     def invoke(self, _messages):
         if self._raises:
             raise self._raises
-        return self._output
+        return {
+            "raw": _FakeRaw(self._usage_metadata),
+            "parsed": self._output,
+            "parsing_error": None,
+        }
 
 
 def _finding(**kw):
@@ -92,6 +104,40 @@ def test_builder_failure_is_recorded_not_raised():
     assert "missing API key" in result.error
 
 
+def test_empty_findings_after_reasoning_exhaustion_is_flagged_low_confidence():
+    """A schema-valid empty answer that ate almost the whole output budget on
+    reasoning must not be reported as an ordinary clean pass."""
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[]),
+        usage_metadata={"output_tokens": 6907, "output_token_details": {"reasoning": 6898}},
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.findings == []
+    assert result.low_confidence_reason is not None
+    assert "6898" in result.low_confidence_reason
+
+
+def test_genuine_clean_diff_is_not_flagged_low_confidence():
+    """No reasoning-heavy usage metadata at all -- an ordinary clean pass."""
+    llm = FakeLLM(output=ReviewOutput(findings=[]))
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.findings == []
+    assert result.low_confidence_reason is None
+
+
+def test_real_findings_are_never_flagged_low_confidence_even_with_heavy_reasoning():
+    """A finding means the model demonstrably did the work -- reasoning ratio is moot."""
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[_finding()]),
+        usage_metadata={"output_tokens": 6907, "output_token_details": {"reasoning": 6898}},
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.low_confidence_reason is None
+
+
 def test_none_output_is_treated_as_no_findings():
     llm = FakeLLM(output=None)
     result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
@@ -132,14 +178,15 @@ def test_provider_is_read_from_the_model_id(model_name, expected):
 class _CountingBuilder:
     """Builds an LLM and records how many times a provider was actually reached."""
 
-    def __init__(self, output=None, raises=None):
+    def __init__(self, output=None, raises=None, usage_metadata=None):
         self.calls = 0
         self._output = output
         self._raises = raises
+        self._usage_metadata = usage_metadata
 
     def __call__(self, _model):
         self.calls += 1
-        return FakeLLM(output=self._output, raises=self._raises)
+        return FakeLLM(output=self._output, raises=self._raises, usage_metadata=self._usage_metadata)
 
 
 def test_an_identical_call_is_not_bought_twice():
