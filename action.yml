@@ -27,9 +27,17 @@ inputs:
     required: false
     default: 'false'
   post-comment:
-    description: 'Post, or update, a PR comment with the report.'
+    description: 'Post a PR comment with the report.'
     required: false
     default: 'true'
+  comment-mode:
+    description: >
+      'append' posts a new comment for every run and marks the previous ones
+      outdated, so the PR keeps the whole review history in order. 'update'
+      edits a single comment in place, which keeps a long PR quiet but leaves
+      no record of what earlier commits were told.
+    required: false
+    default: 'append'
   github-token:
     description: 'Token used for gh auth and for posting the PR comment.'
     required: false
@@ -128,7 +136,7 @@ runs:
         fi
         exit 0  # pass/fail is decided in the "Enforce result" step, after the comment is posted
 
-    - name: Post or update PR comment
+    - name: Post PR comment
       if: ${{ inputs.post-comment == 'true' && (inputs.pr-number || github.event.pull_request.number) }}
       shell: bash
       env:
@@ -136,18 +144,24 @@ runs:
         PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         REPO: ${{ github.repository }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        MODE: ${{ inputs.comment-mode }}
+        SKIPPED: ${{ steps.run.outputs.skipped }}
+        SKIP_REASON: ${{ steps.run.outputs.skip-reason }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        BODY_FILE: comment-body.md
+        MARKER: '<!-- tri-review-report -->'
       run: |
-        marker='<!-- tri-review-report -->'
         # GitHub always shows a comment's original post time, not its last edit,
-        # so an in-place update (see the PATCH below) can look stale even seconds
-        # after it ran. This line is the visible proof of freshness: which run
-        # produced this exact body, and which commit it reviewed.
+        # so an in-place update can look stale even seconds after it ran. This
+        # line is the visible proof of freshness: which run produced this exact
+        # body, and which commit it reviewed. In append mode it is also what
+        # tells two adjacent reports apart.
         commit_sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
         attribution="_Posted by [workflow run]($RUN_URL) reviewing commit \`$commit_sha\`._"
 
         if [ -f report.md ]; then
-          { echo "$marker"; echo; echo "$attribution"; echo; cat report.md; } > comment-body.md
-        elif [ "${{ steps.run.outputs.skipped }}" = "true" ]; then
+          { echo "$MARKER"; echo; echo "$attribution"; echo; cat report.md; } > "$BODY_FILE"
+        elif [ "$SKIPPED" = "true" ]; then
           # Each gate is a different event and must not read as another one.
           # A path skip spent nothing and knows exactly why; a triage skip spent
           # a model call on a judgement that can be wrong; an empty diff is not a
@@ -155,7 +169,7 @@ runs:
           # "documentation or generated output" for every non-triage reason,
           # including the `unknown` fallback the sed above writes when it finds
           # no status line -- a specific, checkable, false claim about the PR.
-          case "${{ steps.run.outputs.skip-reason }}" in
+          case "$SKIP_REASON" in
             triage)
               headline="**Nothing to review.** A model read the diff and judged that it changes no behaviour. That is a judgement, not a path rule, so it can be wrong -- re-run with \`--no-triage\` (or set the \`triage\` input to \`false\`) to review it anyway."
               ;;
@@ -166,11 +180,11 @@ runs:
               headline="**Nothing to review.** This PR's diff came back empty, so there was nothing to send to any model. This is not a statement about what kind of files it changes -- see the output below for what was asked for and what came back."
               ;;
             *)
-              headline="**Nothing to review.** A gate stopped this run before any model was called, but it did not name itself (skip-reason: \`${{ steps.run.outputs.skip-reason }}\`). Treat this as unreviewed and check the output below."
+              headline="**Nothing to review.** A gate stopped this run before any model was called, but it did not name itself (skip-reason: \`$SKIP_REASON\`). Treat this as unreviewed and check the output below."
               ;;
           esac
           {
-            echo "$marker"
+            echo "$MARKER"
             echo
             echo "$attribution"
             echo
@@ -183,14 +197,14 @@ runs:
             echo '```'
             echo
             echo '</details>'
-          } > comment-body.md
+          } > "$BODY_FILE"
         else
           {
-            echo "$marker"
+            echo "$MARKER"
             echo
             echo "$attribution"
             echo
-            echo "**tri-review failed to produce a report** (exit code ${{ steps.run.outputs.exit-code }})."
+            echo "**tri-review failed to produce a report** (exit code $EXIT_CODE)."
             echo
             echo '<details><summary>Output</summary>'
             echo
@@ -199,37 +213,10 @@ runs:
             echo '```'
             echo
             echo '</details>'
-          } > comment-body.md
+          } > "$BODY_FILE"
         fi
 
-        # Scope the marker match to our own posting identity -- otherwise anyone
-        # who can comment on the PR could craft a comment starting with the same
-        # marker and have it treated as "the" report comment on the next run.
-        # `gh api user` fails for the default GITHUB_TOKEN (a bot identity, not a
-        # real user), which is exactly when the well-known bot login is correct;
-        # a custom github-token (a PAT) resolves to its own real login instead.
-        #
-        # The fallback stays OUTSIDE the substitution. Inside it -- `$(cmd || echo
-        # fallback)` -- both halves' stdout are captured, and `gh api` prints its
-        # error body to stdout, not stderr: a 403 produced the literal
-        # `{"message":"Resource not accessible by integration",...}github-actions[bot]`
-        # and broke the jq filter below with `unexpected token "message"`.
-        bot_login=$(gh api user --jq '.login' 2>/dev/null) || bot_login=""
-        [ -n "$bot_login" ] || bot_login="github-actions[bot]"
-
-        existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
-          ".[] | select(.user.login == \"$bot_login\") | select(.body | startswith(\"$marker\")) | .id" | head -1)
-
-        # `gh api -f key=@file` does not read from a file -- only `--input` does,
-        # and that replaces the whole request body. Build the JSON body ourselves
-        # so a report full of backticks/quotes/newlines can't break the request.
-        body_json=$(jq -n --rawfile body comment-body.md '{body: $body}')
-
-        if [ -n "$existing" ]; then
-          echo "$body_json" | gh api "repos/$REPO/issues/comments/$existing" -X PATCH --input -
-        else
-          echo "$body_json" | gh api "repos/$REPO/issues/$PR_NUMBER/comments" -X POST --input -
-        fi
+        COMMIT_SHA="$commit_sha" bash "${{ github.action_path }}/scripts/pr_comment.sh"
 
     - name: Enforce result
       shell: bash

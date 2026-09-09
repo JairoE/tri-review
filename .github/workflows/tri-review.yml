@@ -4,9 +4,26 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Cancel a still-running review for this PR when a newer commit arrives, rather
+# than letting both finish. Two runs racing to post and minimize comments on the
+# same PR is not a hard-constraint failure -- nothing goes unreviewed -- but it
+# can leave two "current" reports visible if neither run sees the other's post
+# before it lists prior comments. A cancelled run is also a wasted set of model
+# calls the newer commit's own run is about to repeat, so this cuts real cost
+# too, not just comment-history noise.
+concurrency:
+  group: tri-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   pull-requests: write
   contents: read
+  # Posting a comment needs only `pull-requests: write`; marking the previous
+  # run's comment outdated is a moderation action and needs `issues: write` too.
+  # Without it the Action still works -- it falls back to folding the old report
+  # into a <details> block -- but the native "marked as outdated" collapse is
+  # what you get with this line present.
+  issues: write
 
 jobs:
   review:

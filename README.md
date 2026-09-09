@@ -27,6 +27,11 @@ Reviews every PR automatically. Nothing to install on your machine.
    permissions:
      contents: read
      pull-requests: write
+     # `pull-requests: write` is enough to post the report comment. Without
+     # `issues: write` too, a superseded report is folded into a collapsed
+     # <details> block instead of GitHub's native "marked as outdated" -- see
+     # "Each run posts its own comment" under GitHub Action, below.
+     issues: write
 
    jobs:
      review:
@@ -51,7 +56,8 @@ Reviews every PR automatically. Nothing to install on your machine.
    repository (or organization) secrets under **Settings → Secrets and variables →
    Actions**.
 3. Open a pull request. `tri-review` runs automatically and posts its report as a
-   PR comment, updating the same comment on every subsequent push.
+   PR comment. Every push gets its own comment, and the previous one is marked
+   outdated and collapsed, so the PR keeps the whole review history in order.
 
 No `gh` login, no Python install, no per-developer setup — the workflow does all
 of it inside CI. See [GitHub Action](#github-action) below for the full list of
@@ -442,6 +448,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   review:
@@ -464,8 +471,24 @@ jobs:
 
 The runner's own checkout already has the PR branch, so this runs the CLI's normal
 cwd mode — the same local-checkout path described above, no `--repo`/`--url`
-needed. The report is posted as a PR comment and updated in place on every push
-(matched by a hidden marker), rather than piling up a new comment each time.
+needed. Each run posts its own comment (matched by a hidden marker) and marks
+the previous ones outdated, so the PR records what every commit was told rather
+than overwriting it. Reviews are a record of what was checked and when; a single
+comment edited in place loses which findings were raised against which commit,
+and whether a finding was answered or silently disappeared on the next push.
+
+GitHub has no "resolve" for ordinary PR comments — resolvable threads exist only
+for comments anchored to a line of the diff, and a whole-PR report is not
+anchored to a line. The native equivalent is what the comment menu's **Hide**
+does, and that is what the Action calls: the superseded report collapses behind
+*"This comment was marked as outdated"*, still open-able, still in the timeline.
+
+Hiding a comment needs more permission than posting one. If the workflow's token
+cannot do it, the Action falls back to editing the old report into a collapsed
+`<details>` block with a line saying which commit superseded it — the same idea
+with the permission it is already known to have. Nothing is ever deleted. Set
+`comment-mode: update` to go back to a single comment edited in place, which is
+quieter on a long-running PR at the cost of that history.
 
 A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, or `triage`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, and `triage` means one cheap call was spent reaching a verdict that can be wrong.
 
@@ -476,7 +499,8 @@ A PR the gates skip posts a short "Nothing to review" comment and passes, rather
 | `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
 | `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
 | `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
-| `post-comment` | `true` | Whether to post/update a PR comment |
+| `post-comment` | `true` | Whether to post a PR comment at all |
+| `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
 | `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
 | `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
 
