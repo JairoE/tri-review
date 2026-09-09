@@ -103,6 +103,12 @@ def review_with(
         raw_result = structured.invoke(
             [SystemMessage(content=REVIEW_PROMPT), HumanMessage(content=payload)]
         )
+        parsing_error = raw_result.get("parsing_error")
+        if parsing_error is not None:
+            # include_raw=True makes a parse failure land here instead of
+            # raising -- without this check it is indistinguishable from a
+            # genuine empty review and gets cached as one.
+            raise parsing_error
         output = raw_result["parsed"]
         findings = output.findings if output is not None else []
         result = ReviewResult(
@@ -121,23 +127,29 @@ def review_with(
 
 
 _MIN_ANSWER_TOKENS = 20  # provisional -- calibrated on 2 live samples, both landed at ~9
-
+_MIN_REASONING_TOKENS_FOR_CONCERN = 500  # provisional -- same 2 samples used 1734+/6898
 
 def _low_confidence_reason(raw_message, findings: list) -> str | None:
     """Flag an empty result that may be reasoning-budget exhaustion, not a real review.
 
-    A schema-valid `{"findings": []}` is indistinguishable from a genuine clean
-    pass unless something else is off -- so check whether the model spent nearly
-    its entire output budget on internal reasoning and had almost nothing left to
-    write an actual answer with. Only applies to empty findings: a real finding
-    means the model demonstrably did the work.
+    A schema-valid `{"findings": []}` is only ever a handful of tokens no matter
+    why the model landed there -- so a small leftover answer alone would flag
+    *every* empty result from a reasoning model, including ones that reasoned
+    briefly and legitimately concluded the diff was clean. The reasoning-token
+    floor is what actually distinguishes "spent its whole budget and gave up"
+    from "did a normal amount of thinking and found nothing". Only applies to
+    empty findings: a real finding means the model demonstrably did the work.
     """
     if findings:
         return None
     usage = getattr(raw_message, "usage_metadata", None) or {}
     reasoning = (usage.get("output_token_details") or {}).get("reasoning", 0)
     output = usage.get("output_tokens", 0)
-    if reasoning and output - reasoning <= _MIN_ANSWER_TOKENS:
+    if reasoning <= 0 or output <= 0 or reasoning > output:
+        return None
+    if reasoning < _MIN_REASONING_TOKENS_FOR_CONCERN:
+        return None
+    if output - reasoning <= _MIN_ANSWER_TOKENS:
         return (
             f"empty findings after spending {reasoning}/{output} output tokens on "
             "internal reasoning -- likely reasoning-budget exhaustion, not a verified clean review"

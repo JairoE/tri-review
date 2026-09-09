@@ -13,10 +13,11 @@ class _FakeRaw:
 
 
 class FakeLLM:
-    def __init__(self, output=None, raises=None, usage_metadata=None):
+    def __init__(self, output=None, raises=None, usage_metadata=None, parsing_error=None):
         self._output = output
         self._raises = raises
         self._usage_metadata = usage_metadata
+        self._parsing_error = parsing_error
 
     def with_structured_output(self, _schema, include_raw=False):
         return self
@@ -27,7 +28,7 @@ class FakeLLM:
         return {
             "raw": _FakeRaw(self._usage_metadata),
             "parsed": self._output,
-            "parsing_error": None,
+            "parsing_error": self._parsing_error,
         }
 
 
@@ -125,6 +126,50 @@ def test_genuine_clean_diff_is_not_flagged_low_confidence():
     assert result.ok
     assert result.findings == []
     assert result.low_confidence_reason is None
+
+
+def test_light_reasoning_then_genuinely_clean_is_not_flagged_low_confidence():
+    """A small leftover-answer ratio alone must not flag this -- {"findings": []}
+    is only ever a handful of tokens whether or not anything went wrong. Only a
+    model that burned a substantial reasoning budget and still landed empty
+    should be flagged."""
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[]),
+        usage_metadata={"output_tokens": 59, "output_token_details": {"reasoning": 50}},
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.low_confidence_reason is None
+
+
+def test_inconsistent_usage_metadata_is_not_flagged_low_confidence():
+    """Reasoning tokens exceeding output tokens is nonsensical provider data,
+    not evidence of anything -- must not produce a misleading message."""
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[]),
+        usage_metadata={"output_tokens": 10, "output_token_details": {"reasoning": 50}},
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.low_confidence_reason is None
+
+
+def test_parsing_failure_is_recorded_as_an_error_not_cached_as_empty_findings():
+    """include_raw=True lets a parse failure land in `parsing_error` without
+    raising -- this must still surface as a real failure, not a silent clean
+    pass that then gets cached as one."""
+    builder = _CountingBuilder()
+    llm = FakeLLM(parsing_error=ValueError("could not parse model output as ReviewOutput"))
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert not result.ok
+    assert "could not parse model output" in result.error
+    assert result.findings == []
+
+    # And a parsing failure must not be cached as a false "clean" answer --
+    # the next call has to actually retry, not replay the same broken result.
+    retried = review_with("fake-model", "payload", llm_builder=builder)
+    assert builder.calls == 1
+    assert retried.ok
 
 
 def test_real_findings_are_never_flagged_low_confidence_even_with_heavy_reasoning():
