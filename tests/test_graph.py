@@ -7,6 +7,10 @@ from tri_review.errors import InsufficientReviewsError
 from tri_review.schema import Finding, ReviewOutput
 
 
+class _StubRaw:
+    usage_metadata = None
+
+
 class StubLLM:
     """Stands in for a provider. Optionally sleeps, to prove branches run concurrently."""
 
@@ -15,7 +19,7 @@ class StubLLM:
         self.delay = delay
         self.raises = raises
 
-    def with_structured_output(self, _schema):
+    def with_structured_output(self, _schema, include_raw=False):
         return self
 
     def invoke(self, _messages):
@@ -23,7 +27,7 @@ class StubLLM:
             time.sleep(self.delay)
         if self.raises:
             raise self.raises
-        return ReviewOutput(
+        parsed = ReviewOutput(
             findings=[
                 Finding(
                     file="a.py",
@@ -35,6 +39,7 @@ class StubLLM:
                 )
             ]
         )
+        return {"raw": _StubRaw(), "parsed": parsed, "parsing_error": None}
 
 
 @pytest.fixture

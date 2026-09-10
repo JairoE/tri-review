@@ -32,6 +32,12 @@ You receive structured findings from multiple AI reviewers who did not see each
 other's work. Findings that describe the same underlying issue are corroborated
 and high-trust; findings only one model reported are unverified.
 
+A reviewer entry may carry a non-null `low_confidence_reason`. This means that
+reviewer's empty findings list is inconclusive, not a verified clean pass --
+treat it as though that reviewer did not weigh in at all. Never cite a
+low-confidence reviewer's silence as corroboration that the diff is clean, and
+never count it as a second independent "no issues found" opinion.
+
 Produce a Markdown report with exactly these three sections:
 
 ## Consensus Findings
@@ -99,12 +105,23 @@ def review_with(
 
     try:
         llm = llm_builder(model_name)
-        structured = llm.with_structured_output(ReviewOutput)
-        output = structured.invoke(
+        structured = llm.with_structured_output(ReviewOutput, include_raw=True)
+        raw_result = structured.invoke(
             [SystemMessage(content=REVIEW_PROMPT), HumanMessage(content=payload)]
         )
+        parsing_error = raw_result.get("parsing_error")
+        if parsing_error is not None:
+            # include_raw=True makes a parse failure land here instead of
+            # raising -- without this check it is indistinguishable from a
+            # genuine empty review and gets cached as one.
+            raise parsing_error
+        output = raw_result["parsed"]
         findings = output.findings if output is not None else []
-        result = ReviewResult(model=model_name, findings=findings)
+        result = ReviewResult(
+            model=model_name,
+            findings=findings,
+            low_confidence_reason=_low_confidence_reason(raw_result["raw"], findings),
+        )
     except Exception as exc:  # noqa: BLE001 - one flaky provider must not abort the run
         # Deliberately not cached. Storing a failure would make the retry this
         # cache exists to cheapen return the same failure for free.
@@ -113,6 +130,45 @@ def review_with(
     if key is not None:
         cache.save(key, result)
     return result
+
+
+_MIN_ANSWER_TOKENS = 20  # provisional -- calibrated on 2 live samples, both landed at ~9
+_MIN_REASONING_TOKENS_FOR_CONCERN = 500  # provisional -- same 2 samples used 1734+/6898
+
+def _low_confidence_reason(raw_message, findings: list) -> str | None:
+    """Flag an empty result that may be reasoning-budget exhaustion, not a real review.
+
+    A schema-valid `{"findings": []}` is only ever a handful of tokens no matter
+    why the model landed there -- so a small leftover answer alone would flag
+    *every* empty result from a reasoning model, including ones that reasoned
+    briefly and legitimately concluded the diff was clean. The reasoning-token
+    floor is what actually distinguishes "spent its whole budget and gave up"
+    from "did a normal amount of thinking and found nothing". Only applies to
+    empty findings: a real finding means the model demonstrably did the work.
+    """
+    if findings:
+        return None
+    usage = getattr(raw_message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        # Absent or a provider-specific shape LangChain didn't normalize --
+        # either way, no signal to act on. A malformed shape here must not
+        # turn an otherwise-successful empty review into a reported failure.
+        return None
+    details = usage.get("output_token_details")
+    reasoning = details.get("reasoning", 0) if isinstance(details, dict) else 0
+    output = usage.get("output_tokens", 0)
+    if not isinstance(reasoning, int) or not isinstance(output, int):
+        return None
+    if reasoning <= 0 or output <= 0 or reasoning > output:
+        return None
+    if reasoning < _MIN_REASONING_TOKENS_FOR_CONCERN:
+        return None
+    if output - reasoning <= _MIN_ANSWER_TOKENS:
+        return (
+            f"empty findings after spending {reasoning}/{output} output tokens on "
+            "internal reasoning -- likely reasoning-budget exhaustion, not a verified clean review"
+        )
+    return None
 
 
 def _describe_error(exc: Exception) -> str:
@@ -165,12 +221,16 @@ def _synthesize(succeeded, failed, llm_builder) -> str:
     """Ask a model to cross-reference the structured findings into one report."""
     payload = json.dumps(
         [
-            {"model": r.model, "findings": [f.model_dump() for f in r.findings]}
+            {
+                "model": r.model,
+                "findings": [f.model_dump() for f in r.findings],
+                "low_confidence_reason": r.low_confidence_reason,
+            }
             for r in succeeded
         ],
         indent=2,
     )
-    header = _failure_note(failed) + _diversity_note(succeeded)
+    header = _failure_note(failed) + _diversity_note(succeeded) + _low_confidence_note(succeeded)
 
     try:
         llm = llm_builder(config.synthesizer_model())
@@ -205,6 +265,24 @@ def _diversity_note(succeeded) -> str:
         "provider share training data and failure modes, so agreement between them is much "
         "weaker evidence than cross-provider consensus. Read the sections below as one "
         "opinion stated repeatedly, not as independent corroboration.\n\n"
+    )
+
+
+def _low_confidence_note(succeeded) -> str:
+    """Warn about reviewers whose empty result may be reasoning-budget exhaustion.
+
+    Without this, a suspect empty result reads identically to a genuine clean
+    pass in the synthesized report -- silently weakening both "unique insight"
+    attribution and cross-model consensus.
+    """
+    flagged = [r for r in succeeded if r.low_confidence_reason]
+    if not flagged:
+        return ""
+    lines = "\n".join(f"- `{r.model}`: {r.low_confidence_reason}" for r in flagged)
+    return (
+        f"> **{len(flagged)} reviewer(s) returned 0 findings flagged low-confidence.** "
+        "Do not read these as a clean pass or as corroboration.\n"
+        f"{lines}\n\n"
     )
 
 

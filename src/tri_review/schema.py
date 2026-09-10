@@ -43,6 +43,10 @@ class ReviewResult(BaseModel):
     # Reported to the user because "3 models agreed" reads differently once you
     # know two of them last ran an hour ago against the same bytes.
     cached: bool = False
+    # Set when the model returned zero findings after spending nearly its whole
+    # output budget on internal reasoning -- a schema-valid but low-confidence
+    # empty answer, indistinguishable from a genuine clean pass unless flagged.
+    low_confidence_reason: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -96,6 +100,11 @@ def render_findings_md(result: ReviewResult) -> str:
         )
 
     if not result.findings:
+        if result.low_confidence_reason:
+            return (
+                f"_{result.model} returned 0 findings but is flagged low-confidence: "
+                f"{result.low_confidence_reason}. Treat as inconclusive, not a clean pass._\n"
+            )
         return f"_{result.model} found no issues in this diff._\n"
 
     ordered = sorted(

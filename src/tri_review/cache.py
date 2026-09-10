@@ -24,7 +24,7 @@ from pathlib import Path
 from . import config
 from .schema import ReviewResult
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # bumped: parsing failures used to be cached as empty findings
 
 
 def _directory() -> Path:

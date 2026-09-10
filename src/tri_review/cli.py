@@ -566,6 +566,13 @@ def _print_result(result, via=console) -> None:
         count = len(result.findings)
         noun = "finding" if count == 1 else "findings"
         suffix = " [dim](cached)[/dim]" if getattr(result, "cached", False) else ""
+        low_confidence = getattr(result, "low_confidence_reason", None)
+        if not result.findings and low_confidence:
+            via.print(
+                f"  [yellow]OK?[/yellow] {result.model} — 0 findings "
+                f"[dim](low confidence: {escape(low_confidence)}){suffix}[/dim]"
+            )
+            return
         via.print(f"  [green]OK[/green] {result.model} — {count} {noun}{suffix}")
     else:
         via.print(f"  [red]FAIL[/red] {result.model} — {escape(str(result.error))}")
