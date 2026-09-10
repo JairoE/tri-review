@@ -36,12 +36,42 @@ jobs:
       # actions/checkout defaults to the pull_request event's synthetic merge
       # commit, not the PR's actual head -- pin to the head SHA explicitly so
       # the checked-out file contents match the diff tri-review reviews.
-      - uses: actions/checkout@v4
+      #
+      # Everything this step writes into the workspace is PR-authored and
+      # therefore untrusted. It is read as *data* -- tri-review reads changed
+      # file bodies out of the working tree (see context.filesystem_reader) and
+      # falls back to a local `git diff` on diffs too large for GitHub's API.
+      # Nothing in this job may execute it. See the step below.
+      #
+      # persist-credentials: false because checkout otherwise leaves the job's
+      # GITHUB_TOKEN in .git/config as an http.extraheader, where any later step
+      # running PR-authored code inherits write access to this repo for free.
+      # tri-review never needs it: `gh` is authenticated through the GH_TOKEN
+      # env var the Action sets explicitly, and the large-diff fallback fetches
+      # this repo over its public HTTPS URL, which needs no credential.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
+      # Pinned to a released commit rather than `uses: ./`.
+      #
+      # `./` ran the action.yml from the checkout above -- PR-authored code --
+      # as a composite action, with this job's environment secrets passed in as
+      # inputs. GitHub withholds secrets from fork pull_request runs, but every
+      # branch pushed to this repo opens a PR that does get them, so any such
+      # branch could rewrite action.yml and walk out with all three provider
+      # keys and a write-scoped token. Reviewing a diff must never mean running
+      # it.
+      #
+      # The runner unpacks a remote action under its own github.action_path, so
+      # the `pip install "${{ github.action_path }}"` inside installs the
+      # released source; the PR checkout stays in the workspace as the data
+      # tri-review reads. Consequence worth knowing: this reviews PRs with the
+      # last release, not with the PR's own src/ changes. Bump this SHA when a
+      # new version is released.
       - name: Run tri-review on this PR
-        uses: ./
+        uses: JairoE/tri-review@1b504c1bf0049f26de4d77c22d34713df2284d14  # v1.0.0
         with:
           pr-number: ${{ github.event.pull_request.number }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
