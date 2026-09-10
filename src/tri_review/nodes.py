@@ -32,6 +32,12 @@ You receive structured findings from multiple AI reviewers who did not see each
 other's work. Findings that describe the same underlying issue are corroborated
 and high-trust; findings only one model reported are unverified.
 
+A reviewer entry may carry a non-null `low_confidence_reason`. This means that
+reviewer's empty findings list is inconclusive, not a verified clean pass --
+treat it as though that reviewer did not weigh in at all. Never cite a
+low-confidence reviewer's silence as corroboration that the diff is clean, and
+never count it as a second independent "no issues found" opinion.
+
 Produce a Markdown report with exactly these three sections:
 
 ## Consensus Findings
@@ -142,9 +148,17 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
     """
     if findings:
         return None
-    usage = getattr(raw_message, "usage_metadata", None) or {}
-    reasoning = (usage.get("output_token_details") or {}).get("reasoning", 0)
+    usage = getattr(raw_message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        # Absent or a provider-specific shape LangChain didn't normalize --
+        # either way, no signal to act on. A malformed shape here must not
+        # turn an otherwise-successful empty review into a reported failure.
+        return None
+    details = usage.get("output_token_details")
+    reasoning = details.get("reasoning", 0) if isinstance(details, dict) else 0
     output = usage.get("output_tokens", 0)
+    if not isinstance(reasoning, int) or not isinstance(output, int):
+        return None
     if reasoning <= 0 or output <= 0 or reasoning > output:
         return None
     if reasoning < _MIN_REASONING_TOKENS_FOR_CONCERN:

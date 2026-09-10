@@ -154,6 +154,17 @@ def test_inconsistent_usage_metadata_is_not_flagged_low_confidence():
     assert result.low_confidence_reason is None
 
 
+def test_malformed_usage_metadata_shape_does_not_fail_an_otherwise_ok_review():
+    """A non-dict usage_metadata (an unexpected provider/SDK shape) must not
+    raise out of the low-confidence check and turn a successful empty review
+    into a reported failure."""
+    llm = FakeLLM(output=ReviewOutput(findings=[]), usage_metadata="not-a-dict")
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.findings == []
+    assert result.low_confidence_reason is None
+
+
 def test_parsing_failure_is_recorded_as_an_error_not_cached_as_empty_findings():
     """include_raw=True lets a parse failure land in `parsing_error` without
     raising -- this must still surface as a real failure, not a silent clean
