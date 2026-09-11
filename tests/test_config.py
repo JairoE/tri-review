@@ -5,7 +5,7 @@ from tri_review import config
 
 def test_defaults():
     assert config.token_budget() == 100_000
-    assert config.model_timeout() == 120
+    assert config.model_timeout() == 300
     assert config.model_a() == config.DEFAULT_MODEL_A
 
 

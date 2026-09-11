@@ -50,7 +50,11 @@ def build_llm(model_name: str):
     """Construct a chat model from its ID, choosing the provider by ID prefix.
 
     No temperature is set anywhere: the current OpenAI and Anthropic flagships
-    reject sampling parameters outright.
+    reject sampling parameters outright. Note this is not the same as Gemini
+    running greedy -- langchain-google-genai defaults `temperature` to 0.7
+    when unset, so that branch samples whatever we do. Pinning it to 0 was
+    measured and barely moved the empty-result rate (80% vs 90%), so it is
+    left alone rather than set for the appearance of determinism.
     """
     timeout = config.model_timeout()
     provider = provider_of(model_name)
@@ -83,7 +87,43 @@ def build_llm(model_name: str):
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        # thinking_level="high" is load-bearing, not tuning, and it is the
+        # second half of a two-part fix -- the first half is the model itself
+        # (see config.DEFAULT_MODEL_C).
+        #
+        # The failure it addresses is silent: Gemini returns a schema-valid
+        # `{"findings": []}` with finish_reason=STOP, indistinguishable from a
+        # clean pass. It is not budget exhaustion, which is what the token
+        # split looks like -- reading the reasoning trace back (include_thoughts)
+        # shows a complete, natural-ending review that walks each changed file
+        # and approves it. The 9-token answer is just the width of
+        # `{"findings": []}`. The model simply under-deliberates and concludes
+        # "clean". Measured over 68 live calls on one 20K-token diff:
+        #
+        #   thinking_level  low 100% empty | medium 100% | (default) 90% | high 0%
+        #
+        # A clean dose-response curve, so capping reasoning (thinking_level
+        # low/medium, or an explicit thinking_budget) makes it strictly worse.
+        # None of the other suspects moved it: an unstructured call with no
+        # schema at all was still 80% empty, as was the raw SDK's older
+        # response_schema path and method="function_calling" -- this is the
+        # model's judgment, not constrained decoding. temperature is left alone
+        # for the same reason (pinning it to 0 gave 80% vs 90%).
+        #
+        # On gemini-3.8-flash "high" still earns its place: at the default
+        # level that model went empty on 1 of 3 runs of a large diff, and on
+        # 0 of 7 with this set.
+        #
+        # It is not cheap. Measured on the same 20K-token diff, output tokens
+        # per review go from ~3.4K (3.7-flash, default level) to ~40-51K --
+        # call it 13x, nearly all of it reasoning, which bills as output. Input
+        # tokens are unchanged. It also pushes a large-diff review to 90-155s,
+        # which is why config.model_timeout defaults to 300.
         return ChatGoogleGenerativeAI(
-            model=model_name, timeout=timeout, max_retries=1, **_cleaned_api_key("GOOGLE_API_KEY")
+            model=model_name,
+            timeout=timeout,
+            max_retries=1,
+            thinking_level="high",
+            **_cleaned_api_key("GOOGLE_API_KEY"),
         )
     raise ValueError(f"Unrecognized model ID {model_name!r} — cannot pick a provider.")
