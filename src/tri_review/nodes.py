@@ -133,11 +133,21 @@ def review_with(
     return result
 
 
-# Calibrated on 74 live gemini-3.7-flash calls. Every empty result observed --
-# across payloads of 20K and 110K tokens and every thinking_level -- landed at
-# exactly 9 answer tokens, the width of `{"findings": []}`. Runs that did report
-# used 254-290. Reasoning on empty results ranged 819-17,753, so the floor only
-# excludes a model that barely thought at all.
+# Calibrated on 74 live gemini-3.7-flash calls, then re-checked against the
+# current default. Every empty result observed -- across payloads of 20K and
+# 110K tokens, both models, and every thinking_level -- landed at exactly 9
+# answer tokens, the width of `{"findings": []}`. Runs that did report used
+# 254-290 on 3.7-flash and 316-647 on 3.8-flash, so the margin either side of
+# the 20-token floor got wider with the model change, not narrower. Reasoning
+# on empty results ranged 819-30,588, so that floor only excludes a model that
+# barely thought at all.
+#
+# One shape these thresholds deliberately do not flag: 3.8-flash sometimes
+# answers with reasoning=0 (snap judgement, no deliberation), which the
+# reasoning<=0 guard below drops before the floor is ever consulted. Every
+# such run observed did report a finding, and inferring low confidence from
+# *absent* reasoning data would fire on any provider that simply doesn't
+# report it. Revisit if an empty result with zero reasoning is ever seen.
 _MIN_ANSWER_TOKENS = 20
 _MIN_REASONING_TOKENS_FOR_CONCERN = 500
 
