@@ -292,7 +292,7 @@ answers "review it". A provider error or an unparseable answer reviews too. When
 it does skip, it says out loud that a model decided, and how to override:
 
 ```
-Nothing to review. Triage (gemini-3.7-flash) found no behaviour change in PR #51:
+Nothing to review. Triage (gemini-3.8-flash) found no behaviour change in PR #51:
 the only change is a docstring.
 This is a model's judgement, not a path rule, so it can be wrong. Re-run with
 --no-triage to review anyway.
@@ -318,7 +318,7 @@ that would reprint the degraded panel and never re-call the model that flaked.)
 ```
   OK gpt-5.6-terra — 3 findings (cached)
   OK claude-sonnet-5 — 2 findings (cached)
-  OK gemini-3.7-flash — 3 findings
+  OK gemini-3.8-flash — 3 findings
 ```
 
 The key is not scoped by repository, and that is deliberate: the payload holds
@@ -341,7 +341,7 @@ Repeat `--model` to pick which models review the PR, overriding the configured s
 tri-review --pr 123 \
   --model gpt-5.6-terra \
   --model claude-sonnet-5 \
-  --model gemini-3.7-flash
+  --model gemini-3.8-flash
 ```
 
 At least two *distinct* models are required, since one model can't corroborate
@@ -370,10 +370,10 @@ Every value is an environment variable override; defaults are in `src/tri_review
 |---|---|---|
 | `TRI_REVIEW_MODEL_A` | `gpt-5.6-terra` | First reviewer |
 | `TRI_REVIEW_MODEL_B` | `claude-sonnet-5` | Second reviewer |
-| `TRI_REVIEW_MODEL_C` | `gemini-3.7-flash` | Third reviewer |
+| `TRI_REVIEW_MODEL_C` | `gemini-3.8-flash` | Third reviewer |
 | `TRI_REVIEW_SYNTHESIZER` | same as model A | Model that cross-references the reviews |
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
-| `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds |
+| `TRI_REVIEW_TIMEOUT` | `300` | Per-model timeout in seconds |
 | `TRI_REVIEW_EXCLUDE` | see `DEFAULT_EXCLUDES` | Comma- or newline-separated globs that replace the built-in skip set |
 | `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where per-PR review history is stored |
 | `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long a cached reviewer call stays usable; `0` never expires |

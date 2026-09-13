@@ -55,6 +55,23 @@ def test_build_llm_passes_stripped_google_key(monkeypatch):
     assert _CapturingClient.last_kwargs["api_key"] == "sk-goog-xyz"
 
 
+def test_build_llm_sets_high_thinking_level_for_google(monkeypatch):
+    """Gemini under-reports without it, and the failure is silent.
+
+    At the default thinking level gemini-3.7-flash returned a schema-valid
+    `{"findings": []}` on 9 of 10 live calls against a diff the other two
+    reviewers found 3 and 2 real findings in; at "high" it reported on 5 of 5.
+    Nothing raises when this is missing -- the review just comes back empty --
+    so it is asserted here rather than left to be noticed in production.
+    """
+    monkeypatch.setenv("GOOGLE_API_KEY", "sk-goog-xyz")
+    monkeypatch.setattr("langchain_google_genai.ChatGoogleGenerativeAI", _CapturingClient)
+
+    build_llm("gemini-3.7-flash")
+
+    assert _CapturingClient.last_kwargs["thinking_level"] == "high"
+
+
 def test_build_llm_omits_api_key_kwarg_when_env_var_unset(monkeypatch):
     """Unset stays unset -- the provider SDK's own "missing key" error must
     still fire normally; this only defends a key that is present but malformed."""
