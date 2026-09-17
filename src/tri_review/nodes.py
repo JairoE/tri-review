@@ -60,13 +60,34 @@ Insight rather than a Consensus Finding, name the reporting model here too --
 do not let a single-model, unverified claim read as equally established just
 because it reached this section.
 
-Tag every step **Blocking** or **Optional** at the start of the bullet, before
-any other text. A step is Blocking only if it traces back to a Consensus
-Finding of critical or major severity. Everything else -- minor-severity
-findings, single-model Unique Insights, and any suggestion you are adding
-yourself rather than lifting from a specific finding -- is Optional. A reader
-skimming just the bold tags should be able to tell what has to be fixed before
-merge and what can wait.
+Tag every step **Blocking**, **Blocking pending check**, or **Optional** at the
+start of the bullet, before any other text.
+
+**Blocking** requires all three: it traces back to a Consensus Finding, that
+finding is critical or major severity, and it is settled by what the diff and
+the file contents in front of you actually show. Agreement alone is not
+evidence. Reviewers who cannot observe something can still agree about it, and
+where they share a wrong assumption their agreement reproduces it rather than
+correcting it -- so treat consensus as a reason to look closely, not as proof.
+
+**Blocking pending check** is for a step that would be Blocking except that it
+rests on behaviour none of the reviewers could observe: how a provider, API,
+library, runtime, or model actually responds; what a service accepts or
+returns; what a particular version does. Name the specific check that would
+settle it -- the call to make, the command to run, the page to read -- so the
+reader can resolve it in one step. Never present an unobserved claim as a
+required change.
+
+Everything else -- minor-severity findings, single-model Unique Insights, and
+any suggestion you are adding yourself rather than lifting from a specific
+finding -- is **Optional**.
+
+End every Blocking and Blocking pending check step with a short "Falsified by:"
+clause naming what would show it to be wrong. A step whose falsifier you cannot
+name is a speculation, not a requirement; make it Optional.
+
+A reader skimming just the bold tags should be able to tell what has to be
+fixed before merge, what needs one check first, and what can wait.
 
 If a section has nothing in it, say so in one line rather than padding it.
 Do not reproduce the raw reviews.
