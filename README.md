@@ -383,8 +383,10 @@ purpose: a dismissal is a durable judgement about your codebase, so it belongs
 in review next to the code it excuses.
 
 The ledger is read from the PR's **base** commit, not from the PR itself, so a
-change cannot add an entry that excuses its own findings. In local mode it is
-read from your checkout, which is already yours.
+change cannot add an entry that excuses its own findings — including when the
+GitHub Action runs against a checkout of the PR head. Only when there is no PR
+to anchor to (you, reviewing your own local branch) does your working copy of
+the file stand in.
 
 Two things it deliberately does not do:
 

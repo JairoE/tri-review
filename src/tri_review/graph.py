@@ -10,6 +10,21 @@ from . import config, context, dismissals, github, nodes, providers
 from .state import ReviewState
 
 
+def _trusted_local_ledger(pr_number: str) -> str | None:
+    """The dismissal ledger as of the PR's base, falling back to the checkout.
+
+    Split out so the fallback is explicit: any failure to resolve a base ref
+    means "no trusted ledger from git", never "use the PR's version of it".
+    """
+    try:
+        base = github.fetch_pr_meta(pr_number, None).get("base_sha")
+    except Exception:  # noqa: BLE001 - no PR context is a normal local review
+        base = None
+    if base:
+        return dismissals.read_git(base)
+    return dismissals.read_local(Path.cwd())
+
+
 def fetch_context_node(state: ReviewState) -> dict:
     """Resolve the PR, fetch its diff, and assemble the review payload.
 
@@ -32,16 +47,22 @@ def fetch_context_node(state: ReviewState) -> dict:
         # so reading it from the PR's own commits would let an author silence
         # review of their change by adding an entry in that same change.
         ledger = (
-            github.fetch_file_content(repo, str(dismissals.DISMISSALS_PATH), meta["base_sha"])
+            github.fetch_file_content(
+                repo, dismissals.DISMISSALS_PATH.as_posix(), meta["base_sha"]
+            )
             if meta.get("base_sha")
             else None
         )
     else:
         head_ref = state.get("head_ref") or ""
         reader = context.filesystem_reader(Path.cwd())
-        # Local mode reviews the checkout the user is sitting in, so its
-        # working tree is already theirs to trust.
-        ledger = dismissals.read_local(Path.cwd())
+        # The working tree is NOT automatically trusted here. The GitHub
+        # Action runs in this mode against a checkout of the PR head, so the
+        # ledger on disk is content the PR author controls -- read it at the
+        # merge base instead whenever one can be resolved. Only when there is
+        # no PR to anchor to (someone reviewing their own local branch) does
+        # the working tree stand in, and then it is their own file anyway.
+        ledger = _trusted_local_ledger(pr_number)
 
     ctx = context.build_context(diff, reader=reader)
     return {

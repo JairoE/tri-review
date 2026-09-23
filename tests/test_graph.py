@@ -53,6 +53,12 @@ def stub_context(monkeypatch):
     monkeypatch.setattr(
         graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx()
     )
+    # No real `gh pr view` for the trusted-ledger base ref. Left unstubbed it
+    # is a live network round-trip inside every graph test, which quietly
+    # inflates the fan-out timing assertion below.
+    monkeypatch.setattr(
+        graph_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"base_sha": ""}
+    )
 
 
 class _FakeCtx:
@@ -93,7 +99,13 @@ def test_repo_mode_reads_files_at_the_pr_head_sha(monkeypatch):
 
 
 def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
-    """No repo on state means the old behaviour: read the checkout we are sitting in."""
+    """No repo on state means the old behaviour: read the checkout we are sitting in.
+
+    PR metadata may be consulted -- the dismissal ledger needs a trusted base
+    ref even here, because the Action runs in this mode against a PR-head
+    checkout. What must not change is where *file contents* come from: the
+    local checkout, never the GitHub reader.
+    """
     chosen = {}
 
     def fake_filesystem_reader(root):
@@ -102,9 +114,7 @@ def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
 
     monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda pr, repo=None, exclude=(): "diff\n")
     monkeypatch.setattr(
-        graph_mod.github,
-        "fetch_pr_meta",
-        lambda pr, repo=None: pytest.fail("cwd mode must not need PR metadata"),
+        graph_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"base_sha": ""}
     )
     monkeypatch.setattr(
         graph_mod.context,
@@ -293,3 +303,59 @@ def test_a_pr_without_a_base_ref_simply_has_no_ledger(monkeypatch):
     monkeypatch.setattr(github, "fetch_file_content", explode)
 
     assert graph_mod.fetch_context_node({"pr_number": "1", "repo": "o/n"})["dismissals"] == []
+
+
+def test_cwd_mode_reads_the_ledger_at_the_base_not_the_working_tree(monkeypatch):
+    """The Action runs in cwd mode against a checkout of the PR head.
+
+    So the ledger on disk there is content the PR author controls. It has to
+    come from the merge base, exactly as in --repo mode, or the trust boundary
+    only exists in the mode the Action does not use.
+    """
+    from tri_review import dismissals
+
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda *a, **k: "diff\n")
+    monkeypatch.setattr(
+        graph_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"base_sha": "base" * 10}
+    )
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", lambda root: (lambda p: None))
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+    monkeypatch.setattr(
+        dismissals, "read_local",
+        lambda *a, **k: pytest.fail("must not trust the PR-head working tree"),
+    )
+    seen = {}
+
+    def fake_read_git(ref, root=None):
+        seen["ref"] = ref
+        return '[[dismissed]]\nclaim = "c"\nreason = "r"\n'
+
+    monkeypatch.setattr(dismissals, "read_git", fake_read_git)
+
+    out = graph_mod.fetch_context_node({"pr_number": "7"})
+
+    assert seen["ref"] == "base" * 10
+    assert [d.claim for d in out["dismissals"]] == ["c"]
+
+
+def test_no_resolvable_base_falls_back_to_the_local_checkout(monkeypatch):
+    """Someone reviewing their own branch has no PR, and their tree is theirs."""
+    from tri_review import dismissals
+
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda *a, **k: "diff\n")
+
+    def no_pr(pr, repo=None):
+        raise RuntimeError("no such PR")
+
+    monkeypatch.setattr(graph_mod.github, "fetch_pr_meta", no_pr)
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", lambda root: (lambda p: None))
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+    monkeypatch.setattr(
+        dismissals, "read_git", lambda *a, **k: pytest.fail("no base ref to read from")
+    )
+    monkeypatch.setattr(
+        dismissals, "read_local", lambda *a, **k: '[[dismissed]]\nclaim = "l"\nreason = "r"\n'
+    )
+
+    out = graph_mod.fetch_context_node({"pr_number": "7"})
+    assert [d.claim for d in out["dismissals"]] == ["l"]
