@@ -120,18 +120,28 @@ def build_llm(model_name: str):
         # tokens are unchanged. It also pushes a large-diff review to 90-155s,
         # which is why config.model_timeout defaults to 300.
         # Applied to every Gemini ID rather than gated to a model family, on
-        # purpose. Gating was considered and measured: of the 24 gemini-*
-        # models this key can list, every one that answers at all answers
-        # identically with and without thinking_level="high" -- including the
-        # -latest aliases and the 3.x previews. The only ones that fail
-        # (gemini-2.5-*, gemini-omni-*) return the same 404 either way, so the
-        # parameter is not what breaks them and skipping it would not save
-        # them. A prefix guard would also be easy to get wrong in the one
-        # direction that matters: "gemini-3.8-flash".startswith("gemini-3-")
-        # is False, so the obvious-looking check silently drops the setting
-        # for the default model and restores the 90%-empty bug this exists to
-        # fix. If a future model does reject it, the failure is loud, isolated
-        # to one reviewer, and reported -- not another silent empty review.
+        # purpose, but with a known and untested boundary -- read on before
+        # assuming this is safe for an arbitrary override.
+        #
+        # Measured: of the 24 gemini-* models this key can list, every one
+        # that answers at all answers identically with and without
+        # thinking_level="high", including the -latest aliases and the 3.x
+        # previews. What that does NOT establish is 2.5 compatibility: the
+        # gemini-2.5-* IDs return 404 on this key with or without the
+        # parameter, so they were never actually exercised with it. Google
+        # documents thinking_level as a Gemini 3+ setting and 2.5 as using
+        # thinking_budget, so on an account where 2.5 models are callable this
+        # very likely IS rejected. Treat TRI_REVIEW_MODEL_C=gemini-2.5-* as
+        # unsupported rather than as tested-and-fine.
+        #
+        # It is still not gated on a model-ID prefix, because that is easy to
+        # get wrong in the one direction that matters:
+        # "gemini-3.8-flash".startswith("gemini-3-") is False, so the
+        # obvious-looking check silently drops the setting for the default
+        # model and restores the 90%-empty bug this exists to fix. A failure
+        # here is loud, isolated to one reviewer, and reported -- which is the
+        # trade being made: a broken override says so, instead of a silent
+        # empty review that reads as a clean pass.
         return ChatGoogleGenerativeAI(
             model=model_name,
             timeout=timeout,

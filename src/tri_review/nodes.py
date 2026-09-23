@@ -158,8 +158,10 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
     spent on reasoning, a 9-token answer -- but that reading was wrong, and the
     live evidence is worth recording so nobody re-derives it. The model is not
     running out of anything: finish_reason is STOP on every observed sample,
-    and its reasoning trace (captured via include_thoughts) is a complete,
-    natural-ending review that walks each changed file and approves it. The
+    which is what actually rules truncation out. Its thought summary (via
+    include_thoughts) reads as a survey that ends by approving the diff --
+    though a summary is not the raw chain of thought, so it is evidence about
+    how the model concluded, not proof that every hunk was examined. The
     9-token answer is simply the fixed width of `{"findings": []}`, and the
     reasoning count is just how long it deliberated. So neither number means
     exhaustion; what they jointly identify is "deliberated, then reported
