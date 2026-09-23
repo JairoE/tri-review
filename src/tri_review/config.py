@@ -17,9 +17,18 @@ from pathlib import Path
 #
 # None of these accept a custom `temperature`: the current OpenAI and Anthropic
 # flagships reject sampling parameters outright, so tri-review never sends one.
+#
+# The Google slot is 3.8-flash rather than the cheaper 3.7-flash for a measured
+# reliability reason, not for capability in general. On two PRs with known
+# findings (verified against claude-sonnet-5), 3.7-flash returned a schema-valid
+# `{"findings": []}` on 9 of 10 runs of a 20K-token diff and on 3 of 3 runs of a
+# 110K-token one -- silently, as a clean pass. 3.8-flash returned findings on
+# 7 of 7 runs of the same two payloads. Reviewing file-by-file does not rescue
+# 3.7-flash (0 findings across 5 files each known to contain one), and neither
+# does gemini-3.1-pro-preview (0 of 2), so this is the model, not the payload.
 DEFAULT_MODEL_A = "gpt-5.6-terra"
 DEFAULT_MODEL_B = "claude-sonnet-5"
-DEFAULT_MODEL_C = "gemini-3.7-flash"
+DEFAULT_MODEL_C = "gemini-3.8-flash"
 
 # Paths that do not earn a place in the review payload. Two tiers, because
 # "not worth spending tokens on" and "grounds for skipping the PR entirely" are
@@ -114,6 +123,28 @@ def token_budget() -> int:
 def model_timeout() -> int:
     """Per-model wall-clock timeout in seconds."""
     return _env_int("TRI_REVIEW_TIMEOUT", 120)
+
+
+def google_timeout() -> int:
+    """Wall-clock timeout for the Google reviewer specifically.
+
+    That slot runs at thinking_level=high (see providers.build_llm), which put
+    a large-diff review at 90-155s measured -- over the 120s that is otherwise
+    fine. At 120 the reviews that finally started reporting would be the ones
+    most likely killed for taking too long, turning a fixed reviewer back into
+    a missing one.
+
+    Scoped to this provider rather than raised globally so a hung OpenAI or
+    Anthropic call still gives up in two minutes instead of five. An explicit
+    TRI_REVIEW_TIMEOUT still wins and still applies to every provider, so
+    anyone who sets one keeps a single number to reason about.
+
+    Note this bounds one request, not the wall clock: the client retries once,
+    so a stalled connection can take longer than this before it gives up.
+    """
+    if os.environ.get("TRI_REVIEW_TIMEOUT", "").strip():
+        return model_timeout()
+    return 300
 
 
 def estimate_tokens(text: str) -> int:

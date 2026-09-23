@@ -21,9 +21,10 @@ You are given the PR diff and, where available, the full current contents of the
 files it touches. Review the change, not the whole file: only report issues the
 diff introduces or leaves unaddressed in the code it touches.
 
-Report every real issue you find with its file and line. If the diff is clean,
-return an empty findings list. Do not invent findings to appear thorough -- a
-false positive costs the reader more than a missed nitpick.
+Report every real issue you find with its file and line. Be specific and
+concrete. An empty findings list is a strong claim that the change is
+correct -- only make it if you have actually checked each changed hunk and
+found nothing wrong.
 """
 
 SYNTHESIS_PROMPT = """You are the lead engineer synthesizing several independent code reviews.
@@ -161,19 +162,44 @@ def review_with(
     return result
 
 
-_MIN_ANSWER_TOKENS = 20  # provisional -- calibrated on 2 live samples, both landed at ~9
-_MIN_REASONING_TOKENS_FOR_CONCERN = 500  # provisional -- same 2 samples used 1734+/6898
+# Calibrated on 74 live gemini-3.7-flash calls, then re-checked against the
+# current default. Every empty result observed -- across payloads of 20K and
+# 110K tokens, both models, and every thinking_level -- landed at exactly 9
+# answer tokens, the width of `{"findings": []}`. Runs that did report used
+# 254-290 on 3.7-flash and 316-647 on 3.8-flash, so the margin either side of
+# the 20-token floor got wider with the model change, not narrower. Reasoning
+# on empty results ranged 819-30,588, so that floor only excludes a model that
+# barely thought at all.
+#
+# One shape these thresholds deliberately do not flag: 3.8-flash sometimes
+# answers with reasoning=0 (snap judgement, no deliberation), which the
+# reasoning<=0 guard below drops before the floor is ever consulted. Every
+# such run observed did report a finding, and inferring low confidence from
+# *absent* reasoning data would fire on any provider that simply doesn't
+# report it. Revisit if an empty result with zero reasoning is ever seen.
+_MIN_ANSWER_TOKENS = 20
+_MIN_REASONING_TOKENS_FOR_CONCERN = 500
 
 def _low_confidence_reason(raw_message, findings: list) -> str | None:
-    """Flag an empty result that may be reasoning-budget exhaustion, not a real review.
+    """Flag an empty result that may be an under-review rather than a clean pass.
 
-    A schema-valid `{"findings": []}` is only ever a handful of tokens no matter
-    why the model landed there -- so a small leftover answer alone would flag
-    *every* empty result from a reasoning model, including ones that reasoned
-    briefly and legitimately concluded the diff was clean. The reasoning-token
-    floor is what actually distinguishes "spent its whole budget and gave up"
-    from "did a normal amount of thinking and found nothing". Only applies to
-    empty findings: a real finding means the model demonstrably did the work.
+    Named for what it looked like from the token split -- nearly all output
+    spent on reasoning, a 9-token answer -- but that reading was wrong, and the
+    live evidence is worth recording so nobody re-derives it. The model is not
+    running out of anything: finish_reason is STOP on every observed sample,
+    which is what actually rules truncation out. Its thought summary (via
+    include_thoughts) reads as a survey that ends by approving the diff --
+    though a summary is not the raw chain of thought, so it is evidence about
+    how the model concluded, not proof that every hunk was examined. The
+    9-token answer is simply the fixed width of `{"findings": []}`, and the
+    reasoning count is just how long it deliberated. So neither number means
+    exhaustion; what they jointly identify is "deliberated, then reported
+    nothing", which on this model is unreliable often enough to be worth
+    surfacing -- it was measured returning empty on a diff where the other two
+    reviewers found 3 and 2 real findings.
+
+    The reasoning floor only excludes a model that barely engaged at all. Only
+    applies to empty findings: a real finding means the model did the work.
     """
     if findings:
         return None
@@ -194,8 +220,10 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
         return None
     if output - reasoning <= _MIN_ANSWER_TOKENS:
         return (
-            f"empty findings after spending {reasoning}/{output} output tokens on "
-            "internal reasoning -- likely reasoning-budget exhaustion, not a verified clean review"
+            f"reported no findings after spending {reasoning}/{output} output tokens "
+            "on internal reasoning -- this model produces that exact shape both when a "
+            "diff is genuinely clean and when it has under-reviewed one, so treat it as "
+            "inconclusive rather than as a verified clean pass"
         )
     return None
 

@@ -1,3 +1,5 @@
+import pytest
+
 from tri_review.providers import _cleaned_api_key, build_llm
 
 
@@ -55,6 +57,23 @@ def test_build_llm_passes_stripped_google_key(monkeypatch):
     assert _CapturingClient.last_kwargs["api_key"] == "sk-goog-xyz"
 
 
+def test_build_llm_sets_high_thinking_level_for_google(monkeypatch):
+    """Gemini under-reports without it, and the failure is silent.
+
+    At the default thinking level gemini-3.7-flash returned a schema-valid
+    `{"findings": []}` on 9 of 10 live calls against a diff the other two
+    reviewers found 3 and 2 real findings in; at "high" it reported on 5 of 5.
+    Nothing raises when this is missing -- the review just comes back empty --
+    so it is asserted here rather than left to be noticed in production.
+    """
+    monkeypatch.setenv("GOOGLE_API_KEY", "sk-goog-xyz")
+    monkeypatch.setattr("langchain_google_genai.ChatGoogleGenerativeAI", _CapturingClient)
+
+    build_llm("gemini-3.7-flash")
+
+    assert _CapturingClient.last_kwargs["thinking_level"] == "high"
+
+
 def test_build_llm_omits_api_key_kwarg_when_env_var_unset(monkeypatch):
     """Unset stays unset -- the provider SDK's own "missing key" error must
     still fire normally; this only defends a key that is present but malformed."""
@@ -64,3 +83,49 @@ def test_build_llm_omits_api_key_kwarg_when_env_var_unset(monkeypatch):
     build_llm("claude-sonnet-5")
 
     assert "api_key" not in _CapturingClient.last_kwargs
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.8-flash",       # the default -- the one an allowlist gets wrong
+        "gemini-3.7-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-flash-latest",    # alias: unknown family, must still get it
+        "gemini-4.0-flash",       # future release: same
+    ],
+)
+def test_thinking_level_reaches_every_gemini_3_and_unknown_id(monkeypatch, model):
+    """Anything not known to predate thinking_level gets it.
+
+    The failure this protects against is silent -- an empty review that reads
+    as a clean pass -- so a model this code has never heard of must err toward
+    thinking more, not less. The first case is the one that matters most:
+    "gemini-3.8-flash".startswith("gemini-3-") is False, which is why the
+    allowlist that keeps being suggested would disable the fix for the
+    default model.
+    """
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+    monkeypatch.setattr("langchain_google_genai.ChatGoogleGenerativeAI", _CapturingClient)
+
+    build_llm(model)
+
+    assert _CapturingClient.last_kwargs.get("thinking_level") == "high"
+
+
+@pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"])
+def test_thinking_level_is_withheld_from_families_that_predate_it(monkeypatch, model):
+    """Google documents 1.x/2.x as using thinking_budget, not thinking_level.
+
+    Passing it to them would likely fail the whole reviewer on any account
+    where those models are callable, so an override to one of them must
+    construct without it.
+    """
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+    monkeypatch.setattr("langchain_google_genai.ChatGoogleGenerativeAI", _CapturingClient)
+
+    build_llm(model)
+
+    assert "thinking_level" not in _CapturingClient.last_kwargs
+    assert _CapturingClient.last_kwargs["model"] == model

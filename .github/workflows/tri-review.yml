@@ -54,7 +54,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # Pinned to a released commit rather than `uses: ./`.
+      # Pinned to a commit already merged to main rather than `uses: ./`.
       #
       # `./` ran the action.yml from the checkout above -- PR-authored code --
       # as a composite action, with this job's environment secrets passed in as
@@ -68,10 +68,15 @@ jobs:
       # the `pip install "${{ github.action_path }}"` inside installs the
       # released source; the PR checkout stays in the workspace as the data
       # tri-review reads. Consequence worth knowing: this reviews PRs with the
-      # last release, not with the PR's own src/ changes. Bump this SHA when a
-      # new version is released.
+      # pinned trunk code, not with the PR's own src/ changes.
+      #
+      # What makes a SHA safe to pin here is that it is on main -- reviewed and
+      # merged -- not that it carries a release tag. Never pin a commit that
+      # exists only on a PR branch; that is PR-authored code again. Bump this
+      # after merging changes CI should review with; until then, merged work
+      # does not reach CI at all (it sat at v1.0.0 through three merges once).
       - name: Run tri-review on this PR
-        uses: JairoE/tri-review@1b504c1bf0049f26de4d77c22d34713df2284d14  # v1.0.0
+        uses: JairoE/tri-review@0d69d8780d4fc6f62e7bf7ec8b0616d7851486b3  # main after #17: evidence-gated Blocking + dismissal ledger
         with:
           pr-number: ${{ github.event.pull_request.number }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}

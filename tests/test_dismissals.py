@@ -76,7 +76,12 @@ def test_render_tells_the_synthesizer_not_to_suppress():
 
 
 def test_this_repo_s_own_ledger_parses():
-    """The checked-in .tri-review/dismissed.toml must actually load."""
+    """The checked-in .tri-review/dismissed.toml must actually load.
+
+    It may legitimately be empty -- a dismissal whose claim no longer describes
+    the code should be removed, not kept -- but it must never be malformed,
+    because a malformed ledger read at the base ref fails every PR's review.
+    """
     text = (Path(__file__).resolve().parent.parent / dismissals.DISMISSALS_PATH).read_text()
     entries = dismissals.parse(text)
-    assert entries and all(e.claim and e.reason for e in entries)
+    assert all(e.claim and e.reason for e in entries)
