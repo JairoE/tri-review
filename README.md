@@ -382,11 +382,13 @@ date = "2026-01-14"               # optional
 purpose: a dismissal is a durable judgement about your codebase, so it belongs
 in review next to the code it excuses.
 
-The ledger is read from the PR's **base** commit, not from the PR itself, so a
-change cannot add an entry that excuses its own findings — including when the
-GitHub Action runs against a checkout of the PR head. Only when there is no PR
-to anchor to (you, reviewing your own local branch) does your working copy of
-the file stand in.
+The ledger is read from the PR's **base** commit, never from the PR itself and
+never from your working tree — so a change cannot add an entry that excuses its
+own findings. **A new dismissal takes effect once it is merged to the base
+branch**, not while it is still only in the PR that adds it.
+
+If the base version cannot be read for any reason, the run proceeds with no
+dismissals. That errs toward showing you more, never less.
 
 Two things it deliberately does not do:
 

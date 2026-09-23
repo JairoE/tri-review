@@ -24,7 +24,6 @@ changes how a finding is *reported*, never whether it is *found*.
 
 from __future__ import annotations
 
-import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,48 +56,6 @@ class MalformedDismissals(Exception):
     would let settled findings quietly return, which is the exact failure this
     module exists to prevent. Better to fail the run and say so.
     """
-
-
-def read_local(root: Path | None = None) -> str | None:
-    """Return the ledger's text from a checkout, or None when there isn't one.
-
-    Only a genuinely absent file counts as "no ledger". A permission error, a
-    directory sitting at the path, or an unreadable disk is a ledger that
-    exists and could not be read -- swallowing those would let every recorded
-    dismissal vanish silently, which is the failure this module exists to
-    prevent. Those propagate.
-    """
-    path = (root or Path.cwd()) / DISMISSALS_PATH
-    try:
-        return path.read_bytes().decode("utf-8")
-    except (FileNotFoundError, NotADirectoryError):
-        return None
-    except UnicodeDecodeError as exc:
-        raise MalformedDismissals(f"{path} is not valid UTF-8: {exc}") from exc
-    except OSError as exc:
-        raise MalformedDismissals(f"{path} exists but could not be read: {exc}") from exc
-
-
-def read_git(ref: str, root: Path | None = None) -> str | None:
-    """Return the ledger's text as of a git ref, or None when it is not there.
-
-    This is what protects the GitHub Action, which runs against a checkout of
-    the PR *head* -- so the working tree it can see is content the PR author
-    controls. Reading the ledger at the merge base instead means an entry only
-    counts once it is on the trunk, where it went through review like anything
-    else.
-
-    A missing file and a bad ref both return None: at worst the run proceeds
-    with no dismissals, which is the safe direction. Unlike read_local this
-    cannot distinguish them, so it does not pretend to.
-    """
-    result = subprocess.run(
-        ["git", "show", f"{ref}:{DISMISSALS_PATH.as_posix()}"],
-        cwd=str(root) if root else None,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout if result.returncode == 0 else None
 
 
 def parse(text: str | None, origin: str = "dismissal ledger") -> list[Dismissal]:

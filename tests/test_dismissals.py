@@ -9,27 +9,25 @@ import pytest
 from tri_review import dismissals
 
 
-def _write(tmp_path, body: str) -> Path:
-    (tmp_path / ".tri-review").mkdir()
-    (tmp_path / dismissals.DISMISSALS_PATH).write_text(body)
-    return tmp_path
+def test_no_ledger_is_not_an_error():
+    """Most repos never dismiss anything; that is the normal case.
 
-
-def test_no_file_is_not_an_error(tmp_path):
-    """Most repos never dismiss anything; that is the normal case."""
-    assert dismissals.read_local(tmp_path) is None
+    None is also what every failed lookup produces -- see graph._trusted_ledger
+    -- so this is the path taken whenever a ledger cannot be trusted, not only
+    when none exists.
+    """
     assert dismissals.parse(None) == []
 
 
-def test_loads_claim_reason_and_location(tmp_path):
-    root = _write(tmp_path, """
+def test_loads_claim_reason_and_location():
+    entries = dismissals.parse("""
 [[dismissed]]
 file = "src/a.py"
 claim = "leaks a handle"
 reason = "checked, the context manager closes it"
 date = "2026-01-01"
 """)
-    (entry,) = dismissals.parse(dismissals.read_local(root))
+    (entry,) = entries
     assert entry.claim == "leaks a handle"
     assert entry.reason == "checked, the context manager closes it"
     assert entry.file == "src/a.py"
@@ -61,19 +59,6 @@ def test_malformed_toml_fails_loudly():
         dismissals.parse("[[dismissed]\nclaim = ")
 
 
-def test_an_unreadable_ledger_is_not_treated_as_an_absent_one(tmp_path):
-    """Only a genuinely missing file means "no dismissals".
-
-    A directory sitting at the ledger's path is a ledger that exists and could
-    not be read. Reporting that as "none recorded" would silently drop every
-    entry -- so it raises instead.
-    """
-    (tmp_path / ".tri-review").mkdir()
-    (tmp_path / dismissals.DISMISSALS_PATH).mkdir()
-    with pytest.raises(dismissals.MalformedDismissals):
-        dismissals.read_local(tmp_path)
-
-
 def test_blank_file_is_no_dismissals():
     assert dismissals.parse("   \n") == []
 
@@ -92,5 +77,6 @@ def test_render_tells_the_synthesizer_not_to_suppress():
 
 def test_this_repo_s_own_ledger_parses():
     """The checked-in .tri-review/dismissed.toml must actually load."""
-    entries = dismissals.parse(dismissals.read_local(Path(__file__).resolve().parent.parent))
+    text = (Path(__file__).resolve().parent.parent / dismissals.DISMISSALS_PATH).read_text()
+    entries = dismissals.parse(text)
     assert entries and all(e.claim and e.reason for e in entries)
