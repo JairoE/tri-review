@@ -265,6 +265,7 @@ _META = json.dumps(
         "author": {"login": "octocat"},
         "updatedAt": "2026-08-01T00:00:00Z",
         "headRefOid": "b" * 40,
+        "baseRefOid": "c" * 40,
         "state": "OPEN",
         "url": "https://github.com/octocat/Hello-World/pull/42",
     }
@@ -280,6 +281,7 @@ def test_fetch_pr_meta_flattens_the_payload(monkeypatch):
         "author": "octocat",
         "updated_at": "2026-08-01T00:00:00Z",
         "head_sha": "b" * 40,
+        "base_sha": "c" * 40,
         "state": "OPEN",
         "url": "https://github.com/octocat/Hello-World/pull/42",
     }
@@ -710,3 +712,16 @@ def test_an_unreadable_head_is_an_objection_not_a_pass(monkeypatch):
 def test_an_unreadable_status_is_an_objection_not_a_pass(monkeypatch):
     monkeypatch.setattr(github, "_run", _git_stub(dirty_rc=1))
     assert github.working_tree_reason("abc123def456") is not None
+
+
+def test_fetch_pr_meta_tolerates_a_missing_base_ref(monkeypatch):
+    """base_sha is used for the dismissal ledger, which is optional.
+
+    A PR that comes back without one must still review -- the caller falls
+    back to "no ledger" rather than failing, unlike head_sha which is
+    load-bearing for reading file contents at the reviewed revision.
+    """
+    payload = json.loads(_META)
+    del payload["baseRefOid"]
+    _recorder(monkeypatch, result=_proc(stdout=json.dumps(payload)))
+    assert github.fetch_pr_meta("42", repo="octocat/Hello-World")["base_sha"] == ""

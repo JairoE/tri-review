@@ -6,7 +6,7 @@ import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import cache, config
+from . import cache, config, dismissals
 from .errors import InsufficientReviewsError
 from .providers import build_llm, provider_of
 from .schema import ReviewOutput, ReviewResult
@@ -61,13 +61,42 @@ Insight rather than a Consensus Finding, name the reporting model here too --
 do not let a single-model, unverified claim read as equally established just
 because it reached this section.
 
-Tag every step **Blocking** or **Optional** at the start of the bullet, before
-any other text. A step is Blocking only if it traces back to a Consensus
-Finding of critical or major severity. Everything else -- minor-severity
-findings, single-model Unique Insights, and any suggestion you are adding
-yourself rather than lifting from a specific finding -- is Optional. A reader
-skimming just the bold tags should be able to tell what has to be fixed before
-merge and what can wait.
+Tag every step **Blocking**, **Blocking pending check**, or **Optional** at the
+start of the bullet, before any other text.
+
+**Blocking** requires all three: it traces back to a Consensus Finding, that
+finding is critical or major severity, and it is settled by what the diff and
+the file contents in front of you actually show. Agreement alone is not
+evidence. Reviewers who cannot observe something can still agree about it, and
+where they share a wrong assumption their agreement reproduces it rather than
+correcting it -- so treat consensus as a reason to look closely, not as proof.
+
+**Blocking pending check** is for a step that would be Blocking except that it
+rests on behaviour none of the reviewers could observe: how a provider, API,
+library, runtime, or model actually responds; what a service accepts or
+returns; what a particular version does. Name the specific check that would
+settle it -- the call to make, the command to run, the page to read -- so the
+reader can resolve it in one step. Never present an unobserved claim as a
+required change.
+
+Everything else -- minor-severity findings, single-model Unique Insights, and
+any suggestion you are adding yourself rather than lifting from a specific
+finding -- is **Optional**.
+
+End every Blocking and Blocking pending check step with a short "Falsified by:"
+clause naming what would show it to be wrong. A step whose falsifier you cannot
+name is a speculation, not a requirement; make it Optional.
+
+A reader skimming just the bold tags should be able to tell what has to be
+fixed before merge, what needs one check first, and what can wait.
+
+You may be given a list of claims a human has already reviewed and rejected on
+this codebase. Never silently drop a finding because it matches one. Report it,
+say plainly that it was previously rejected and give the recorded reason, and
+make it Optional -- unless this diff carries new evidence the earlier rejection
+did not account for, in which case say what that new evidence is. A reader must
+always be able to see that a finding was raised and on what grounds it was set
+aside.
 
 If a section has nothing in it, say so in one line rather than padding it.
 Do not reproduce the raw reviews.
@@ -242,11 +271,20 @@ def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
             f"nothing to triangulate.\nFailures: {detail}"
         )
 
-    return {"final_report": _synthesize(succeeded, failed, llm_builder)}
+    return {
+        "final_report": _synthesize(
+            succeeded, failed, llm_builder, state.get("dismissals") or []
+        )
+    }
 
 
-def _synthesize(succeeded, failed, llm_builder) -> str:
+def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
     """Ask a model to cross-reference the structured findings into one report."""
+    # Only the synthesizer sees recorded dismissals. The reviewers stay blind
+    # to them so their findings stay independent -- a dismissal changes how
+    # something is reported, never whether it is found. Resolved upstream in
+    # fetch_context_node, from the reviewed repo at its base ref.
+    recorded = dismissals.render(list(recorded_dismissals))
     payload = json.dumps(
         [
             {
@@ -263,7 +301,11 @@ def _synthesize(succeeded, failed, llm_builder) -> str:
     try:
         llm = llm_builder(config.synthesizer_model())
         response = llm.invoke(
-            [SystemMessage(content=SYNTHESIS_PROMPT), HumanMessage(content=payload)]
+            [
+                SystemMessage(content=SYNTHESIS_PROMPT),
+                *([SystemMessage(content=recorded)] if recorded else []),
+                HumanMessage(content=payload),
+            ]
         )
         return header + _text_of(response)
     except Exception as exc:  # noqa: BLE001 - the reviews already cost money; don't lose them

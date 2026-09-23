@@ -133,3 +133,97 @@ def test_handles_content_block_list_responses():
     state = {"results": [_result("m1", "a"), _result("m2", "b")]}
     report = synthesize_node(state, llm_builder=lambda _: BlockLLM())["final_report"]
     assert "block report" in report
+
+
+def test_blocking_requires_evidence_not_just_agreement():
+    """Consensus must not be sufficient on its own to mark a step Blocking.
+
+    Three reviewers who cannot observe a thing can still agree about it, and a
+    prior they share gets reproduced by agreement rather than corrected by it.
+    This happened live: two models agreed that passing thinking_level to a
+    legacy Gemini ID would fail, it was promoted to Blocking on that agreement
+    alone, and a direct check against every callable gemini-* model showed no
+    such failure. The prompt has to say that agreement is not evidence, or the
+    synthesizer has no reason not to promote the next one.
+    """
+    from tri_review.nodes import SYNTHESIS_PROMPT
+
+    prompt = SYNTHESIS_PROMPT.lower()
+    assert "agreement alone is not" in prompt
+    assert "blocking pending check" in prompt
+    assert "falsified by" in prompt
+
+
+def test_blocking_pending_check_must_name_the_check():
+    """An unobservable claim has to arrive with the check that would settle it.
+
+    The failure mode is not that the model raises an unverifiable concern --
+    it is that the concern arrives as a required change with nothing the
+    reader can do to resolve it in one step.
+    """
+    from tri_review.nodes import SYNTHESIS_PROMPT
+
+    prompt = SYNTHESIS_PROMPT.lower()
+    assert "name the specific check that would" in prompt
+    assert "never present an unobserved claim as a" in prompt
+
+
+def test_recorded_dismissals_reach_the_synthesizer():
+    """A dismissal is useless if it never gets in front of the model."""
+    from tri_review import dismissals, nodes
+
+    seen = []
+
+    class Recorder(CapturingLLM):
+        def invoke(self, messages):
+            seen.extend(m.content for m in messages)
+            return super().invoke(messages)
+
+    nodes.synthesize_node(
+        {
+            "results": [
+                ReviewResult(model="a", findings=[Finding(
+                    file="w.py", severity="major", category="bug",
+                    title="the widget leaks", detail="d")]),
+                ReviewResult(model="b", findings=[]),
+            ],
+            "dismissals": [
+                dismissals.Dismissal(claim="the widget leaks", reason="checked, it does not")
+            ],
+        },
+        llm_builder=lambda _: Recorder(),
+    )
+    joined = "\n".join(seen)
+    assert "the widget leaks" in joined
+    assert "checked, it does not" in joined
+
+
+def test_no_dismissals_adds_no_message():
+    """An empty ledger must leave the synthesizer's input exactly as it was."""
+    from tri_review import nodes
+
+    counts = []
+
+    class Counter(CapturingLLM):
+        def invoke(self, messages):
+            counts.append(len(messages))
+            return super().invoke(messages)
+
+    nodes.synthesize_node(
+        {"results": [ReviewResult(model="a", findings=[]), ReviewResult(model="b", findings=[])]},
+        llm_builder=lambda _: Counter(),
+    )
+    assert counts == [2]  # system prompt + payload, nothing injected
+
+
+def test_reviewers_never_receive_the_ledger():
+    """Independence is the premise of triangulating three models.
+
+    A dismissal must change how a finding is reported, never whether it is
+    found -- so it may reach the synthesizer and must not reach a reviewer.
+    """
+    import inspect
+
+    from tri_review import nodes
+
+    assert "dismissals" not in inspect.getsource(nodes.review_with)
