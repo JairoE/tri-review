@@ -46,6 +46,17 @@ def _cleaned_api_key(env_var: str) -> dict[str, str]:
     return {} if value is None else {"api_key": value.strip()}
 
 
+# Gemini families that predate thinking_level and use thinking_budget instead.
+# Matched with the trailing dot so "gemini-2" cannot swallow a hypothetical
+# "gemini-20" -- and so no 3.x ID can ever match, whatever its suffix.
+_PRE_THINKING_LEVEL = ("gemini-1.", "gemini-2.")
+
+
+def _predates_thinking_level(model_name: str) -> bool:
+    """True for a Gemini ID from a family documented to reject thinking_level."""
+    return model_name.startswith(_PRE_THINKING_LEVEL)
+
+
 def build_llm(model_name: str):
     """Construct a chat model from its ID, choosing the provider by ID prefix.
 
@@ -94,10 +105,12 @@ def build_llm(model_name: str):
         # The failure it addresses is silent: Gemini returns a schema-valid
         # `{"findings": []}` with finish_reason=STOP, indistinguishable from a
         # clean pass. It is not budget exhaustion, which is what the token
-        # split looks like -- reading the reasoning trace back (include_thoughts)
-        # shows a complete, natural-ending review that walks each changed file
-        # and approves it. The 9-token answer is just the width of
-        # `{"findings": []}`. The model simply under-deliberates and concludes
+        # split looks like: finish_reason is STOP on every sample, so nothing
+        # is truncated, and the thought summary (include_thoughts) reads as a
+        # survey that ends by approving the diff -- a summary, not the raw
+        # chain of thought, so evidence of how it concluded rather than proof
+        # of what it examined. The 9-token answer is just the width of
+        # `{"findings": []}`. The model under-deliberates and concludes
         # "clean". Measured over 68 live calls on one 20K-token diff:
         #
         #   thinking_level  low 100% empty | medium 100% | (default) 90% | high 0%
@@ -119,34 +132,28 @@ def build_llm(model_name: str):
         # call it 13x, nearly all of it reasoning, which bills as output. Input
         # tokens are unchanged. It also pushes a large-diff review to 90-155s,
         # which is why config.model_timeout defaults to 300.
-        # Applied to every Gemini ID rather than gated to a model family, on
-        # purpose, but with a known and untested boundary -- read on before
-        # assuming this is safe for an arbitrary override.
+        # Withheld only from the Gemini families known to predate it. Google
+        # documents thinking_level as a Gemini 3+ setting, with 1.x/2.x using
+        # thinking_budget instead, so on an account where those are callable
+        # the parameter is very likely rejected. (It could not be checked
+        # directly: gemini-2.5-* returns 404 on the key used for the
+        # measurements above, with or without it.)
         #
-        # Measured: of the 24 gemini-* models this key can list, every one
-        # that answers at all answers identically with and without
-        # thinking_level="high", including the -latest aliases and the 3.x
-        # previews. What that does NOT establish is 2.5 compatibility: the
-        # gemini-2.5-* IDs return 404 on this key with or without the
-        # parameter, so they were never actually exercised with it. Google
-        # documents thinking_level as a Gemini 3+ setting and 2.5 as using
-        # thinking_budget, so on an account where 2.5 models are callable this
-        # very likely IS rejected. Treat TRI_REVIEW_MODEL_C=gemini-2.5-* as
-        # unsupported rather than as tested-and-fine.
-        #
-        # It is still not gated on a model-ID prefix, because that is easy to
-        # get wrong in the one direction that matters:
-        # "gemini-3.8-flash".startswith("gemini-3-") is False, so the
-        # obvious-looking check silently drops the setting for the default
-        # model and restores the 90%-empty bug this exists to fix. A failure
-        # here is loud, isolated to one reviewer, and reported -- which is the
-        # trade being made: a broken override says so, instead of a silent
-        # empty review that reads as a clean pass.
+        # A denylist of old families rather than an allowlist of new ones, on
+        # purpose. The allowlist that suggests itself is wrong in the one
+        # direction that matters -- "gemini-3.8-flash".startswith("gemini-3-")
+        # is False -- so it would silently drop the setting for the default
+        # model and restore the 90%-empty bug this exists to fix. Excluding
+        # "gemini-1." and "gemini-2." cannot match any 3.x ID, and a model
+        # this code has never heard of (a -latest alias, a future release)
+        # gets the setting, which is the right default for a reviewer whose
+        # failure mode is thinking too little.
+        kwargs = {} if _predates_thinking_level(model_name) else {"thinking_level": "high"}
         return ChatGoogleGenerativeAI(
             model=model_name,
             timeout=config.google_timeout(),
             max_retries=1,
-            thinking_level="high",
+            **kwargs,
             **_cleaned_api_key("GOOGLE_API_KEY"),
         )
     raise ValueError(f"Unrecognized model ID {model_name!r} — cannot pick a provider.")

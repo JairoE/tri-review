@@ -71,7 +71,7 @@ jobs:
       # last release, not with the PR's own src/ changes. Bump this SHA when a
       # new version is released.
       - name: Run tri-review on this PR
-        uses: JairoE/tri-review@1b504c1bf0049f26de4d77c22d34713df2284d14  # v1.0.0
+        uses: JairoE/tri-review@0d69d8780d4fc6f62e7bf7ec8b0616d7851486b3  # main after #17: evidence-gated Blocking + dismissal ledger
         with:
           pr-number: ${{ github.event.pull_request.number }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}

@@ -35,7 +35,7 @@ def test_estimate_tokens():
     assert config.estimate_tokens("a" * 400) == 100
 
 
-def test_readme_documents_the_real_defaults():
+def test_readme_documents_the_real_defaults(monkeypatch):
     """The README's configuration table must match config.py.
 
     These defaults are the only place a user learns which models a review
@@ -47,6 +47,11 @@ def test_readme_documents_the_real_defaults():
     """
     import re
     from pathlib import Path
+
+    # Defaults, not whatever this shell happens to override them to.
+    for var in ("TRI_REVIEW_MODEL_A", "TRI_REVIEW_MODEL_B", "TRI_REVIEW_MODEL_C",
+                "TRI_REVIEW_TIMEOUT", "TRI_REVIEW_TOKEN_BUDGET"):
+        monkeypatch.delenv(var, raising=False)
 
     readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
     documented = {
