@@ -373,7 +373,7 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_MODEL_C` | `gemini-3.8-flash` | Third reviewer |
 | `TRI_REVIEW_SYNTHESIZER` | same as model A | Model that cross-references the reviews |
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
-| `TRI_REVIEW_TIMEOUT` | `300` | Per-model timeout in seconds |
+| `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds (the Google reviewer uses 300 unless this is set) |
 | `TRI_REVIEW_EXCLUDE` | see `DEFAULT_EXCLUDES` | Comma- or newline-separated globs that replace the built-in skip set |
 | `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where per-PR review history is stored |
 | `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long a cached reviewer call stays usable; `0` never expires |

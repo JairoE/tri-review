@@ -5,7 +5,7 @@ from tri_review import config
 
 def test_defaults():
     assert config.token_budget() == 100_000
-    assert config.model_timeout() == 300
+    assert config.model_timeout() == 120
     assert config.model_a() == config.DEFAULT_MODEL_A
 
 
@@ -67,3 +67,33 @@ def test_readme_documents_the_real_defaults():
         assert documented[var] == value, (
             f"README documents {var} as {documented[var]!r} but config.py uses {value!r}"
         )
+
+
+def test_google_timeout_is_longer_by_default():
+    """Only the Google slot gets the longer deadline.
+
+    It runs at thinking_level=high, which measured 90-155s on a large diff --
+    over the 120s the other two providers are fine with. Raising the global
+    default instead would make a hung OpenAI or Anthropic call take five
+    minutes to fail rather than two.
+    """
+    assert config.model_timeout() == 120
+    assert config.google_timeout() == 300
+
+
+def test_an_explicit_timeout_still_applies_to_every_provider(monkeypatch):
+    """A user who sets TRI_REVIEW_TIMEOUT keeps one number to reason about.
+
+    The scoped default exists to avoid surprising anyone who never touched the
+    setting; it must not override someone who did.
+    """
+    monkeypatch.setenv("TRI_REVIEW_TIMEOUT", "45")
+    assert config.model_timeout() == 45
+    assert config.google_timeout() == 45
+
+
+def test_a_blank_timeout_does_not_count_as_explicit(monkeypatch):
+    """An empty env var is how CI passes "unset", not a request for 0s."""
+    monkeypatch.setenv("TRI_REVIEW_TIMEOUT", "")
+    assert config.model_timeout() == 120
+    assert config.google_timeout() == 300

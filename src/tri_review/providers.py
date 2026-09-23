@@ -144,7 +144,7 @@ def build_llm(model_name: str):
         # empty review that reads as a clean pass.
         return ChatGoogleGenerativeAI(
             model=model_name,
-            timeout=timeout,
+            timeout=config.google_timeout(),
             max_retries=1,
             thinking_level="high",
             **_cleaned_api_key("GOOGLE_API_KEY"),
