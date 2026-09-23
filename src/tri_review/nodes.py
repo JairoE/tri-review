@@ -243,15 +243,20 @@ def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
             f"nothing to triangulate.\nFailures: {detail}"
         )
 
-    return {"final_report": _synthesize(succeeded, failed, llm_builder)}
+    return {
+        "final_report": _synthesize(
+            succeeded, failed, llm_builder, state.get("dismissals") or []
+        )
+    }
 
 
-def _synthesize(succeeded, failed, llm_builder) -> str:
+def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
     """Ask a model to cross-reference the structured findings into one report."""
     # Only the synthesizer sees recorded dismissals. The reviewers stay blind
     # to them so their findings stay independent -- a dismissal changes how
-    # something is reported, never whether it is found.
-    recorded = dismissals.render(dismissals.load())
+    # something is reported, never whether it is found. Resolved upstream in
+    # fetch_context_node, from the reviewed repo at its base ref.
+    recorded = dismissals.render(list(recorded_dismissals))
     payload = json.dumps(
         [
             {

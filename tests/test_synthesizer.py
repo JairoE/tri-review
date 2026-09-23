@@ -168,16 +168,10 @@ def test_blocking_pending_check_must_name_the_check():
     assert "never present an unobserved claim as a" in prompt
 
 
-def test_recorded_dismissals_reach_the_synthesizer(monkeypatch):
+def test_recorded_dismissals_reach_the_synthesizer():
     """A dismissal is useless if it never gets in front of the model."""
     from tri_review import dismissals, nodes
 
-    monkeypatch.setattr(
-        dismissals, "load", lambda *a, **k: [
-            dismissals.Dismissal(claim="the widget leaks", reason="checked, it does not")
-        ]
-    )
-    llm = CapturingLLM()
     seen = []
 
     class Recorder(CapturingLLM):
@@ -186,12 +180,17 @@ def test_recorded_dismissals_reach_the_synthesizer(monkeypatch):
             return super().invoke(messages)
 
     nodes.synthesize_node(
-        {"results": [
-            ReviewResult(model="a", findings=[Finding(
-                file="w.py", severity="major", category="bug",
-                title="the widget leaks", detail="d")]),
-            ReviewResult(model="b", findings=[]),
-        ]},
+        {
+            "results": [
+                ReviewResult(model="a", findings=[Finding(
+                    file="w.py", severity="major", category="bug",
+                    title="the widget leaks", detail="d")]),
+                ReviewResult(model="b", findings=[]),
+            ],
+            "dismissals": [
+                dismissals.Dismissal(claim="the widget leaks", reason="checked, it does not")
+            ],
+        },
         llm_builder=lambda _: Recorder(),
     )
     joined = "\n".join(seen)
@@ -199,11 +198,10 @@ def test_recorded_dismissals_reach_the_synthesizer(monkeypatch):
     assert "checked, it does not" in joined
 
 
-def test_no_dismissals_adds_no_message(monkeypatch):
+def test_no_dismissals_adds_no_message():
     """An empty ledger must leave the synthesizer's input exactly as it was."""
-    from tri_review import dismissals, nodes
+    from tri_review import nodes
 
-    monkeypatch.setattr(dismissals, "load", lambda *a, **k: [])
     counts = []
 
     class Counter(CapturingLLM):
@@ -216,3 +214,16 @@ def test_no_dismissals_adds_no_message(monkeypatch):
         llm_builder=lambda _: Counter(),
     )
     assert counts == [2]  # system prompt + payload, nothing injected
+
+
+def test_reviewers_never_receive_the_ledger():
+    """Independence is the premise of triangulating three models.
+
+    A dismissal must change how a finding is reported, never whether it is
+    found -- so it may reach the synthesizer and must not reach a reviewer.
+    """
+    import inspect
+
+    from tri_review import nodes
+
+    assert "dismissals" not in inspect.getsource(nodes.review_with)

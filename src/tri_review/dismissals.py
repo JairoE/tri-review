@@ -58,21 +58,39 @@ class MalformedDismissals(Exception):
     """
 
 
-def load(root: Path | None = None) -> list[Dismissal]:
-    """Read recorded dismissals, or [] when there are none.
+def read_local(root: Path | None = None) -> str | None:
+    """Return the ledger's text from a checkout, or None when there isn't one.
 
-    A missing file is the normal case and not an error -- most repos never
-    dismiss anything.
+    Only a genuinely absent file counts as "no ledger". A permission error, a
+    directory sitting at the path, or an unreadable disk is a ledger that
+    exists and could not be read -- swallowing those would let every recorded
+    dismissal vanish silently, which is the failure this module exists to
+    prevent. Those propagate.
     """
     path = (root or Path.cwd()) / DISMISSALS_PATH
     try:
-        raw = path.read_bytes()
-    except OSError:
-        return []
+        return path.read_bytes().decode("utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except UnicodeDecodeError as exc:
+        raise MalformedDismissals(f"{path} is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise MalformedDismissals(f"{path} exists but could not be read: {exc}") from exc
 
+
+def parse(text: str | None, origin: str = "dismissal ledger") -> list[Dismissal]:
+    """Parse ledger text into dismissals. None or blank means there are none.
+
+    Separate from reading it so the caller decides where the bytes come from --
+    a local checkout for a local review, and the PR's *base* ref for a remote
+    one, which is what keeps a PR from dismissing its own findings.
+    """
+    if text is None or not text.strip():
+        return []
+    path = origin
     try:
-        parsed = tomllib.loads(raw.decode("utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
         raise MalformedDismissals(f"{path} is not readable TOML: {exc}") from exc
 
     entries = parsed.get("dismissed", [])

@@ -243,3 +243,53 @@ def test_a_prefetched_diff_is_not_fetched_again(monkeypatch):
 
     assert fetched == []
     assert state["diff"].startswith("diff --git a/already.py")
+
+
+def test_the_ledger_is_read_at_the_base_ref_not_the_pr_head(monkeypatch):
+    """A PR must not be able to dismiss findings about itself.
+
+    The ledger downgrades findings, so reading it from the PR's own commits
+    would let an author silence review of a change by adding an entry to it in
+    that same change. It is read at the merge base instead, which is code that
+    is already on the trunk.
+    """
+    from tri_review import context, dismissals, github
+
+    asked = {}
+
+    monkeypatch.setattr(github, "fetch_diff", lambda *a, **k: "diff --git a/x b/x\n+++ b/x\n")
+    monkeypatch.setattr(
+        github, "fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "head" * 10, "base_sha": "base" * 10},
+    )
+    monkeypatch.setattr(context, "github_reader", lambda *a, **k: (lambda p: None))
+
+    def fake_fetch_file_content(repo, path, ref):
+        asked["path"], asked["ref"] = path, ref
+        return '[[dismissed]]\nclaim = "c"\nreason = "r"\n'
+
+    monkeypatch.setattr(github, "fetch_file_content", fake_fetch_file_content)
+
+    out = graph_mod.fetch_context_node({"pr_number": "1", "repo": "o/n"})
+
+    assert asked["ref"] == "base" * 10, "ledger must not be read at the PR head"
+    assert asked["path"] == str(dismissals.DISMISSALS_PATH)
+    assert [d.claim for d in out["dismissals"]] == ["c"]
+
+
+def test_a_pr_without_a_base_ref_simply_has_no_ledger(monkeypatch):
+    """Missing base ref means no dismissals, never a fall back to head."""
+    from tri_review import context, github
+
+    monkeypatch.setattr(github, "fetch_diff", lambda *a, **k: "diff --git a/x b/x\n+++ b/x\n")
+    monkeypatch.setattr(
+        github, "fetch_pr_meta", lambda *a, **k: {"head_sha": "h" * 40, "base_sha": ""}
+    )
+    monkeypatch.setattr(context, "github_reader", lambda *a, **k: (lambda p: None))
+
+    def explode(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("should not read a ledger without a trusted ref")
+
+    monkeypatch.setattr(github, "fetch_file_content", explode)
+
+    assert graph_mod.fetch_context_node({"pr_number": "1", "repo": "o/n"})["dismissals"] == []

@@ -382,6 +382,10 @@ date = "2026-01-14"               # optional
 purpose: a dismissal is a durable judgement about your codebase, so it belongs
 in review next to the code it excuses.
 
+The ledger is read from the PR's **base** commit, not from the PR itself, so a
+change cannot add an entry that excuses its own findings. In local mode it is
+read from your checkout, which is already yours.
+
 Two things it deliberately does not do:
 
 - **It never hides a finding.** The three reviewers never see this file, so they

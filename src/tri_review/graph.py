@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langgraph.graph import END, StateGraph
 
-from . import config, context, github, nodes, providers
+from . import config, context, dismissals, github, nodes, providers
 from .state import ReviewState
 
 
@@ -25,17 +25,30 @@ def fetch_context_node(state: ReviewState) -> dict:
     diff = state.get("diff") or github.fetch_diff(pr_number, repo, excludes)
 
     if repo:
-        head_ref = state.get("head_ref") or github.fetch_pr_meta(pr_number, repo)["head_sha"]
+        meta = github.fetch_pr_meta(pr_number, repo)
+        head_ref = state.get("head_ref") or meta["head_sha"]
         reader = context.github_reader(repo, head_ref)
+        # Deliberately the base ref, not head. The ledger downgrades findings,
+        # so reading it from the PR's own commits would let an author silence
+        # review of their change by adding an entry in that same change.
+        ledger = (
+            github.fetch_file_content(repo, str(dismissals.DISMISSALS_PATH), meta["base_sha"])
+            if meta.get("base_sha")
+            else None
+        )
     else:
         head_ref = state.get("head_ref") or ""
         reader = context.filesystem_reader(Path.cwd())
+        # Local mode reviews the checkout the user is sitting in, so its
+        # working tree is already theirs to trust.
+        ledger = dismissals.read_local(Path.cwd())
 
     ctx = context.build_context(diff, reader=reader)
     return {
         "pr_number": pr_number,
         "repo": repo or "",
         "head_ref": head_ref,
+        "dismissals": dismissals.parse(ledger),
         "diff": diff,
         "payload": ctx.render(),
         "context": ctx,
