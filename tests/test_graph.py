@@ -53,6 +53,12 @@ def stub_context(monkeypatch):
     monkeypatch.setattr(
         graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx()
     )
+    # No real `gh pr view` for the trusted-ledger base ref. Left unstubbed it
+    # is a live network round-trip inside every graph test, which quietly
+    # inflates the fan-out timing assertion below.
+    monkeypatch.setattr(
+        graph_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"base_sha": ""}
+    )
 
 
 class _FakeCtx:
@@ -93,7 +99,13 @@ def test_repo_mode_reads_files_at_the_pr_head_sha(monkeypatch):
 
 
 def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
-    """No repo on state means the old behaviour: read the checkout we are sitting in."""
+    """No repo on state means the old behaviour: read the checkout we are sitting in.
+
+    PR metadata may be consulted -- the dismissal ledger needs a trusted base
+    ref even here, because the Action runs in this mode against a PR-head
+    checkout. What must not change is where *file contents* come from: the
+    local checkout, never the GitHub reader.
+    """
     chosen = {}
 
     def fake_filesystem_reader(root):
@@ -102,9 +114,7 @@ def test_cwd_mode_uses_the_filesystem_reader(monkeypatch):
 
     monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda pr, repo=None, exclude=(): "diff\n")
     monkeypatch.setattr(
-        graph_mod.github,
-        "fetch_pr_meta",
-        lambda pr, repo=None: pytest.fail("cwd mode must not need PR metadata"),
+        graph_mod.github, "fetch_pr_meta", lambda pr, repo=None: {"base_sha": ""}
     )
     monkeypatch.setattr(
         graph_mod.context,
@@ -243,3 +253,132 @@ def test_a_prefetched_diff_is_not_fetched_again(monkeypatch):
 
     assert fetched == []
     assert state["diff"].startswith("diff --git a/already.py")
+
+
+def test_the_ledger_is_read_at_the_base_ref_not_the_pr_head(monkeypatch):
+    """A PR must not be able to dismiss findings about itself.
+
+    The ledger downgrades findings, so reading it from the PR's own commits
+    would let an author silence review of a change by adding an entry to it in
+    that same change. It is read at the merge base instead, which is code that
+    is already on the trunk.
+    """
+    from tri_review import context, dismissals, github
+
+    asked = {}
+
+    monkeypatch.setattr(github, "fetch_diff", lambda *a, **k: "diff --git a/x b/x\n+++ b/x\n")
+    monkeypatch.setattr(
+        github, "fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "head" * 10, "base_sha": "base" * 10},
+    )
+    monkeypatch.setattr(context, "github_reader", lambda *a, **k: (lambda p: None))
+
+    def fake_fetch_file_content(repo, path, ref):
+        asked["path"], asked["ref"] = path, ref
+        return '[[dismissed]]\nclaim = "c"\nreason = "r"\n'
+
+    monkeypatch.setattr(github, "fetch_file_content", fake_fetch_file_content)
+
+    out = graph_mod.fetch_context_node({"pr_number": "1", "repo": "o/n"})
+
+    assert asked["ref"] == "base" * 10, "ledger must not be read at the PR head"
+    assert asked["path"] == str(dismissals.DISMISSALS_PATH)
+    assert [d.claim for d in out["dismissals"]] == ["c"]
+
+
+def test_a_pr_without_a_base_ref_simply_has_no_ledger(monkeypatch):
+    """Missing base ref means no dismissals, never a fall back to head."""
+    from tri_review import context, github
+
+    monkeypatch.setattr(github, "fetch_diff", lambda *a, **k: "diff --git a/x b/x\n+++ b/x\n")
+    monkeypatch.setattr(
+        github, "fetch_pr_meta", lambda *a, **k: {"head_sha": "h" * 40, "base_sha": ""}
+    )
+    monkeypatch.setattr(context, "github_reader", lambda *a, **k: (lambda p: None))
+
+    def explode(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("should not read a ledger without a trusted ref")
+
+    monkeypatch.setattr(github, "fetch_file_content", explode)
+
+    assert graph_mod.fetch_context_node({"pr_number": "1", "repo": "o/n"})["dismissals"] == []
+
+
+def test_cwd_mode_reads_the_ledger_at_the_base_not_the_working_tree(monkeypatch):
+    """The Action runs in cwd mode against a checkout of the PR head.
+
+    So the ledger on disk there is written by the author of the change under
+    review. It has to come from the base commit in this mode too, or the trust
+    boundary only exists in the mode the Action does not use. It is fetched
+    through the contents API rather than git because the Action clones at
+    fetch-depth 1 and the base commit is not in the local object store.
+    """
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda *a, **k: "diff\n")
+    monkeypatch.setattr(
+        graph_mod.github,
+        "fetch_pr_meta",
+        lambda pr, repo=None: {
+            "base_sha": "base" * 10,
+            "url": "https://github.com/o/n/pull/7",
+        },
+    )
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", lambda root: (lambda p: None))
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+    seen = {}
+
+    def fake_contents(repo, path, ref):
+        seen.update(repo=repo, path=path, ref=ref)
+        return '[[dismissed]]\nclaim = "c"\nreason = "r"\n'
+
+    monkeypatch.setattr(graph_mod.github, "fetch_file_content", fake_contents)
+
+    out = graph_mod.fetch_context_node({"pr_number": "7"})
+
+    assert seen["ref"] == "base" * 10, "ledger must not be read at the PR head"
+    assert seen["repo"] == "o/n"
+    assert "\\" not in seen["path"], "API path must be POSIX, not Windows-separated"
+    assert [d.claim for d in out["dismissals"]] == ["c"]
+
+
+def test_a_failed_metadata_lookup_yields_no_ledger_not_a_local_one(monkeypatch):
+    """An auth, network or rate-limit failure must not reopen the hole.
+
+    Falling back to the checkout on any error would mean a transient GitHub
+    failure silently promotes the PR's own ledger to a trusted one. No ledger
+    is the safe direction: nothing gets downgraded.
+    """
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda *a, **k: "diff\n")
+
+    def boom(pr, repo=None):
+        raise RuntimeError("gh: rate limit exceeded")
+
+    monkeypatch.setattr(graph_mod.github, "fetch_pr_meta", boom)
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", lambda root: (lambda p: None))
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+    monkeypatch.setattr(
+        graph_mod.github,
+        "fetch_file_content",
+        lambda *a, **k: pytest.fail("must not look for a ledger without a trusted base"),
+    )
+
+    assert graph_mod.fetch_context_node({"pr_number": "7"})["dismissals"] == []
+
+
+def test_a_failed_ledger_fetch_yields_no_ledger(monkeypatch):
+    """Same rule one layer down: unreadable at the base means absent."""
+    monkeypatch.setattr(graph_mod.github, "fetch_diff", lambda *a, **k: "diff\n")
+    monkeypatch.setattr(
+        graph_mod.github,
+        "fetch_pr_meta",
+        lambda pr, repo=None: {"base_sha": "b" * 40, "url": "https://github.com/o/n/pull/7"},
+    )
+    monkeypatch.setattr(graph_mod.context, "filesystem_reader", lambda root: (lambda p: None))
+    monkeypatch.setattr(graph_mod.context, "build_context", lambda diff, reader=None: _FakeCtx())
+
+    def boom(*a, **k):
+        raise RuntimeError("contents API down")
+
+    monkeypatch.setattr(graph_mod.github, "fetch_file_content", boom)
+
+    assert graph_mod.fetch_context_node({"pr_number": "7"})["dismissals"] == []

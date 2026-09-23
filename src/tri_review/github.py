@@ -304,7 +304,7 @@ def fetch_pr_meta(pr_number: str, repo: str | None = None) -> dict:
     against, and reading file contents at any other ref pairs the right diff with
     the wrong file bodies -- a silent quality failure rather than an error.
     """
-    fields = "number,title,author,updatedAt,headRefOid,state,url"
+    fields = "number,title,author,updatedAt,headRefOid,baseRefOid,state,url"
     result = _run(
         ["gh", "pr", "view", str(pr_number), "--json", fields, *_repo_args(repo)]
     )
@@ -334,6 +334,10 @@ def fetch_pr_meta(pr_number: str, repo: str | None = None) -> dict:
         "author": author.get("login") or "",
         "updated_at": meta.get("updatedAt") or "",
         "head_sha": meta["headRefOid"],
+        # The merge base, not the PR's own commits. The dismissal ledger is
+        # read at this ref so a PR cannot add entries that excuse its own
+        # findings -- see dismissals and graph.fetch_context_node.
+        "base_sha": meta.get("baseRefOid") or "",
         "state": meta.get("state") or "",
         "url": meta.get("url") or "",
     }

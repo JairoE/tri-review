@@ -1,0 +1,22 @@
+# Findings a human has checked and rejected. See src/tri_review/dismissals.py.
+#
+# These are handed to the synthesizer only, never to the three reviewers -- so
+# a reviewer is still free to find the thing, and a dismissal only changes how
+# it is reported. Every entry needs a reason: the report shows it to the reader,
+# so an entry without one is just silent suppression.
+
+[[dismissed]]
+file = "src/tri_review/providers.py"
+claim = """thinking_level="high" is applied to every Gemini model ID rather than \
+gated to a family, so a legacy model such as gemini-2.5-flash will fail with an \
+invalid-argument error and drop the panel below two reviewers."""
+reason = """Checked against all 24 gemini-* models this account can list: every one \
+that answers at all answers identically with and without thinking_level. The \
+gemini-2.5-* IDs return 404 either way, so they are not reachable here -- which \
+also means 2.5 compatibility is untested rather than proven, and those IDs are \
+documented as unsupported for TRI_REVIEW_MODEL_C. The specific guard usually \
+suggested is worse than the problem: "gemini-3.8-flash".startswith("gemini-3-") \
+is False, so it would silently drop the setting for the default model and restore \
+the bug it was meant to prevent. Re-raise only with a reproduction on an account \
+where a 2.5 model is actually callable."""
+date = "2026-09-23"

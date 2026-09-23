@@ -27,6 +27,11 @@ class ReviewState(TypedDict, total=False):
     # these annotations at runtime, and because the state must declare the key
     # at all -- LangGraph silently drops update keys it doesn't know about.
     context: Any
+    # Dismissals recorded for the reviewed repo, read at its BASE ref so a PR
+    # cannot excuse its own findings. Resolved in fetch_context_node -- before
+    # any model is called -- so a malformed ledger fails the run while it is
+    # still free, rather than after three reviews have been paid for.
+    dismissals: list
     # operator.add makes the parallel reviewer nodes append rather than overwrite.
     results: Annotated[list[ReviewResult], operator.add]
     final_report: str
