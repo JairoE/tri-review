@@ -13,7 +13,15 @@ from . import config
 PROVIDER_PREFIXES: dict[str, tuple[str, ...]] = {
     "openai": ("gpt-", "o1", "o3", "o4"),
     "anthropic": ("claude-",),
-    "google": ("gemini",),
+    # Gemini 3 only, deliberately. The Google reviewer is only reliable at
+    # thinking_level="high" (see build_llm), and thinking_level is a Gemini 3
+    # setting -- older families use thinking_budget and reject it. So an older
+    # model is not a degraded option here, it is an unsupported one, and it is
+    # rejected up front by the same check that catches a typo, before the PR is
+    # fetched or any reviewer is paid for. Family-agnostic aliases such as
+    # gemini-flash-latest are excluded for the same reason: nothing guarantees
+    # what they resolve to.
+    "google": ("gemini-3",),
 }
 
 
@@ -44,17 +52,6 @@ def _cleaned_api_key(env_var: str) -> dict[str, str]:
     """
     value = os.environ.get(env_var)
     return {} if value is None else {"api_key": value.strip()}
-
-
-# Gemini families that predate thinking_level and use thinking_budget instead.
-# Matched with the trailing dot so "gemini-2" cannot swallow a hypothetical
-# "gemini-20" -- and so no 3.x ID can ever match, whatever its suffix.
-_PRE_THINKING_LEVEL = ("gemini-1.", "gemini-2.")
-
-
-def _predates_thinking_level(model_name: str) -> bool:
-    """True for a Gemini ID from a family documented to reject thinking_level."""
-    return model_name.startswith(_PRE_THINKING_LEVEL)
 
 
 def build_llm(model_name: str):
@@ -131,29 +128,17 @@ def build_llm(model_name: str):
         # per review go from ~3.4K (3.7-flash, default level) to ~40-51K --
         # call it 13x, nearly all of it reasoning, which bills as output. Input
         # tokens are unchanged. It also pushes a large-diff review to 90-155s,
-        # which is why config.model_timeout defaults to 300.
-        # Withheld only from the Gemini families known to predate it. Google
-        # documents thinking_level as a Gemini 3+ setting, with 1.x/2.x using
-        # thinking_budget instead, so on an account where those are callable
-        # the parameter is very likely rejected. (It could not be checked
-        # directly: gemini-2.5-* returns 404 on the key used for the
-        # measurements above, with or without it.)
+        # which is why config.google_timeout defaults to 300.
         #
-        # A denylist of old families rather than an allowlist of new ones, on
-        # purpose. The allowlist that suggests itself is wrong in the one
-        # direction that matters -- "gemini-3.8-flash".startswith("gemini-3-")
-        # is False -- so it would silently drop the setting for the default
-        # model and restore the 90%-empty bug this exists to fix. Excluding
-        # "gemini-1." and "gemini-2." cannot match any 3.x ID, and a model
-        # this code has never heard of (a -latest alias, a future release)
-        # gets the setting, which is the right default for a reviewer whose
-        # failure mode is thinking too little.
-        kwargs = {} if _predates_thinking_level(model_name) else {"thinking_level": "high"}
+        # Passed unconditionally: PROVIDER_PREFIXES admits only Gemini 3 IDs,
+        # all of which accept it. Measured across every Gemini 3 model this
+        # account can list -- 3-flash-preview, 3.1-flash-lite, 3.1-pro-preview,
+        # 3.7-flash, 3.8-flash -- each answered identically with and without it.
         return ChatGoogleGenerativeAI(
             model=model_name,
             timeout=config.google_timeout(),
             max_retries=1,
-            **kwargs,
+            thinking_level="high",
             **_cleaned_api_key("GOOGLE_API_KEY"),
         )
     raise ValueError(f"Unrecognized model ID {model_name!r} — cannot pick a provider.")
