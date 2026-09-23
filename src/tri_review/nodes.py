@@ -6,7 +6,7 @@ import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import cache, config
+from . import cache, config, dismissals
 from .errors import InsufficientReviewsError
 from .providers import build_llm, provider_of
 from .schema import ReviewOutput, ReviewResult
@@ -88,6 +88,14 @@ name is a speculation, not a requirement; make it Optional.
 
 A reader skimming just the bold tags should be able to tell what has to be
 fixed before merge, what needs one check first, and what can wait.
+
+You may be given a list of claims a human has already reviewed and rejected on
+this codebase. Never silently drop a finding because it matches one. Report it,
+say plainly that it was previously rejected and give the recorded reason, and
+make it Optional -- unless this diff carries new evidence the earlier rejection
+did not account for, in which case say what that new evidence is. A reader must
+always be able to see that a finding was raised and on what grounds it was set
+aside.
 
 If a section has nothing in it, say so in one line rather than padding it.
 Do not reproduce the raw reviews.
@@ -240,6 +248,10 @@ def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
 
 def _synthesize(succeeded, failed, llm_builder) -> str:
     """Ask a model to cross-reference the structured findings into one report."""
+    # Only the synthesizer sees recorded dismissals. The reviewers stay blind
+    # to them so their findings stay independent -- a dismissal changes how
+    # something is reported, never whether it is found.
+    recorded = dismissals.render(dismissals.load())
     payload = json.dumps(
         [
             {
@@ -256,7 +268,11 @@ def _synthesize(succeeded, failed, llm_builder) -> str:
     try:
         llm = llm_builder(config.synthesizer_model())
         response = llm.invoke(
-            [SystemMessage(content=SYNTHESIS_PROMPT), HumanMessage(content=payload)]
+            [
+                SystemMessage(content=SYNTHESIS_PROMPT),
+                *([SystemMessage(content=recorded)] if recorded else []),
+                HumanMessage(content=payload),
+            ]
         )
         return header + _text_of(response)
     except Exception as exc:  # noqa: BLE001 - the reviews already cost money; don't lose them

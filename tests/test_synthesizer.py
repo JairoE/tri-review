@@ -166,3 +166,53 @@ def test_blocking_pending_check_must_name_the_check():
     prompt = SYNTHESIS_PROMPT.lower()
     assert "name the specific check that would" in prompt
     assert "never present an unobserved claim as a" in prompt
+
+
+def test_recorded_dismissals_reach_the_synthesizer(monkeypatch):
+    """A dismissal is useless if it never gets in front of the model."""
+    from tri_review import dismissals, nodes
+
+    monkeypatch.setattr(
+        dismissals, "load", lambda *a, **k: [
+            dismissals.Dismissal(claim="the widget leaks", reason="checked, it does not")
+        ]
+    )
+    llm = CapturingLLM()
+    seen = []
+
+    class Recorder(CapturingLLM):
+        def invoke(self, messages):
+            seen.extend(m.content for m in messages)
+            return super().invoke(messages)
+
+    nodes.synthesize_node(
+        {"results": [
+            ReviewResult(model="a", findings=[Finding(
+                file="w.py", severity="major", category="bug",
+                title="the widget leaks", detail="d")]),
+            ReviewResult(model="b", findings=[]),
+        ]},
+        llm_builder=lambda _: Recorder(),
+    )
+    joined = "\n".join(seen)
+    assert "the widget leaks" in joined
+    assert "checked, it does not" in joined
+
+
+def test_no_dismissals_adds_no_message(monkeypatch):
+    """An empty ledger must leave the synthesizer's input exactly as it was."""
+    from tri_review import dismissals, nodes
+
+    monkeypatch.setattr(dismissals, "load", lambda *a, **k: [])
+    counts = []
+
+    class Counter(CapturingLLM):
+        def invoke(self, messages):
+            counts.append(len(messages))
+            return super().invoke(messages)
+
+    nodes.synthesize_node(
+        {"results": [ReviewResult(model="a", findings=[]), ReviewResult(model="b", findings=[])]},
+        llm_builder=lambda _: Counter(),
+    )
+    assert counts == [2]  # system prompt + payload, nothing injected

@@ -362,6 +362,40 @@ training data and failure modes, so they agree on each other's mistakes. A
 single-provider run still works and still reports, but the report opens with a
 banner saying its consensus is weak evidence. Cross-provider is the real product.
 
+## Dismissing a finding
+
+A reviewer that re-raises a point you have already settled is worse than noisy:
+the second time it appears it carries the same "2 of 3 models agreed" weight as
+the first, so you either re-derive the refutation or take it on faith.
+
+Record the judgement in `.tri-review/dismissed.toml` and it stops coming back:
+
+```toml
+[[dismissed]]
+file = "src/app/client.py"        # optional
+claim = "retry loop can spin forever when the server returns 429"
+reason = "checked -- backoff is capped at 5 attempts in _retry(), see the test"
+date = "2026-01-14"               # optional
+```
+
+`claim` and `reason` are both required. The file is version-controlled on
+purpose: a dismissal is a durable judgement about your codebase, so it belongs
+in review next to the code it excuses.
+
+Two things it deliberately does not do:
+
+- **It never hides a finding.** The three reviewers never see this file, so they
+  stay independent and still report whatever they find. Only the synthesizer
+  sees it, and it is told to say the finding was previously rejected and show
+  your reason, rather than drop it. A wrong match is visible, not silent.
+- **It is not an exact match.** Claims are matched by meaning, not by a hash of
+  the wording, because wording drifts between runs. That is more forgiving and
+  less precise -- which is the right trade when the worst case is a downgrade
+  rather than a disappearance.
+
+New evidence overrides it: if a diff gives grounds the recorded reason did not
+account for, the finding comes back with that difference called out.
+
 ## Configuration
 
 Every value is an environment variable override; defaults are in `src/tri_review/config.py`.
