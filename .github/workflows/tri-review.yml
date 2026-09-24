@@ -76,7 +76,7 @@ jobs:
       # after merging changes CI should review with; until then, merged work
       # does not reach CI at all (it sat at v1.0.0 through three merges once).
       - name: Run tri-review on this PR
-        uses: JairoE/tri-review@0d69d8780d4fc6f62e7bf7ec8b0616d7851486b3  # main after #17: evidence-gated Blocking + dismissal ledger
+        uses: JairoE/tri-review@93fd7972b9cb36ca54248f9acd87d7ead23ba3de  # main after #16: gemini-3.8-flash at thinking_level=high
         with:
           pr-number: ${{ github.event.pull_request.number }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}

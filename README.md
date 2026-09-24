@@ -423,9 +423,15 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_TRIAGE_MODEL` | same as model C | Model asked whether the diff changes behaviour |
 
 The provider is chosen from the model ID prefix (`gpt-`, `o1`, `o3`, `o4`, `claude-`,
-`gemini`), so
+`gemini-3`), so
 you can point any slot at any supported provider — including three models from the
 same provider if you only have one key, with the caveat described above.
+
+Google models must be Gemini 3 (`gemini-3*`). The Google reviewer runs at
+`thinking_level="high"`, which older Gemini families do not accept, and without it
+Gemini was measured returning an empty review on 9 of 10 runs of a diff with known
+bugs — so older models and family-agnostic aliases like `gemini-flash-latest` are
+rejected up front rather than run in the configuration that fails silently.
 
 `--model` takes precedence over `TRI_REVIEW_MODEL_A/B/C`: use the env vars for your
 standing default panel, and the flag for a one-off.
