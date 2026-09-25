@@ -48,6 +48,11 @@ with open(os.environ["GH_LOG"], "a") as log:
 if argv[:2] == ["api", "user"]:
     sys.exit(1)  # the default GITHUB_TOKEN is a bot, not a user
 
+if "--paginate" in argv and "user.type" in joined:
+    # warn_if_posted_as_someone_else: marker comments by other bot logins.
+    print(os.environ.get("STUB_OTHER_BOTS", ""), end="")
+    sys.exit(0)
+
 if "--paginate" in argv:
     if os.environ.get("STUB_LIST_FAILS") == "1":
         print('{"message":"Resource not accessible by integration"}')
@@ -309,6 +314,51 @@ def test_a_listing_failure_fails_open_and_says_so(tmp_path):
     assert "::warning::" in result.stdout
 
 
+def test_a_report_with_no_tally_after_tallied_ones_still_counts(tmp_path):
+    """A report posted while its run could not count carries no tally. Taking
+    the highest tally alone would drop it for good, and the PR would get one
+    more paid review than max-reviews allows."""
+    pr = FakePR(tmp_path, [_tallied(1), _tallied(2), _legacy_report()])
+    _, out = pr.cap(max_reviews="3")
+
+    assert out["prior-reviews"] == "3"
+    assert out["capped"] == "true"
+
+
+def test_a_comment_edited_in_the_web_ui_keeps_its_tally(tmp_path):
+    """GitHub returns a body edited in the browser with CRLF line endings."""
+    pr = FakePR(tmp_path, [_tallied(5).replace("\n", "\r\n")])
+    _, out = pr.cap(max_reviews="5")
+
+    assert out["prior-reviews"] == "5"
+
+
+def test_max_reviews_without_posting_comments_warns(tmp_path):
+    """The count comes from posted comments; with none posted it is zero
+    forever and the cap silently never fires."""
+    pr = FakePR(tmp_path, [])
+    result, _ = pr.cap(max_reviews="2", POST_COMMENT="false")
+
+    assert "::warning::" in result.stdout and "post-comment" in result.stdout
+
+
+def test_reports_posted_by_another_bot_login_are_warned_about(tmp_path):
+    """A GitHub App token cannot report its own login, so the fallback login
+    matches none of the reports it posted and the count reads zero."""
+    pr = FakePR(tmp_path, [])
+    result, out = pr.cap(max_reviews="2", STUB_OTHER_BOTS="my-review-app[bot]\n")
+
+    assert out["prior-reviews"] == "0"
+    assert "::warning::" in result.stdout and "my-review-app[bot]" in result.stdout
+
+
+def test_no_other_bot_warning_on_a_fresh_pr(tmp_path):
+    pr = FakePR(tmp_path, [])
+    result, _ = pr.cap(max_reviews="2")
+
+    assert "::warning::" not in result.stdout
+
+
 @pytest.mark.parametrize("bad", ["two", "-1", "1.5"])
 def test_a_malformed_max_reviews_fails_the_step(tmp_path, bad):
     pr = FakePR(tmp_path, [])
@@ -443,6 +493,23 @@ def test_the_cap_fires_in_update_mode(tmp_path):
     assert _push(pr, mode="update")["capped"] == "true"
     report = next(c for c in pr.comments if CAP_MARKER not in c["body"])
     assert "## Consensus Findings" in report["body"], "the cap note overwrote the last report"
+
+
+@pytest.mark.parametrize("mode", ["append", "update"])
+def test_a_failed_cap_step_listing_does_not_lose_the_tally(tmp_path, mode):
+    """The comment step tallies from its own listing, so one failed listing in
+    the cap step neither drops the tally (update mode would overwrite the only
+    comment holding it) nor leaves an uncounted report behind."""
+    pr = FakePR(tmp_path)
+    _push(pr, max_reviews="3", mode=mode)
+    _push(pr, max_reviews="3", mode=mode)
+
+    _, out = pr.cap(max_reviews="3", STUB_LIST_FAILS="1")
+    assert out["prior-reviews"] == ""
+    _post_comment(pr, out, report="## Consensus Findings\n", mode=mode, max_reviews="3")
+
+    assert "<!-- tri-review-reviews:3 -->" in pr.comments[-1]["body"]
+    assert _push(pr, max_reviews="3", mode=mode)["capped"] == "true"
 
 
 def test_a_stray_report_md_in_the_workspace_is_not_posted_on_a_capped_run(tmp_path):

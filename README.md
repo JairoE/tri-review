@@ -504,12 +504,6 @@ on:
     # `labeled` is what lets someone ask for one more review once the cap is hit.
     types: [opened, synchronize, reopened, labeled]
 
-# One run per PR at a time. Two pushes in quick succession would otherwise both
-# count below the cap before either posts its report, and both be paid for.
-concurrency:
-  group: tri-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
   pull-requests: write
@@ -519,6 +513,12 @@ jobs:
   review:
     # Any label starts a `labeled` run; only this one should.
     if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:again'
+    # One review per PR at a time -- see "Concurrency" below. On the job, not
+    # the workflow: a job skipped by the `if` above never joins the group, so
+    # an unrelated label cannot displace a review.
+    concurrency:
+      group: tri-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -532,11 +532,13 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-      # Take the label back off, so adding it again is the next request.
+      # Take the label back off, so adding it again is the next request. `|| true`
+      # because a re-run of this job, or someone removing it by hand, leaves no
+      # label to delete, and that must not turn a finished review red.
       - if: always() && github.event.action == 'labeled'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again"
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again" || true
 ```
 
 Once the PR already has `max-reviews` reports, the next run skips before it
@@ -550,26 +552,47 @@ Each comment the Action posts records a running count of reports in a hidden
 header line, and the cap reads the highest one back. A tally rather than a
 count of comments, because `comment-mode: update` edits one comment forever.
 Reports posted before v1.1.0 carry no tally and are counted one each; skip and
-failure comments from then are recognised by their headline and not counted,
-so a PR that was open across the upgrade keeps an accurate count.
+failure comments from then are recognised by their headline and not counted.
+In `append` mode a PR that was open across the upgrade keeps an accurate count.
+In `update` mode an older version left one edited comment however many reviews
+it held, so such a PR restarts from 1 (or 0, if that comment was last a skip).
 
 **A capped run posts a short note** saying the cap was reached and that this
 commit was not reviewed, so a push never looks reviewed when it was not. The
 note does not hide the last real report -- that report still stands for the
 commit it names -- and consecutive capped pushes edit the one note rather than
 adding one each. The next forced review posts normally and marks both outdated.
+In `comment-mode: update` this means a capped PR briefly shows two comments,
+the report and the note; the next forced review is written into the note and
+marks the old report outdated, leaving one again.
 
 Which events start the workflow, which label forces a run, who may add it and
 removing it afterwards all stay in your workflow: an Action cannot choose its
 own triggers, and a label name is one repo's policy. The Action only counts and
-decides. It also does not lock across runs, which is what the `concurrency`
-group above is for. `cancel-in-progress` means a newer push supersedes a review
-still running for an older one, which is usually what you want for cost; if
-you would rather every push finish, set it to `false` and runs will queue.
+decides.
 
-If the Action cannot list the PR's comments to count (a transient API error, a
-token that cannot read them), it fails open: the review runs, and the run
-carries a warning saying the cap was not enforced.
+**Concurrency.** The Action does not lock across runs, so two pushes in quick
+succession can both count below the cap before either posts. The job-level
+`concurrency` group above prevents that by running one review per PR at a
+time. Leave `cancel-in-progress` at `false` when you use a cap: a review is paid
+for as soon as its models are called but counted only once its comment is
+posted, so cancelling a running review spends the money and loses the count.
+It would also let a push cancel a review someone forced with the label. With
+`false`, a running review always finishes. GitHub keeps only the *newest*
+waiting run per group, so a burst of pushes reviews the one that was running
+and the latest one, and skips the ones in between. That is the cheapest
+outcome, but those in-between commits get no comment at all.
+
+**When the cap cannot count, it says so rather than guessing.** If the Action
+cannot list the PR's comments (a transient API error, a token that cannot read
+them), it fails open: that run is reviewed and carries a warning. The cap
+counts comments this Action posted, so with `post-comment: false` it can never
+be reached, and the run warns about that too. It also counts only comments
+posted by the token's own login. A GitHub App installation token cannot report
+its login, so reports it posted are not matched and the count reads zero. The
+run warns when it sees tri-review comments from another bot and none from
+itself. Use the default `github.token` or a personal access token with
+`max-reviews`.
 
 | Input | Default | Purpose |
 |---|---|---|

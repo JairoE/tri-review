@@ -13,16 +13,19 @@
 #
 # - Comments this Action posts from v1.1.0 on carry a running tally in their
 #   header, `<!-- tri-review-reviews:N -->`: the number of reports on the PR up
-#   to and including that comment. The count is the highest tally found. A
-#   tally rather than a count of comments, because `comment-mode: update` edits
-#   one comment in place forever -- counting comments would read 1 on every run
-#   and the cap would never fire.
+#   to and including that comment (written by pr_comment.sh). A tally rather
+#   than a count of comments, because `comment-mode: update` edits one comment
+#   in place forever -- counting comments would read 1 on every run and the
+#   cap would never fire.
 # - Older comments carry only the report marker. They are counted one each,
 #   except those whose first line after the header is a skip or failure
 #   headline, which v1.0.x wrote verbatim.
 #
+# count_reviews, which does the counting, lives in pr_comment.sh so the tally
+# written and the tally read can never disagree.
+#
 # Required env: GH_TOKEN REPO GITHUB_OUTPUT
-# Optional env: PR_NUMBER MAX_REVIEWS FORCE MARKER
+# Optional env: PR_NUMBER MAX_REVIEWS FORCE MARKER POST_COMMENT
 #
 # Writes `prior-reviews` (empty when it could not be counted) and `capped` to
 # GITHUB_OUTPUT; a capped run also gets `skipped`, `skip-reason=cap` and
@@ -32,25 +35,19 @@ set -euo pipefail
 # shellcheck source=pr_comment.sh
 source "$(dirname "${BASH_SOURCE[0]}")/pr_comment.sh"
 
-# Reads prior_comments() rows on stdin; prints how many reports they record.
-count_reviews() {
-  local id node_id body_b64 body header tally max_tally=0 legacy=0
-  while IFS=$'\t' read -r id node_id body_b64; do
-    [ -n "$id" ] || continue
-    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || true)
-    header=$(comment_header "$body")
-    tally=$(printf '%s\n' "$header" | sed -n 's/^<!-- tri-review-reviews:\([0-9][0-9]*\) -->$/\1/p' | head -n 1)
-    if [ -n "$tally" ]; then
-      tally=$((10#$tally))
-      [ "$tally" -gt "$max_tally" ] && max_tally=$tally
-      continue
-    fi
-    case "$header" in
-      *"content:**Nothing to review.**"* | *"content:**tri-review failed to produce a report**"*) ;;
-      *content:*) legacy=$((legacy + 1)) ;;
-    esac
-  done
-  echo $(( max_tally > legacy ? max_tally : legacy ))
+# Only comments posted by our own login are counted -- anyone can write the
+# markers in a comment of their own. But `gh api user` cannot name the login of
+# a GitHub App installation token, and the fallback, github-actions[bot], is
+# then not who posted our reports: the count reads zero on every run. Say so
+# when another bot has tri-review reports on this PR and we found none.
+warn_if_posted_as_someone_else() {
+  local others
+  others=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
+    ".[] | select(.user.type == \"Bot\") | select(.user.login != \"$1\") | select(.body | startswith(\"$MARKER\")) | .user.login" \
+    2>/dev/null | sort -u | paste -sd, - || true)
+  if [ -n "$others" ]; then
+    echo "::warning::This PR has tri-review comments posted by $others, but this run counts only those posted by $1, so max-reviews sees none of them. A GitHub App token cannot report its own login; see the README's note on github-token."
+  fi
 }
 
 output() { echo "$1" >> "$GITHUB_OUTPUT"; }
@@ -74,12 +71,18 @@ cap_main() {
       ;;
   esac
 
-  # Counted even with no cap set: the comment step writes the tally from this,
-  # so a consumer who turns max-reviews on later starts from the right number.
+  # The count comes from the comments this Action posts. With none posted, it
+  # reads zero forever -- not an error anyone would otherwise notice.
+  if [ -n "$max" ] && [ "${POST_COMMENT:-true}" != "true" ]; then
+    echo "::warning::max-reviews ($max) counts the review comments this Action posts, and post-comment is '${POST_COMMENT}', so nothing is posted and the cap can never be reached."
+  fi
+
+  # Counted even with no cap set, for the prior-reviews output.
   if [ -n "${PR_NUMBER:-}" ]; then
     login=$(resolve_bot_login)
     if rows=$(prior_comments "$login"); then
       prior=$(count_reviews <<< "$rows")
+      if [ -n "$max" ] && [ "$prior" = "0" ]; then warn_if_posted_as_someone_else "$login"; fi
     elif [ -n "$max" ]; then
       # Fail open, loudly. A transient API error should not leave a commit
       # unreviewed; the cost is one review, and the warning is on the run.

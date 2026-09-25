@@ -10,8 +10,14 @@
 # Required env: GH_TOKEN REPO PR_NUMBER BODY_FILE MARKER MODE
 # Optional env: RUN_URL COMMIT_SHA KIND
 #
-# KIND=cap marks BODY_FILE as a "review cap reached" note rather than a report
-# (see review_cap.sh), which changes what happens to the comments before it.
+# KIND says what BODY_FILE is: `report` (tri-review produced one), `cap` (a
+# "review cap reached" note -- see review_cap.sh -- which changes what happens
+# to the comments before it), or anything else for a skip or failure.
+#
+# BODY_FILE must start with MARKER. The running review tally that review_cap.sh
+# counts from is inserted after it here, from this script's own listing of the
+# PR's comments -- not from the cap step's, which may have failed where this
+# one succeeds.
 #
 # Also sourced by review_cap.sh for its comment-listing helpers; main only runs
 # when this file is executed directly.
@@ -64,11 +70,55 @@ prior_comments() {
 # at all from the diff it reviewed -- including these very markers, when the
 # diff is this repository -- and nothing a report says may be read as ours.
 comment_header() {
+  # A comment edited in GitHub's web UI comes back with CRLF line endings.
   printf '%s\n' "$1" | awk '
+    { sub(/\r$/, "") }
     /^<!-- tri-review-[a-z]+(:[0-9]+)? -->$/ { print; next }
     /^[[:space:]]*$/ || /^_Posted by / || /^<details><summary>Superseded by / { next }
     { print "content:" $0; exit }
   '
+}
+
+# Reads prior_comments() rows (oldest first) on stdin; prints how many reports
+# they record. See review_cap.sh for why this is a tally.
+#
+# Walked in order rather than taking the highest tally alone: a report posted
+# while its run could not count (so it carries no tally) still adds one on top
+# of whatever came before it, and the next tallied comment then builds on that.
+# Comments with no tally at all -- everything v1.0.x posted -- are counted one
+# per report, skipping the skip and failure headlines v1.0.x wrote verbatim.
+count_reviews() {
+  local id node_id body_b64 body header tally count=0
+  while IFS=$'\t' read -r id node_id body_b64; do
+    [ -n "$id" ] || continue
+    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || true)
+    header=$(comment_header "$body")
+    tally=$(printf '%s\n' "$header" | sed -n 's/^<!-- tri-review-reviews:\([0-9][0-9]*\) -->$/\1/p' | head -n 1)
+    if [ -n "$tally" ]; then
+      tally=$((10#$tally))
+      if [ "$tally" -gt "$count" ]; then count=$tally; fi
+      continue
+    fi
+    case "$header" in
+      *"content:**Nothing to review.**"* | *"content:**tri-review failed to produce a report**"*) ;;
+      *content:*) count=$((count + 1)) ;;
+    esac
+  done
+  echo "$count"
+}
+
+# Put `<!-- tri-review-reviews:N -->` on BODY_FILE's second line, right under
+# MARKER: the reports on this PR so far, plus this one if it is a report.
+insert_tally() {
+  local n
+  n=$(count_reviews <<< "$1")
+  if [ "${KIND:-}" = "report" ]; then n=$((n + 1)); fi
+  {
+    head -n 1 "$BODY_FILE"
+    echo "<!-- tri-review-reviews:$n -->"
+    tail -n +2 "$BODY_FILE"
+  } > "$BODY_FILE.tallied"
+  mv "$BODY_FILE.tallied" "$BODY_FILE"
 }
 
 # `gh api -f key=@file` does not read from a file -- only `--input` does, and
@@ -205,7 +255,13 @@ main() {
   local login prior ids=() node_ids=() bodies=() id node_id body_b64
 
   login=$(resolve_bot_login)
-  prior=$(prior_comments "$login" || true)
+  # Without a listing there is nothing to count from, so no tally is written;
+  # the next run counts this comment one-for-one if it is a report.
+  if prior=$(prior_comments "$login"); then
+    insert_tally "$prior"
+  else
+    prior=""
+  fi
 
   while IFS=$'\t' read -r id node_id body_b64; do
     [ -n "$id" ] || continue

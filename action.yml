@@ -96,9 +96,8 @@ runs:
       id: cap
       shell: bash
       # First, so a capped run costs one comment listing and nothing else: no
-      # Python, no install, no model call. Also counts earlier reviews when no
-      # cap is set -- the comment step records the running tally from it. See
-      # scripts/review_cap.sh for what counts.
+      # Python, no install, no model call. See scripts/review_cap.sh for what
+      # counts.
       #
       # Two pushes in quick succession can both count below the cap before
       # either posts. That is left to the consumer's per-PR `concurrency` group
@@ -110,6 +109,7 @@ runs:
         PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         MAX_REVIEWS: ${{ inputs.max-reviews }}
         FORCE: ${{ inputs.force }}
+        POST_COMMENT: ${{ inputs.post-comment }}
         MARKER: '<!-- tri-review-report -->'
       run: bash "${{ github.action_path }}/scripts/review_cap.sh"
 
@@ -211,44 +211,27 @@ runs:
         commit_sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
         attribution="_Posted by [workflow run]($RUN_URL) reviewing commit \`$commit_sha\`._"
 
-        # The running count of reports on this PR, including this one if it is
-        # a report -- what review_cap.sh reads back on the next run. Omitted
-        # when the cap step could not count; that comment is then counted the
-        # way a pre-v1.1.0 comment is.
-        #
+        # pr_comment.sh inserts the running review tally under the marker; KIND
+        # tells it whether this body is a report (and so counts).
+        header() { echo "$MARKER"; echo; echo "$attribution"; echo; }
+
         # A capped run is decided first and on its own: tri-review never ran,
         # so any report.md in the workspace is not this run's.
-        capped=false
-        [ "$SKIP_REASON" = "cap" ] && capped=true
-        tally=""
-        if [ -n "$PRIOR_REVIEWS" ]; then
-          reviews="$PRIOR_REVIEWS"
-          if [ "$capped" = false ] && [ -f report.md ]; then reviews=$((reviews + 1)); fi
-          tally="<!-- tri-review-reviews:$reviews -->"
-        fi
-        header() {
-          echo "$MARKER"
-          if [ -n "$tally" ]; then echo "$tally"; fi
-          echo
-          echo "$attribution"
-          echo
-        }
-
         kind=""
-        if [ "$capped" = true ]; then
+        if [ "$SKIP_REASON" = "cap" ]; then
           # Not a report, so pr_comment.sh leaves the last real one visible and
           # edits the previous cap note, if that is the newest comment, in place.
           kind=cap
           {
             echo "$MARKER"
             echo '<!-- tri-review-cap -->'
-            echo "$tally"
             echo
             echo "_Posted by [workflow run]($RUN_URL) for commit \`$commit_sha\`._"
             echo
             echo "**Review cap reached ($PRIOR_REVIEWS/$MAX_REVIEWS).** This PR has already had $PRIOR_REVIEWS tri-review reviews, the most this workflow allows, so this commit was not reviewed and no model was called. The last report above still stands for the commit it names. To review this commit anyway, re-run with the Action's \`force\` input set to \`true\`."
           } > "$BODY_FILE"
         elif [ -f report.md ]; then
+          kind=report
           { header; cat report.md; } > "$BODY_FILE"
         elif [ "$SKIPPED" = "true" ]; then
           # Each gate is a different event and must not read as another one.
