@@ -72,7 +72,10 @@ inputs:
 
 outputs:
   report-path:
-    description: 'Path to the written Markdown report, if one was produced.'
+    description: >
+      Absolute path to the Markdown report this run wrote, under
+      $RUNNER_TEMP/tri-review/. Empty when no report was produced (a skip, a
+      capped run, or a failure) -- a report.md in the checkout is never this.
     value: ${{ steps.run.outputs.report-path }}
   exit-code:
     description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
@@ -156,9 +159,17 @@ runs:
         INPUT_MODELS: ${{ inputs.models }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
         INPUT_TRIAGE: ${{ inputs.triage }}
+        # Outside the checkout, which is the consumer's repo: a report.md that
+        # repo commits at its root would otherwise be indistinguishable from
+        # one this run wrote, and a skip or a failure would post it as the
+        # review. Cleared first because two invocations in one job share
+        # RUNNER_TEMP.
+        REPORT: ${{ runner.temp }}/tri-review/report.md
       run: |
         set +e
-        args=(--output report.md)
+        mkdir -p "$(dirname "$REPORT")"
+        rm -f "$REPORT"
+        args=(--output "$REPORT")
         [ -n "$INPUT_PR_NUMBER" ] && args+=(--pr "$INPUT_PR_NUMBER")
         for m in $INPUT_MODELS; do
           args+=(--model "$m")
@@ -173,8 +184,8 @@ runs:
         set -e
 
         echo "exit-code=$exit_code" >> "$GITHUB_OUTPUT"
-        if [ -f report.md ]; then
-          echo "report-path=report.md" >> "$GITHUB_OUTPUT"
+        if [ -f "$REPORT" ]; then
+          echo "report-path=$REPORT" >> "$GITHUB_OUTPUT"
         elif [ "$exit_code" -eq 0 ]; then
           # Exited clean without writing a report: a gate decided the PR did not
           # need one. That is a success, and must not be reported as "failed to
@@ -200,6 +211,9 @@ runs:
         EXIT_CODE: ${{ steps.run.outputs.exit-code || steps.cap.outputs.exit-code }}
         PRIOR_REVIEWS: ${{ steps.cap.outputs.prior-reviews }}
         MAX_REVIEWS: ${{ inputs.max-reviews }}
+        # Set only when the run step saw a report it wrote itself; empty on a
+        # capped run, a skip, or a failure.
+        REPORT: ${{ steps.run.outputs.report-path }}
         BODY_FILE: comment-body.md
         MARKER: '<!-- tri-review-report -->'
       run: |
@@ -215,8 +229,9 @@ runs:
         # tells it whether this body is a report (and so counts).
         header() { echo "$MARKER"; echo; echo "$attribution"; echo; }
 
-        # A capped run is decided first and on its own: tri-review never ran,
-        # so any report.md in the workspace is not this run's.
+        # Whether this run produced a report is the run step's output, never a
+        # file check in the workspace: that is the consumer's checkout, and a
+        # report.md it commits is not this run's. A capped run never set it.
         kind=""
         if [ "$SKIP_REASON" = "cap" ]; then
           # Not a report, so pr_comment.sh leaves the last real one visible and
@@ -230,9 +245,9 @@ runs:
             echo
             echo "**Review cap reached ($PRIOR_REVIEWS/$MAX_REVIEWS).** This PR has already had $PRIOR_REVIEWS tri-review reviews, the most this workflow allows, so this commit was not reviewed and no model was called. The last report above still stands for the commit it names. To review this commit anyway, re-run with the Action's \`force\` input set to \`true\`."
           } > "$BODY_FILE"
-        elif [ -f report.md ]; then
+        elif [ -n "$REPORT" ] && [ -f "$REPORT" ]; then
           kind=report
-          { header; cat report.md; } > "$BODY_FILE"
+          { header; cat "$REPORT"; } > "$BODY_FILE"
         elif [ "$SKIPPED" = "true" ]; then
           # Each gate is a different event and must not read as another one.
           # A path skip spent nothing and knows exactly why; a triage skip spent

@@ -492,6 +492,8 @@ quieter on a long-running PR at the cost of that history.
 
 A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, `triage`, or `cap`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, `triage` means one cheap call was spent reaching a verdict that can be wrong, and `cap` means the PR had already used up `max-reviews` (below). `path`, `empty-diff` and `cap` made no provider call at all.
 
+`report-path` is the absolute path of the report the run wrote, under `$RUNNER_TEMP/tri-review/`, and is empty whenever no report was produced. Before v1.1.0 it was `report.md` in the workspace; it moved out because the workspace is your checkout, and a `report.md` your repo commits at its root would have been posted as the review on any run that skipped or failed. A later step that read `report.md` directly should read `${{ steps.<id>.outputs.report-path }}` instead.
+
 | Input | Default | Purpose |
 |---|---|---|
 | `pr-number` | autodetected | Which PR to review; usually left unset |
