@@ -492,6 +492,20 @@ quieter on a long-running PR at the cost of that history.
 
 A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, `triage`, or `cap`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, `triage` means one cheap call was spent reaching a verdict that can be wrong, and `cap` means the PR had already used up `max-reviews` (below). `path`, `empty-diff` and `cap` made no provider call at all.
 
+| Input | Default | Purpose |
+|---|---|---|
+| `pr-number` | autodetected | Which PR to review; usually left unset |
+| `models` | the three configured slots | Space-separated model IDs, same rules as `--model` |
+| `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
+| `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
+| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
+| `max-reviews` | none (no cap) | Most reports to produce on one PR; later runs skip with `skip-reason: cap`. See [Capping reviews per PR](#capping-reviews-per-pr) |
+| `force` | `false` | `'true'` ignores `max-reviews` for this run, e.g. `${{ github.event.action == 'labeled' }}` |
+| `post-comment` | `true` | Whether to post a PR comment at all |
+| `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
+| `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
+| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
+
 ### Capping reviews per PR
 
 Every review costs three model calls, and a PR that takes ten pushes pays for
@@ -593,20 +607,6 @@ its login, so reports it posted are not matched and the count reads zero. The
 run warns when it sees tri-review comments from another bot and none from
 itself. Use the default `github.token` or a personal access token with
 `max-reviews`.
-
-| Input | Default | Purpose |
-|---|---|---|
-| `pr-number` | autodetected | Which PR to review; usually left unset |
-| `models` | the three configured slots | Space-separated model IDs, same rules as `--model` |
-| `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
-| `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
-| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
-| `max-reviews` | none (no cap) | Most reports to produce on one PR; later runs skip with `skip-reason: cap`. See [Capping reviews per PR](#capping-reviews-per-pr) |
-| `force` | `false` | `'true'` ignores `max-reviews` for this run, e.g. `${{ github.event.action == 'labeled' }}` |
-| `post-comment` | `true` | Whether to post a PR comment at all |
-| `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
-| `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
-| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
 
 ## Claude Code skill
 
