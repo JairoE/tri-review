@@ -99,7 +99,10 @@ count_reviews() {
       if [ "$tally" -gt "$count" ]; then count=$tally; fi
       continue
     fi
+    # A cap note is never a review, tallied or not (it goes untallied when
+    # the listing that would have tallied it failed).
     case "$header" in
+      *"$CAP_MARKER"*) ;;
       *"content:**Nothing to review.**"* | *"content:**tri-review failed to produce a report**"*) ;;
       *content:*) count=$((count + 1)) ;;
     esac

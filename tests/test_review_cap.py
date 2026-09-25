@@ -359,6 +359,16 @@ def test_no_other_bot_warning_on_a_fresh_pr(tmp_path):
     assert "::warning::" not in result.stdout
 
 
+def test_a_cap_note_without_a_tally_does_not_count(tmp_path):
+    """A cap note goes untallied when the comment step's listing failed; it
+    is still not a review."""
+    untallied_note = f"{MARKER}\n{CAP_MARKER}\n\n_Posted by x._\n\n**Review cap reached (1/1).**\n"
+    pr = FakePR(tmp_path, [_tallied(1), untallied_note])
+    _, out = pr.cap()
+
+    assert out["prior-reviews"] == "1"
+
+
 @pytest.mark.parametrize("bad", ["two", "-1", "1.5"])
 def test_a_malformed_max_reviews_fails_the_step(tmp_path, bad):
     pr = FakePR(tmp_path, [])

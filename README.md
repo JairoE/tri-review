@@ -595,7 +595,9 @@ It would also let a push cancel a review someone forced with the label. With
 `false`, a running review always finishes. GitHub keeps only the *newest*
 waiting run per group, so a burst of pushes reviews the one that was running
 and the latest one, and skips the ones in between. That is the cheapest
-outcome, but those in-between commits get no comment at all.
+outcome, but those in-between commits get no comment at all. The same applies
+to a forced run that is still *waiting*: a push behind it replaces it, and the
+label stays on the PR -- remove and re-add it to ask again.
 
 **When the cap cannot count, it says so rather than guessing.** If the Action
 cannot list the PR's comments (a transient API error, a token that cannot read
