@@ -8,12 +8,19 @@
 # so it can be exercised against a stub `gh` on PATH -- see tests/test_pr_comment.py.
 #
 # Required env: GH_TOKEN REPO PR_NUMBER BODY_FILE MARKER MODE
-# Optional env: RUN_URL COMMIT_SHA
+# Optional env: RUN_URL COMMIT_SHA KIND
+#
+# KIND=cap marks BODY_FILE as a "review cap reached" note rather than a report
+# (see review_cap.sh), which changes what happens to the comments before it.
+#
+# Also sourced by review_cap.sh for its comment-listing helpers; main only runs
+# when this file is executed directly.
 set -euo pipefail
 
 MODE="${MODE:-append}"
 MARKER="${MARKER:-<!-- tri-review-report -->}"
 SUPERSEDED_MARKER='<!-- tri-review-superseded -->'
+CAP_MARKER='<!-- tri-review-cap -->'
 
 # Scope the marker match to our own posting identity -- otherwise anyone who can
 # comment on the PR could craft a comment starting with the same marker and have
@@ -44,6 +51,24 @@ prior_comments() {
   local login="$1"
   gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq \
     ".[] | select(.user.login == \"$login\") | select(.body | startswith(\"$MARKER\")) | [.id, .node_id, (.body | @base64)] | @tsv"
+}
+
+# Print the hidden marker lines tri-review wrote at the top of a comment body,
+# stopping at the first line of anything else -- the report itself, or a skip
+# headline, which is printed as `content:<line>` so a caller can tell legacy
+# comment kinds apart. Blank lines, the "_Posted by" attribution and the
+# summary line collapse_comment wraps a folded report in are stepped over, so a
+# folded comment yields the same header as the comment it folded.
+#
+# Stopping at the first foreign line is the point: a report can quote any text
+# at all from the diff it reviewed -- including these very markers, when the
+# diff is this repository -- and nothing a report says may be read as ours.
+comment_header() {
+  printf '%s\n' "$1" | awk '
+    /^<!-- tri-review-[a-z]+(:[0-9]+)? -->$/ { print; next }
+    /^[[:space:]]*$/ || /^_Posted by / || /^<details><summary>Superseded by / { next }
+    { print "content:" $0; exit }
+  '
 }
 
 # `gh api -f key=@file` does not read from a file -- only `--input` does, and
@@ -189,6 +214,24 @@ main() {
     bodies+=("$body_b64")
   done <<< "$prior"
 
+  # A cap note says "this commit was not reviewed" -- it is not a newer report,
+  # so it must not hide the last real one, in either mode. Nothing older is
+  # reconciled. Consecutive capped pushes edit one note in place rather than
+  # stacking a note per push; the next real review (a forced one) posts
+  # normally and reconciles the note away along with everything before it.
+  if [ "${KIND:-}" = "cap" ]; then
+    if [ ${#ids[@]} -gt 0 ]; then
+      local newest=$(( ${#ids[@]} - 1 )) newest_body
+      newest_body=$(printf '%s' "${bodies[$newest]}" | base64 --decode 2>/dev/null || true)
+      if comment_header "$newest_body" | grep -qxF "$CAP_MARKER"; then
+        patch_comment "${ids[$newest]}"
+        return
+      fi
+    fi
+    post_comment
+    return
+  fi
+
   if [ "$MODE" = "update" ]; then
     if [ ${#ids[@]} -gt 0 ]; then
       # Prior comments are oldest-first (see prior_comments) -- the current
@@ -222,4 +265,6 @@ main() {
   reconcile_older <<< "$prior"
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

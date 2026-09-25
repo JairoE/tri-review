@@ -26,6 +26,24 @@ inputs:
       and, unlike the path-based skip, it can be wrong.
     required: false
     default: 'false'
+  max-reviews:
+    description: >
+      Most reviews to run on one PR. Once the PR already has this many tri-review
+      reports, later runs skip before installing anything or calling any model
+      (skip-reason 'cap') and pass. Only runs that produced a report count --
+      "Nothing to review" skips, failures and cap notes do not. Empty (the
+      default) means no cap.
+    required: false
+    default: ''
+  force:
+    description: >
+      'true' ignores max-reviews for this run. Wire it to whatever your workflow
+      treats as an explicit request, e.g. the expression
+      github.event.action == 'labeled' with a label trigger. Which events,
+      labels and people may force a run is the workflow's policy, not the
+      Action's.
+    required: false
+    default: 'false'
   post-comment:
     description: 'Post a PR comment with the report.'
     required: false
@@ -58,22 +76,45 @@ outputs:
     value: ${{ steps.run.outputs.report-path }}
   exit-code:
     description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
-    value: ${{ steps.run.outputs.exit-code }}
+    value: ${{ steps.run.outputs.exit-code || steps.cap.outputs.exit-code }}
   skipped:
     description: "'true' when no review was produced because nothing in the PR needed one."
-    value: ${{ steps.run.outputs.skipped }}
+    value: ${{ steps.run.outputs.skipped || steps.cap.outputs.skipped }}
   skip-reason:
     description: >
       Which gate stopped the run: 'path' (every changed file is documentation or
-      generated), 'empty-diff', or 'triage' (a model judged the diff to change no
-      behaviour). Only 'path' and 'empty-diff' mean no provider call was made at
-      all; 'triage' means one cheap call was spent reaching that verdict.
-    value: ${{ steps.run.outputs.skip-reason }}
+      generated), 'empty-diff', 'triage' (a model judged the diff to change no
+      behaviour), or 'cap' (the PR already had max-reviews reports). 'path',
+      'empty-diff' and 'cap' mean no provider call was made at all; 'triage'
+      means one cheap call was spent reaching that verdict.
+    value: ${{ steps.run.outputs.skip-reason || steps.cap.outputs.skip-reason }}
 
 runs:
   using: 'composite'
   steps:
+    - name: Check review cap
+      id: cap
+      shell: bash
+      # First, so a capped run costs one comment listing and nothing else: no
+      # Python, no install, no model call. Also counts earlier reviews when no
+      # cap is set -- the comment step records the running tally from it. See
+      # scripts/review_cap.sh for what counts.
+      #
+      # Two pushes in quick succession can both count below the cap before
+      # either posts. That is left to the consumer's per-PR `concurrency` group
+      # (see README) rather than a lock in here: an Action cannot hold a lock
+      # across runs, and the workflow already has the right primitive.
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+        MAX_REVIEWS: ${{ inputs.max-reviews }}
+        FORCE: ${{ inputs.force }}
+        MARKER: '<!-- tri-review-report -->'
+      run: bash "${{ github.action_path }}/scripts/review_cap.sh"
+
     - name: Set up Python
+      if: ${{ steps.cap.outputs.capped != 'true' }}
       # Pinned to a commit, not the mutable `v5` tag. This one is inherited by
       # every repo that uses this Action: a tag reference here means their runs
       # execute whatever `v5` points at on the day they run, which is a supply
@@ -86,6 +127,7 @@ runs:
         python-version: '3.11'
 
     - name: Install tri-review
+      if: ${{ steps.cap.outputs.capped != 'true' }}
       shell: bash
       # Constrained to requirements-lock.txt (generated from this repo's own
       # uv.lock -- see the "lock-action" Makefile target) so this resolves to
@@ -99,6 +141,7 @@ runs:
 
     - name: Run tri-review
       id: run
+      if: ${{ steps.cap.outputs.capped != 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -152,9 +195,11 @@ runs:
         REPO: ${{ github.repository }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         MODE: ${{ inputs.comment-mode }}
-        SKIPPED: ${{ steps.run.outputs.skipped }}
-        SKIP_REASON: ${{ steps.run.outputs.skip-reason }}
-        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        SKIPPED: ${{ steps.run.outputs.skipped || steps.cap.outputs.skipped }}
+        SKIP_REASON: ${{ steps.run.outputs.skip-reason || steps.cap.outputs.skip-reason }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code || steps.cap.outputs.exit-code }}
+        PRIOR_REVIEWS: ${{ steps.cap.outputs.prior-reviews }}
+        MAX_REVIEWS: ${{ inputs.max-reviews }}
         BODY_FILE: comment-body.md
         MARKER: '<!-- tri-review-report -->'
       run: |
@@ -166,8 +211,45 @@ runs:
         commit_sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
         attribution="_Posted by [workflow run]($RUN_URL) reviewing commit \`$commit_sha\`._"
 
-        if [ -f report.md ]; then
-          { echo "$MARKER"; echo; echo "$attribution"; echo; cat report.md; } > "$BODY_FILE"
+        # The running count of reports on this PR, including this one if it is
+        # a report -- what review_cap.sh reads back on the next run. Omitted
+        # when the cap step could not count; that comment is then counted the
+        # way a pre-v1.1.0 comment is.
+        #
+        # A capped run is decided first and on its own: tri-review never ran,
+        # so any report.md in the workspace is not this run's.
+        capped=false
+        [ "$SKIP_REASON" = "cap" ] && capped=true
+        tally=""
+        if [ -n "$PRIOR_REVIEWS" ]; then
+          reviews="$PRIOR_REVIEWS"
+          if [ "$capped" = false ] && [ -f report.md ]; then reviews=$((reviews + 1)); fi
+          tally="<!-- tri-review-reviews:$reviews -->"
+        fi
+        header() {
+          echo "$MARKER"
+          if [ -n "$tally" ]; then echo "$tally"; fi
+          echo
+          echo "$attribution"
+          echo
+        }
+
+        kind=""
+        if [ "$capped" = true ]; then
+          # Not a report, so pr_comment.sh leaves the last real one visible and
+          # edits the previous cap note, if that is the newest comment, in place.
+          kind=cap
+          {
+            echo "$MARKER"
+            echo '<!-- tri-review-cap -->'
+            echo "$tally"
+            echo
+            echo "_Posted by [workflow run]($RUN_URL) for commit \`$commit_sha\`._"
+            echo
+            echo "**Review cap reached ($PRIOR_REVIEWS/$MAX_REVIEWS).** This PR has already had $PRIOR_REVIEWS tri-review reviews, the most this workflow allows, so this commit was not reviewed and no model was called. The last report above still stands for the commit it names. To review this commit anyway, re-run with the Action's \`force\` input set to \`true\`."
+          } > "$BODY_FILE"
+        elif [ -f report.md ]; then
+          { header; cat report.md; } > "$BODY_FILE"
         elif [ "$SKIPPED" = "true" ]; then
           # Each gate is a different event and must not read as another one.
           # A path skip spent nothing and knows exactly why; a triage skip spent
@@ -191,10 +273,7 @@ runs:
               ;;
           esac
           {
-            echo "$MARKER"
-            echo
-            echo "$attribution"
-            echo
+            header
             echo "$headline"
             echo
             echo '<details><summary>What was skipped</summary>'
@@ -207,10 +286,7 @@ runs:
           } > "$BODY_FILE"
         else
           {
-            echo "$MARKER"
-            echo
-            echo "$attribution"
-            echo
+            header
             echo "**tri-review failed to produce a report** (exit code $EXIT_CODE)."
             echo
             echo '<details><summary>Output</summary>'
@@ -223,13 +299,13 @@ runs:
           } > "$BODY_FILE"
         fi
 
-        COMMIT_SHA="$commit_sha" bash "${{ github.action_path }}/scripts/pr_comment.sh"
+        COMMIT_SHA="$commit_sha" KIND="$kind" bash "${{ github.action_path }}/scripts/pr_comment.sh"
 
     - name: Enforce result
       shell: bash
       env:
         FAIL_ON_INSUFFICIENT: ${{ inputs.fail-on-insufficient-reviews }}
-        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code || steps.cap.outputs.exit-code }}
       run: |
         if [ "$EXIT_CODE" = "0" ]; then
           exit 0
