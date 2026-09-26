@@ -538,7 +538,9 @@ with the permission it is already known to have. Nothing is ever deleted. Set
 `comment-mode: update` to go back to a single comment edited in place, which is
 quieter on a long-running PR at the cost of that history.
 
-A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, or `triage`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, and `triage` means one cheap call was spent reaching a verdict that can be wrong.
+A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, `triage`, or `cap`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, `triage` means one cheap call was spent reaching a verdict that can be wrong, and `cap` means the PR had already used up `max-reviews` (below). `path`, `empty-diff` and `cap` made no provider call at all.
+
+`report-path` is the absolute path of the report the run wrote, under `$RUNNER_TEMP/tri-review/`, and is empty whenever no report was produced. Before v1.1.0 it was `report.md` in the workspace; it moved out because the workspace is your checkout, and a `report.md` your repo commits at its root would have been posted as the review on any run that skipped or failed. A later step that read `report.md` directly should read `${{ steps.<id>.outputs.report-path }}` instead.
 
 | Input | Default | Purpose |
 |---|---|---|
@@ -547,10 +549,116 @@ A PR the gates skip posts a short "Nothing to review" comment and passes, rather
 | `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
 | `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
 | `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
+| `max-reviews` | none (no cap) | Most reports to produce on one PR; later runs skip with `skip-reason: cap`. See [Capping reviews per PR](#capping-reviews-per-pr) |
+| `force` | `false` | `'true'` ignores `max-reviews` for this run, e.g. `${{ github.event.action == 'labeled' }}` |
 | `post-comment` | `true` | Whether to post a PR comment at all |
 | `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
 | `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
 | `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
+
+### Capping reviews per PR
+
+Every review costs three model calls, and a PR that takes ten pushes pays for
+ten. `max-reviews` caps that:
+
+```yaml
+name: tri-review
+on:
+  pull_request:
+    # `labeled` is what lets someone ask for one more review once the cap is hit.
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    # Any label starts a `labeled` run; only this one should.
+    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:again'
+    # One review per PR at a time -- see "Concurrency" below. On the job, not
+    # the workflow: a job skipped by the `if` above never joins the group, so
+    # an unrelated label cannot displace a review.
+    concurrency:
+      group: tri-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: JairoE/tri-review@v1
+        with:
+          max-reviews: 2
+          # Adding the label is the explicit request for one more review.
+          force: ${{ github.event.action == 'labeled' }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+      # Take the label back off, so adding it again is the next request. `|| true`
+      # because a re-run of this job, or someone removing it by hand, leaves no
+      # label to delete, and that must not turn a finished review red.
+      - if: always() && github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again" || true
+```
+
+Once the PR already has `max-reviews` reports, the next run skips before it
+installs anything or calls any model, reports `skip-reason: cap`, and passes.
+`force: true` ignores the cap for that run.
+
+**What counts is a run that produced a report.** "Nothing to review" skips do
+not use up the cap, not even `triage` skips (one cheap call, not a review), and
+neither do runs that failed before producing a report, or the cap notes below.
+Each comment the Action posts records a running count of reports in a hidden
+header line, and the cap reads the highest one back. A tally rather than a
+count of comments, because `comment-mode: update` edits one comment forever.
+Reports posted before v1.1.0 carry no tally and are counted one each; skip and
+failure comments from then are recognised by their headline and not counted.
+In `append` mode a PR that was open across the upgrade keeps an accurate count.
+In `update` mode an older version left one edited comment however many reviews
+it held, so such a PR restarts from 1 (or 0, if that comment was last a skip).
+
+**A capped run posts a short note** saying the cap was reached and that this
+commit was not reviewed, so a push never looks reviewed when it was not. The
+note does not hide the last real report -- that report still stands for the
+commit it names -- and consecutive capped pushes edit the one note rather than
+adding one each. The next forced review posts normally and marks both outdated.
+In `comment-mode: update` this means a capped PR briefly shows two comments,
+the report and the note; the next forced review is written into the note and
+marks the old report outdated, leaving one again.
+
+Which events start the workflow, which label forces a run, who may add it and
+removing it afterwards all stay in your workflow: an Action cannot choose its
+own triggers, and a label name is one repo's policy. The Action only counts and
+decides.
+
+**Concurrency.** The Action does not lock across runs, so two pushes in quick
+succession can both count below the cap before either posts. The job-level
+`concurrency` group above prevents that by running one review per PR at a
+time. Leave `cancel-in-progress` at `false` when you use a cap: a review is paid
+for as soon as its models are called but counted only once its comment is
+posted, so cancelling a running review spends the money and loses the count.
+It would also let a push cancel a review someone forced with the label. With
+`false`, a running review always finishes. GitHub keeps only the *newest*
+waiting run per group, so a burst of pushes reviews the one that was running
+and the latest one, and skips the ones in between. That is the cheapest
+outcome, but those in-between commits get no comment at all. The same applies
+to a forced run that is still *waiting*: a push behind it replaces it, and the
+label stays on the PR -- remove and re-add it to ask again.
+
+**When the cap cannot count, it says so rather than guessing.** If the Action
+cannot list the PR's comments (a transient API error, a token that cannot read
+them), it fails open: that run is reviewed and carries a warning. The cap
+counts comments this Action posted, so with `post-comment: false` it can never
+be reached, and the run warns about that too. It also counts only comments
+posted by the token's own login. A GitHub App installation token cannot report
+its login, so reports it posted are not matched and the count reads zero. The
+run warns when it sees tri-review comments from another bot and none from
+itself. Use the default `github.token` or a personal access token with
+`max-reviews`.
 
 ## Claude Code skill
 
