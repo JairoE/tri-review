@@ -55,7 +55,10 @@ output() { echo "$1" >> "$GITHUB_OUTPUT"; }
 cap_main() {
   local max="${MAX_REVIEWS:-}" force="${FORCE:-}" prior="" login rows
 
-  max="${max//[[:space:]]/}"
+  # Trim the ends only (a YAML block scalar leaves a trailing newline). Deleting
+  # all whitespace would read "1 2" as 12 instead of rejecting it.
+  max="${max#"${max%%[![:space:]]*}"}"
+  max="${max%"${max##*[![:space:]]}"}"
   if [ -n "$max" ] && ! [[ "$max" =~ ^[0-9]+$ ]]; then
     echo "::error::max-reviews must be a whole number, or empty for no cap; got '${MAX_REVIEWS}'."
     exit 1
