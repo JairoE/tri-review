@@ -7,3 +7,7 @@ def probe() -> int:
 
 def probe_two() -> int:
     return 2
+
+
+def probe_three() -> int:
+    return 3
