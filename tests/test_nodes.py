@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from tri_review.nodes import make_review_node, review_with
@@ -318,3 +320,102 @@ def test_review_nodes_pass_the_cache_setting_through():
     make_review_node("node-model", builder, use_cache=False)(state)
 
     assert builder.calls == 2
+
+
+# --- findings that miss the schema -------------------------------------------
+
+
+def _raw_finding(**kw):
+    base = dict(
+        file="server/src/routes/defaults.ts",
+        line=12,
+        severity="major",
+        category="bug",
+        title="Missing validation",
+        detail="The PUT handler accepts any body. It should reject unknown keys.",
+    )
+    base.update(kw)
+    return {k: v for k, v in base.items() if v is not None}
+
+
+def test_a_missing_title_is_filled_from_the_detail_not_fatal():
+    """The live failure: claude-sonnet-5 left `title` out of both its findings
+    and the whole review was discarded, leaving nothing to triangulate."""
+    output = ReviewOutput.model_validate(
+        {"findings": [_raw_finding(title=None), _raw_finding(title="  ")]}
+    )
+    llm = FakeLLM(output=output)
+    result = review_with("fake-model", "payload-missing-title", llm_builder=lambda _: llm)
+    assert result.ok
+    assert [f.title for f in result.findings] == ["The PUT handler accepts any body"] * 2
+    assert result.malformed_findings == []
+    assert result.low_confidence_reason is None
+
+
+def test_a_derived_title_is_one_line_and_bounded():
+    long_detail = "x" * 300 + "\nsecond line"
+    finding = Finding.model_validate(_raw_finding(title=None, detail=long_detail))
+    assert "\n" not in finding.title
+    assert len(finding.title) <= 100
+
+
+def test_one_malformed_finding_costs_only_itself():
+    output = ReviewOutput.model_validate(
+        {"findings": [_raw_finding(), _raw_finding(file="src/b.py", severity="high")]}
+    )
+    llm = FakeLLM(output=output)
+    result = review_with("fake-model", "payload-one-malformed", llm_builder=lambda _: llm)
+    assert result.ok
+    assert [f.title for f in result.findings] == ["Missing validation"]
+    assert len(result.malformed_findings) == 1
+    assert result.malformed_findings[0].startswith("findings[1] (src/b.py): severity:")
+    assert result.low_confidence_reason is None
+
+
+def test_all_findings_malformed_is_inconclusive_not_a_clean_pass():
+    output = ReviewOutput.model_validate(
+        {"findings": [_raw_finding(category="style"), _raw_finding(detail=None, title=None)]}
+    )
+    llm = FakeLLM(output=output)
+    result = review_with("fake-model", "payload-all-malformed", llm_builder=lambda _: llm)
+    assert result.ok
+    assert result.findings == []
+    assert len(result.malformed_findings) == 2
+    assert "all malformed" in result.low_confidence_reason
+
+
+def test_salvage_runs_inside_langchains_own_tool_parser():
+    """What the Anthropic path actually does with the tool call it gets back."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.output_parsers.openai_tools import PydanticToolsParser
+
+    message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "ReviewOutput",
+                "id": "call_1",
+                "args": {"findings": [_raw_finding(title=None), _raw_finding(severity="high")]},
+            }
+        ],
+    )
+    parsed = PydanticToolsParser(tools=[ReviewOutput], first_tool_only=True).invoke(message)
+    assert len(parsed.findings) == 1
+    assert parsed.findings[0].title == "The PUT handler accepts any body"
+    assert len(parsed.malformed) == 1
+
+
+def test_the_malformed_list_is_never_shown_to_a_model():
+    """It is ours to fill, not the reviewer's -- and adding it must not change
+    the schema that keys the cache."""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    assert "malformed" not in json.dumps(ReviewOutput.model_json_schema())
+    assert "malformed" not in json.dumps(convert_to_openai_tool(ReviewOutput))
+    finding_schema = ReviewOutput.model_json_schema()["$defs"]["Finding"]
+    assert "title" in finding_schema["required"]
+
+
+def test_a_non_list_findings_value_is_still_a_parse_failure():
+    with pytest.raises(ValueError):
+        ReviewOutput.model_validate({"findings": "none"})
