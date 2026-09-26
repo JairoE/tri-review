@@ -243,6 +243,13 @@ def test_force_false_is_the_same_as_unset(tmp_path):
     assert out["capped"] == "true"
 
 
+def test_surrounding_whitespace_is_allowed(tmp_path):
+    pr = FakePR(tmp_path, [_legacy_report(), _legacy_report()])
+    _, out = pr.cap(max_reviews=" 2\n")
+
+    assert out["capped"] == "true"
+
+
 def test_zero_caps_every_run(tmp_path):
     pr = FakePR(tmp_path, [])
     _, out = pr.cap(max_reviews="0")
@@ -388,7 +395,7 @@ def test_a_cap_note_without_a_tally_does_not_count(tmp_path):
     assert out["prior-reviews"] == "1"
 
 
-@pytest.mark.parametrize("bad", ["two", "-1", "1.5"])
+@pytest.mark.parametrize("bad", ["two", "-1", "1.5", "1 2", "1\n2"])
 def test_a_malformed_max_reviews_fails_the_step(tmp_path, bad):
     pr = FakePR(tmp_path, [])
     result, _ = pr.cap(max_reviews=bad)
