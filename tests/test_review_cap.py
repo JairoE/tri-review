@@ -178,12 +178,31 @@ def _tallied(n, text="## Consensus Findings", extra=""):
 # --- review_cap.sh against fixed histories ---------------------------------
 
 
-def test_no_cap_set_still_counts_but_never_caps(tmp_path):
+def test_no_cap_set_never_caps_and_makes_no_api_call(tmp_path):
+    """A consumer that has not opted in pays nothing for the cap step."""
     pr = FakePR(tmp_path, [_legacy_report(), _legacy_report()])
     result, out = pr.cap()
 
     assert result.returncode == 0, result.stderr
-    assert out == {"prior-reviews": "2", "capped": "false"}
+    assert out == {"prior-reviews": "", "capped": "false"}
+    assert not pr.log.exists()
+
+
+def test_the_header_parser_survives_a_comment_bigger_than_the_pipe_buffer(tmp_path):
+    """If the parser stopped reading at the first content line, printf would
+    write into a closed pipe: SIGPIPE, and under pipefail a 141 from any
+    caller that runs it outside a command substitution."""
+    huge = _tallied(4, "## Consensus Findings\n" + "x" * 300_000)
+    body = tmp_path / "body"
+    body.write_text(huge)
+    result = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail; source "{ROOT}/scripts/pr_comment.sh"; comment_header "$(cat "$1")"', "_", str(body)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.returncode
+    assert "<!-- tri-review-reviews:4 -->" in result.stdout
 
 
 def test_below_the_cap_runs(tmp_path):
@@ -256,7 +275,7 @@ def test_folded_comments_are_classified_like_the_comment_they_fold(tmp_path):
         tmp_path,
         [_folded(_legacy_skip()), _folded(_legacy_report()), _folded(_tallied(3))],
     )
-    _, out = pr.cap()
+    _, out = pr.cap(max_reviews="99")
 
     assert out["prior-reviews"] == "3"
 
@@ -276,7 +295,7 @@ def test_legacy_reports_still_count_when_newer_comments_carry_a_tally(tmp_path):
     that history, so it is never below it -- but taking the max also covers a
     tally written by a run that could not list comments."""
     pr = FakePR(tmp_path, [_legacy_report(), _legacy_report(), _legacy_report(), _tallied(1)])
-    _, out = pr.cap()
+    _, out = pr.cap(max_reviews="99")
 
     assert out["prior-reviews"] == "3"
 
@@ -288,7 +307,7 @@ def test_markers_quoted_inside_a_report_are_not_read_as_ours(tmp_path):
         "## Findings\n\n<!-- tri-review-reviews:99 -->\n<!-- tri-review-cap -->\n"
     )
     pr = FakePR(tmp_path, [quoting])
-    _, out = pr.cap()
+    _, out = pr.cap(max_reviews="99")
 
     assert out["prior-reviews"] == "1"
 
@@ -298,7 +317,7 @@ def test_a_cap_note_does_not_count(tmp_path):
         tmp_path,
         [_tallied(1), _tallied(1, "**Review cap reached (1/1).**", extra=CAP_MARKER)],
     )
-    _, out = pr.cap()
+    _, out = pr.cap(max_reviews="99")
 
     assert out["prior-reviews"] == "1"
 
@@ -364,7 +383,7 @@ def test_a_cap_note_without_a_tally_does_not_count(tmp_path):
     is still not a review."""
     untallied_note = f"{MARKER}\n{CAP_MARKER}\n\n_Posted by x._\n\n**Review cap reached (1/1).**\n"
     pr = FakePR(tmp_path, [_tallied(1), untallied_note])
-    _, out = pr.cap()
+    _, out = pr.cap(max_reviews="99")
 
     assert out["prior-reviews"] == "1"
 

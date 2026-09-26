@@ -69,13 +69,18 @@ prior_comments() {
 # Stopping at the first foreign line is the point: a report can quote any text
 # at all from the diff it reviewed -- including these very markers, when the
 # diff is this repository -- and nothing a report says may be read as ours.
+#
+# awk reads to the end rather than `exit`ing at that line: a body bigger than
+# the pipe buffer would otherwise leave printf writing into a closed pipe, and
+# under pipefail the SIGPIPE (141) fails the whole call.
 comment_header() {
   # A comment edited in GitHub's web UI comes back with CRLF line endings.
   printf '%s\n' "$1" | awk '
+    done { next }
     { sub(/\r$/, "") }
     /^<!-- tri-review-[a-z]+(:[0-9]+)? -->$/ { print; next }
     /^[[:space:]]*$/ || /^_Posted by / || /^<details><summary>Superseded by / { next }
-    { print "content:" $0; exit }
+    { print "content:" $0; done = 1 }
   '
 }
 
@@ -282,7 +287,7 @@ main() {
     if [ ${#ids[@]} -gt 0 ]; then
       local newest=$(( ${#ids[@]} - 1 )) newest_body
       newest_body=$(printf '%s' "${bodies[$newest]}" | base64 --decode 2>/dev/null || true)
-      if comment_header "$newest_body" | grep -qxF "$CAP_MARKER"; then
+      if case "$(comment_header "$newest_body")" in *"$CAP_MARKER"*) true ;; *) false ;; esac; then
         patch_comment "${ids[$newest]}"
         return
       fi

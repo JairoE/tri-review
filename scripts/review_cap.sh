@@ -77,7 +77,14 @@ cap_main() {
     echo "::warning::max-reviews ($max) counts the review comments this Action posts, and post-comment is '${POST_COMMENT}', so nothing is posted and the cap can never be reached."
   fi
 
-  # Counted even with no cap set, for the prior-reviews output.
+  # No cap, nothing to count: a consumer that has not opted in pays no extra
+  # API calls, and nothing reads prior-reviews except a cap note.
+  if [ -z "$max" ]; then
+    output "prior-reviews="
+    output "capped=false"
+    return
+  fi
+
   if [ -n "${PR_NUMBER:-}" ]; then
     login=$(resolve_bot_login)
     if rows=$(prior_comments "$login"); then
