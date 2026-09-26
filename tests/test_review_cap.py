@@ -413,35 +413,98 @@ def _action_steps():
     return {s["name"]: s for s in yaml.safe_load((ROOT / "action.yml").read_text())["runs"]["steps"]}
 
 
-def _post_comment(pr: FakePR, cap_out: dict, *, report: str | None, skip_reason="", mode="append", max_reviews=""):
-    """Run the "Post PR comment" step's shell exactly as action.yml has it."""
-    script = _action_steps()["Post PR comment"]["run"].replace(
-        "${{ github.action_path }}", str(ROOT)
-    )
+def _workspace(pr: FakePR, stray: str | None = None) -> Path:
+    """A fresh checkout. `stray` is a report.md the consumer's repo commits."""
     work = pr.dir / "work"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
-    if report is not None:
-        (work / "report.md").write_text(report)
-    (work / "tri-review-output.txt").write_text(
-        f"tri-review-status: skipped:{skip_reason}\n" if skip_reason else ""
+    if stray is not None:
+        (work / "report.md").write_text(stray)
+    return work
+
+
+# Stands in for the CLI: STUB_OUTCOME is "report", "skip:<reason>", or "fail".
+_STUB_TRI_REVIEW = """#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  [ "$1" = --output ] && { out="$2"; shift; }
+  shift
+done
+case "$STUB_OUTCOME" in
+  report) printf '## Consensus Findings\\n\\nx\\n' > "$out" ;;
+  skip:*) echo "tri-review-status: skipped:${STUB_OUTCOME#skip:}" ;;
+  fail) echo "no API keys" >&2; exit 2 ;;
+esac
+"""
+
+
+def _run_step(pr: FakePR, work: Path, outcome: str) -> dict:
+    """Run the "Run tri-review" step's shell exactly as action.yml has it,
+    against a stub `tri-review`; return its outputs."""
+    step = _action_steps()["Run tri-review"]
+    runner_temp = pr.dir / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    stub = pr.dir / "bin" / "tri-review"
+    stub.write_text(_STUB_TRI_REVIEW)
+    stub.chmod(0o755)
+    out = pr.dir / "run-output"
+    out.write_text("")
+    env = {
+        **pr.env,
+        "GITHUB_OUTPUT": str(out),
+        "STUB_OUTCOME": outcome,
+        "REPORT": step["env"]["REPORT"].replace("${{ runner.temp }}", str(runner_temp)),
+    }
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]], cwd=work, env=env, capture_output=True, text=True
     )
-    skipped = "true" if report is None and (skip_reason or cap_out.get("skipped")) else ""
+    assert result.returncode == 0, result.stderr
+    return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+
+
+def _comment_step(pr: FakePR, work: Path, env: dict):
+    script = _action_steps()["Post PR comment"]["run"].replace(
+        "${{ github.action_path }}", str(ROOT)
+    )
     env = {
         **pr.env,
         "RUN_URL": "https://example.invalid/run/1",
-        "MODE": mode,
-        "SKIPPED": skipped,
-        "SKIP_REASON": skip_reason or cap_out.get("skip-reason", ""),
-        "EXIT_CODE": "0",
-        "PRIOR_REVIEWS": cap_out.get("prior-reviews", ""),
-        "MAX_REVIEWS": max_reviews,
         "BODY_FILE": "comment-body.md",
+        **env,
     }
     result = subprocess.run(
         ["bash", "-eo", "pipefail", "-c", script], cwd=work, env=env, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def _post_comment(pr: FakePR, cap_out: dict, *, report: str | None, skip_reason="", mode="append", max_reviews="", stray=None):
+    """Run the "Post PR comment" step's shell exactly as action.yml has it.
+    A report arrives the way the run step hands it over: as report-path."""
+    work = _workspace(pr, stray)
+    report_path = ""
+    if report is not None:
+        report_file = pr.dir / "runner-temp" / "tri-review" / "report.md"
+        report_file.parent.mkdir(parents=True, exist_ok=True)
+        report_file.write_text(report)
+        report_path = str(report_file)
+    (work / "tri-review-output.txt").write_text(
+        f"tri-review-status: skipped:{skip_reason}\n" if skip_reason else ""
+    )
+    skipped = "true" if report is None and (skip_reason or cap_out.get("skipped")) else ""
+    _comment_step(
+        pr,
+        work,
+        {
+            "MODE": mode,
+            "SKIPPED": skipped,
+            "SKIP_REASON": skip_reason or cap_out.get("skip-reason", ""),
+            "EXIT_CODE": "0",
+            "PRIOR_REVIEWS": cap_out.get("prior-reviews", ""),
+            "MAX_REVIEWS": max_reviews,
+            "REPORT": report_path,
+        },
+    )
 
 
 def _push(pr, *, max_reviews="2", force="", review=True, skip_reason="", mode="append"):
@@ -547,11 +610,81 @@ def test_a_stray_report_md_in_the_workspace_is_not_posted_on_a_capped_run(tmp_pa
     as a review of this commit and count it toward the cap."""
     pr = FakePR(tmp_path, [_tallied(2)])
     _, out = pr.cap(max_reviews="2")
-    _post_comment(pr, out, report="# someone else's report.md\n", max_reviews="2")
+    _post_comment(pr, out, report=None, max_reviews="2", stray="# someone else's report.md\n")
 
     note = pr.comments[-1]["body"]
     assert CAP_MARKER in note and "someone else" not in note
     assert "<!-- tri-review-reviews:2 -->" in note
+
+
+@pytest.mark.parametrize(
+    "outcome, expect",
+    [
+        ("skip:path", "Every file this PR changes is documentation"),
+        ("skip:empty-diff", "diff came back empty"),
+        ("skip:triage", "judged that it changes no behaviour"),
+        ("fail", "tri-review failed to produce a report"),
+    ],
+)
+def test_a_stray_report_md_is_not_posted_when_tri_review_writes_none(tmp_path, outcome, expect):
+    """The consumer's repo commits a report.md at its root. A run that skips or
+    fails writes no report, and must say so -- not post that file as the review
+    of this commit, and not count it toward the cap. Driven through the real
+    run step, so report-path is whatever action.yml actually hands over."""
+    pr = FakePR(tmp_path, [_tallied(1)])
+    _, cap_out = pr.cap(max_reviews="3")
+    work = _workspace(pr, stray="# someone else's report.md\n")
+
+    run_out = _run_step(pr, work, outcome)
+    assert "report-path" not in run_out
+    assert (work / "report.md").read_text() == "# someone else's report.md\n", "the run step touched the checkout"
+
+    _comment_step(
+        pr,
+        work,
+        {
+            "MODE": "append",
+            "SKIPPED": run_out.get("skipped", ""),
+            "SKIP_REASON": run_out.get("skip-reason", ""),
+            "EXIT_CODE": run_out["exit-code"],
+            "PRIOR_REVIEWS": cap_out["prior-reviews"],
+            "MAX_REVIEWS": "3",
+            "REPORT": run_out.get("report-path", ""),
+        },
+    )
+
+    body = pr.comments[-1]["body"]
+    assert "someone else" not in body
+    assert expect in body
+    assert "<!-- tri-review-reviews:1 -->" in body, "a skip or failure was counted as a review"
+
+
+def test_a_real_report_is_written_outside_the_checkout_and_posted(tmp_path):
+    pr = FakePR(tmp_path, [_tallied(1)])
+    _, cap_out = pr.cap(max_reviews="3")
+    work = _workspace(pr, stray="# someone else's report.md\n")
+
+    run_out = _run_step(pr, work, "report")
+    report_path = Path(run_out["report-path"])
+    assert report_path.is_absolute() and work not in report_path.parents
+
+    _comment_step(
+        pr,
+        work,
+        {
+            "MODE": "append",
+            "SKIPPED": "",
+            "SKIP_REASON": "",
+            "EXIT_CODE": run_out["exit-code"],
+            "PRIOR_REVIEWS": cap_out["prior-reviews"],
+            "MAX_REVIEWS": "3",
+            "REPORT": str(report_path),
+        },
+    )
+
+    body = pr.comments[-1]["body"]
+    assert "## Consensus Findings" in body and "someone else" not in body
+    assert "<!-- tri-review-reviews:2 -->" in body
 
 
 def test_legacy_history_carries_into_the_tally(tmp_path):
