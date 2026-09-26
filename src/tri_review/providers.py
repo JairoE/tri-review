@@ -49,9 +49,14 @@ def _cleaned_api_key(env_var: str) -> dict[str, str]:
     SDKs' own env-var parsing to do it. Returns {} when the var is unset so
     each provider's own "missing key" error still fires normally -- this
     only defends a key that is present but malformed, not a missing one.
+
+    Set-but-blank counts as unset. The Action maps `google-api-key` to
+    GOOGLE_API_KEY unconditionally, so a repo without that secret gets an
+    empty string -- and an explicit `api_key=""` stops langchain-google-genai
+    from falling back to GEMINI_API_KEY, failing a run that had a key.
     """
-    value = os.environ.get(env_var)
-    return {} if value is None else {"api_key": value.strip()}
+    value = (os.environ.get(env_var) or "").strip()
+    return {"api_key": value} if value else {}
 
 
 def build_llm(model_name: str):

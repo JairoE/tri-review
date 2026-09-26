@@ -19,6 +19,7 @@ import shutil
 import subprocess
 from urllib.parse import quote, urlparse
 
+from . import gating
 from .errors import NothingToReview, PreflightError, PRNotFoundError
 
 _GH_TIMEOUT = 60
@@ -269,10 +270,13 @@ def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...]
     reproduces the same three-dot diff GitHub would otherwise have returned.
     In --repo mode there is no local checkout to fall back to, so the error
     instead points at --exclude as the way to shrink the diff.
+
+    Excluded paths are filtered out here, by `gating.filter_diff`, not by
+    `gh pr diff --exclude`: gh reads globs by Go's rules, not ours, and kept
+    files the skip report said were dropped. gh filters client-side after the
+    full diff arrives anyway, so handing it the patterns never avoided a 406.
     """
     args = ["gh", "pr", "diff", str(pr_number), *_repo_args(repo)]
-    for pattern in exclude:
-        args += ["--exclude", pattern]
     result = _run(args)
     if result.returncode != 0:
         if _is_diff_too_large(result.stderr):
@@ -288,13 +292,14 @@ def fetch_diff(pr_number: str, repo: str | None = None, exclude: tuple[str, ...]
             f"Could not fetch the diff for PR #{pr_number}.\n"
             f"gh said: {result.stderr.strip() or 'no detail'}"
         )
-    if not result.stdout.strip():
+    diff = gating.filter_diff(result.stdout, exclude)
+    if not diff.strip():
         raise NothingToReview(
             f"PR #{pr_number} has an empty diff"
             + (" once the exclude patterns are applied." if exclude else "."),
             gate="empty-diff",
         )
-    return result.stdout
+    return diff
 
 
 def fetch_pr_meta(pr_number: str, repo: str | None = None) -> dict:
@@ -436,11 +441,9 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
             f"computed locally either.\ngit said: {fetch.stderr.strip() or 'no detail'}"
         )
 
+    # Excludes are applied to the output, not as `:(exclude)` pathspecs, for
+    # the same reason as in fetch_diff: git's glob rules are not ours either.
     diff_args = ["git", "diff", "FETCH_HEAD...HEAD"]
-    if exclude:
-        diff_args.append("--")
-        diff_args.append(".")
-        diff_args += [f":(exclude){pattern}" for pattern in exclude]
     diff = _run(diff_args)
     if diff.returncode != 0:
         raise PRNotFoundError(
@@ -450,7 +453,8 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
             "This fallback requires the PR's own branch to be the current "
             "checkout -- see README."
         )
-    if not diff.stdout.strip():
+    filtered = gating.filter_diff(diff.stdout, exclude)
+    if not filtered.strip():
         # NOT a NothingToReview. Reaching here means GitHub refused this diff for
         # being over ~20,000 lines, and the local recomputation of that same diff
         # came back empty -- a contradiction. The only ways to produce it are a
@@ -464,4 +468,4 @@ def _fetch_diff_locally(pr_number: str, exclude: tuple[str, ...] = ()) -> str:
             "nothing in it: either the PR's head branch is not the current "
             "checkout (see README), or --exclude dropped every changed file."
         )
-    return diff.stdout
+    return filtered

@@ -123,3 +123,12 @@ def test_gemini_without_thinking_level_support_is_not_a_supported_model(model):
     assert provider_of(model) is None
     with pytest.raises(ValueError, match="Unrecognized model ID"):
         build_llm(model)
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_cleaned_api_key_treats_a_blank_value_as_unset(monkeypatch, blank):
+    """The Action sets GOOGLE_API_KEY to "" when the secret is missing, and an
+    explicit api_key="" stops langchain-google-genai from falling back to
+    GEMINI_API_KEY -- a run with a key failed as though it had none."""
+    monkeypatch.setenv("SOME_KEY", blank)
+    assert _cleaned_api_key("SOME_KEY") == {}

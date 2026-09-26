@@ -227,3 +227,18 @@ def test_reviewers_never_receive_the_ledger():
     from tri_review import nodes
 
     assert "dismissals" not in inspect.getsource(nodes.review_with)
+
+
+def test_malformed_findings_are_disclosed_above_the_report():
+    partial = _result("m1", "a")
+    partial.malformed_findings = ["findings[1] (auth.py): severity: bad value"]
+    state = {"results": [partial, _result("m2", "b")]}
+    report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
+    assert "did not match the schema" in report
+    assert "`m1`: 1 of 2 set aside -- findings[1] (auth.py)" in report
+
+
+def test_no_malformed_findings_adds_no_note():
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
+    assert "did not match the schema" not in report

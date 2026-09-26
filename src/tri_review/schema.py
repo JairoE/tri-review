@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 Severity = Literal["critical", "major", "minor"]
 Category = Literal["bug", "security", "performance", "logic"]
@@ -23,6 +24,36 @@ class Finding(BaseModel):
     detail: str = Field(description="What is wrong and why it matters.")
     suggested_fix: str | None = Field(default=None, description="Concrete change to make, or null.")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _title_from_detail(cls, data):
+        """Fill a missing title from the detail rather than reject the finding.
+
+        Still required in the schema the model is shown -- a before-validator
+        does not change it -- so this only catches a reviewer that ignores the
+        schema. claude-sonnet-5 did, live: two findings with no `title` and a
+        full `detail`, and the whole review was discarded over a one-line
+        heading the detail already contained.
+        """
+        if not isinstance(data, dict) or str(data.get("title") or "").strip():
+            return data
+        detail = data.get("detail")
+        if not isinstance(detail, str) or not detail.strip():
+            return data
+        return {**data, "title": _headline(detail)}
+
+
+_TITLE_LIMIT = 100
+
+
+def _headline(text: str) -> str:
+    """The first sentence of `text`, on one line and at most _TITLE_LIMIT chars."""
+    line = text.strip().splitlines()[0].strip()
+    sentence = line.split(". ", 1)[0].rstrip(".")
+    if len(sentence) <= _TITLE_LIMIT:
+        return sentence
+    return sentence[: _TITLE_LIMIT - 1].rstrip() + "…"
+
 
 class ReviewOutput(BaseModel):
     """What each reviewer model is asked to return."""
@@ -31,6 +62,42 @@ class ReviewOutput(BaseModel):
         default_factory=list,
         description="Every issue found. Empty if the diff is clean -- never invent findings.",
     )
+    # Filled by `_set_aside_malformed`, never by the model: SkipJsonSchema keeps
+    # it out of the schema providers are shown, and out of the cache key built
+    # from that schema.
+    malformed: SkipJsonSchema[list[str]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _set_aside_malformed(cls, data):
+        """Validate findings one at a time, so one bad entry costs only itself.
+
+        Without this, a single finding that misses the schema fails the whole
+        ReviewOutput, and every valid finding beside it is thrown away with it
+        -- the reviewer then counts as having not reported at all. What does
+        not validate is recorded in `malformed` so it is reported, not hidden.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("findings"), list):
+            return data
+        kept: list[Finding] = []
+        malformed: list[str] = []
+        for index, item in enumerate(data["findings"]):
+            try:
+                kept.append(Finding.model_validate(item))
+            except ValidationError as exc:
+                malformed.append(_describe_malformed(index, item, exc))
+        return {**data, "findings": kept, "malformed": malformed}
+
+
+def _describe_malformed(index: int, item, exc: ValidationError) -> str:
+    """One line naming which finding failed and on what, without echoing its body."""
+    errors = exc.errors()
+    first = errors[0]
+    where = ".".join(str(part) for part in first["loc"]) or "finding"
+    file = item.get("file") if isinstance(item, dict) else None
+    label = f"findings[{index}]" + (f" ({file})" if isinstance(file, str) and file else "")
+    more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+    return f"{label}: {where}: {first['msg']}{more}"
 
 
 class ReviewResult(BaseModel):
@@ -47,6 +114,9 @@ class ReviewResult(BaseModel):
     # output budget on internal reasoning -- a schema-valid but low-confidence
     # empty answer, indistinguishable from a genuine clean pass unless flagged.
     low_confidence_reason: str | None = None
+    # Findings this model returned that did not match the schema and were set
+    # aside, one line each (see ReviewOutput._set_aside_malformed).
+    malformed_findings: list[str] = Field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -99,13 +169,23 @@ def render_findings_md(result: ReviewResult) -> str:
             f"> ```\n> {result.error}\n> ```\n"
         )
 
+    set_aside = ""
+    if result.malformed_findings:
+        count = len(result.malformed_findings)
+        set_aside = (
+            f"\n_{count} malformed finding{'' if count == 1 else 's'} set aside: "
+            + "; ".join(result.malformed_findings)
+            + "_\n"
+        )
+
     if not result.findings:
         if result.low_confidence_reason:
             return (
                 f"_{result.model} returned 0 findings but is flagged low-confidence: "
                 f"{result.low_confidence_reason}. Treat as inconclusive, not a clean pass._\n"
+                + set_aside
             )
-        return f"_{result.model} found no issues in this diff._\n"
+        return f"_{result.model} found no issues in this diff._\n" + set_aside
 
     ordered = sorted(
         result.findings,
@@ -124,4 +204,4 @@ def render_findings_md(result: ReviewResult) -> str:
             + (f"\n\n**Suggested fix**\n\n{finding.suggested_fix}" if finding.suggested_fix else "")
         )
 
-    return "\n\n".join(parts) + "\n"
+    return "\n\n".join(parts) + "\n" + set_aside
