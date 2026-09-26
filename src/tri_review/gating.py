@@ -86,3 +86,59 @@ def matches_any_of_each(paths: list[str], patterns: tuple[str, ...]) -> bool:
     entirely by patterns the operator supplied -- the two have different remedies.
     """
     return any(matches_any(path, patterns) for path in paths)
+
+
+_SECTION_START = re.compile(r"^(?=diff --git )", re.MULTILINE)
+
+
+def filter_diff(diff: str, patterns: tuple[str, ...]) -> str:
+    """Drop every file section of a unified diff whose path matches `patterns`.
+
+    Done here rather than by `gh pr diff --exclude` or git's `:(exclude)`
+    pathspecs, because each of those reads a glob by its own rules. `gh` uses
+    Go's `path.Match`, where `**` is just `*` and `*` stops at `/`: there
+    `**/*.md` drops `docs/a.md` but keeps `README.md` and `docs/x/y/z.md`,
+    while `partition` above -- which decides what the user is told was
+    skipped -- drops all three. A file reported as skipped and then reviewed
+    anyway is what that disagreement looked like. One matcher for both means
+    the report and the payload cannot diverge.
+    """
+    if not patterns:
+        return diff
+    return "".join(
+        section
+        for section in _SECTION_START.split(diff)
+        if not (section.startswith("diff --git ") and matches_any(_section_path(section), patterns))
+    )
+
+
+def _section_path(section: str) -> str:
+    """The path one file section of a diff is about.
+
+    The post-image path where there is one, the pre-image path for a deletion.
+    Sections with no `---`/`+++` lines at all (binary files, pure renames,
+    mode changes) fall back to `rename to`, then the `diff --git` header.
+    """
+    new = old = renamed = None
+    for line in section.splitlines():
+        if line.startswith("@@"):
+            break
+        if line.startswith("+++ "):
+            new = _strip_prefix(line[4:], "b/")
+        elif line.startswith("--- "):
+            old = _strip_prefix(line[4:], "a/")
+        elif line.startswith("rename to "):
+            renamed = line[len("rename to "):]
+    for path in (new, old):
+        if path and path != "/dev/null":
+            return path
+    if renamed:
+        return renamed
+    header = section.split("\n", 1)[0]
+    _, found, tail = header.rpartition(" b/")
+    return tail if found else header
+
+
+def _strip_prefix(target: str, prefix: str) -> str:
+    target = target.split("\t", 1)[0].strip()
+    return target[len(prefix):] if target.startswith(prefix) else target
