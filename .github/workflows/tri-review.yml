@@ -2,18 +2,9 @@ name: tri-review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-
-# Cancel a still-running review for this PR when a newer commit arrives, rather
-# than letting both finish. Two runs racing to post and minimize comments on the
-# same PR is not a hard-constraint failure -- nothing goes unreviewed -- but it
-# can leave two "current" reports visible if neither run sees the other's post
-# before it lists prior comments. A cancelled run is also a wasted set of model
-# calls the newer commit's own run is about to repeat, so this cuts real cost
-# too, not just comment-history noise.
-concurrency:
-  group: tri-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+    # `labeled` is how a PR at the review cap asks for one more: add the
+    # tri-review:again label (see max-reviews / force below).
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   pull-requests: write
@@ -27,6 +18,19 @@ permissions:
 
 jobs:
   review:
+    # Any label starts a `labeled` run; only this one should review.
+    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:again'
+    # One review per PR at a time. On the job rather than the workflow, so a
+    # run whose job is skipped by the `if` above (an unrelated label) never
+    # joins the group and cannot displace a real review. Not
+    # cancel-in-progress: a review is paid for as soon as its models are
+    # called but only counted toward max-reviews once its comment posts, so
+    # cancelling one mid-flight spends the money and loses the count. GitHub
+    # keeps only the newest waiting run, so a burst of pushes still collapses
+    # to the running review plus the latest commit.
+    concurrency:
+      group: tri-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     # Provider API keys are stored as secrets on the "env" GitHub Environment,
     # not as repo-level secrets -- a job only gets access to an environment's
@@ -76,9 +80,21 @@ jobs:
       # after merging changes CI should review with; until then, merged work
       # does not reach CI at all (it sat at v1.0.0 through three merges once).
       - name: Run tri-review on this PR
-        uses: JairoE/tri-review@93fd7972b9cb36ca54248f9acd87d7ead23ba3de  # main after #16: gemini-3.8-flash at thinking_level=high
+        uses: JairoE/tri-review@20ae6ae60912111a6e3c10dc8437ea950bb887b3  # v1.1.0
         with:
           pr-number: ${{ github.event.pull_request.number }}
+          # Two reviews per PR; the tri-review:again label forces one more.
+          max-reviews: 2
+          force: ${{ github.event.action == 'labeled' }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+
+      # Take the label back off so adding it again is the next request. `|| true`:
+      # a re-run of this job, or a hand removal, leaves nothing to delete, and
+      # that must not turn a finished review red.
+      - name: Remove tri-review:again label
+        if: always() && github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again" || true
