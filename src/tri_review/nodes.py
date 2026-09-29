@@ -148,14 +148,21 @@ def review_with(
         output = raw_result["parsed"]
         findings = output.findings if output is not None else []
         malformed = output.malformed if output is not None else []
+        if malformed and not findings:
+            # Nothing usable came back, so this is a failure, not an empty
+            # review: it must not count toward the two reviews synthesis
+            # needs, and -- returned before the cache write, like any failure
+            # -- a retry asks this model again rather than replaying it.
+            return ReviewResult(
+                model=model_name,
+                error=_all_malformed_error(malformed),
+                malformed_findings=malformed,
+            )
         result = ReviewResult(
             model=model_name,
             findings=findings,
             malformed_findings=malformed,
-            low_confidence_reason=(
-                _all_malformed_reason(findings, malformed)
-                or _low_confidence_reason(raw_result["raw"], findings)
-            ),
+            low_confidence_reason=_low_confidence_reason(raw_result["raw"], findings),
         )
     except Exception as exc:  # noqa: BLE001 - one flaky provider must not abort the run
         # Deliberately not cached. Storing a failure would make the retry this
@@ -233,20 +240,12 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
     return None
 
 
-def _all_malformed_reason(findings: list, malformed: list[str]) -> str | None:
-    """Flag an empty result whose findings were all set aside as malformed.
-
-    Such a model did report problems -- just not in a shape that could be kept.
-    Left unflagged, its empty list would read as a clean pass and could be cited
-    as corroborating one, which is the opposite of what it said.
-    """
-    if findings or not malformed:
-        return None
+def _all_malformed_error(malformed: list[str]) -> str:
+    """The error for a review whose every finding was set aside as malformed."""
     count = len(malformed)
     return (
-        f"returned {count} finding{'' if count == 1 else 's'}, all malformed and set aside "
-        "-- it reported problems it could not state in the required shape, so its "
-        "empty result is not a clean pass"
+        f"returned {count} finding{'' if count == 1 else 's'}, none matching the "
+        "findings schema, so nothing it reported could be used: " + "; ".join(malformed)
     )
 
 

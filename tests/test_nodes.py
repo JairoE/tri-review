@@ -372,16 +372,46 @@ def test_one_malformed_finding_costs_only_itself():
     assert result.low_confidence_reason is None
 
 
-def test_all_findings_malformed_is_inconclusive_not_a_clean_pass():
-    output = ReviewOutput.model_validate(
-        {"findings": [_raw_finding(category="style"), _raw_finding(detail=None, title=None)]}
-    )
-    llm = FakeLLM(output=output)
+_ALL_MALFORMED = {"findings": [_raw_finding(category="style"), _raw_finding(detail=None, title=None)]}
+
+
+def test_all_findings_malformed_is_a_failure_that_keeps_its_diagnostics():
+    llm = FakeLLM(output=ReviewOutput.model_validate(_ALL_MALFORMED))
     result = review_with("fake-model", "payload-all-malformed", llm_builder=lambda _: llm)
-    assert result.ok
+    assert not result.ok
     assert result.findings == []
     assert len(result.malformed_findings) == 2
-    assert "all malformed" in result.low_confidence_reason
+    assert "none matching the findings schema" in result.error
+    assert "findings[0]" in result.error and "category" in result.error
+
+
+def test_wholly_malformed_reviews_do_not_make_a_quorum():
+    """Two reviews with nothing usable in them plus one failure is zero usable
+    reviews -- synthesis must refuse, not triangulate nothing."""
+    from tri_review.errors import InsufficientReviewsError
+    from tri_review.nodes import synthesize_node
+
+    bad = FakeLLM(output=ReviewOutput.model_validate(_ALL_MALFORMED))
+    results = [
+        review_with("m1", "payload-quorum", llm_builder=lambda _: bad),
+        review_with("m2", "payload-quorum", llm_builder=lambda _: bad),
+        review_with("m3", "payload-quorum", llm_builder=lambda _: FakeLLM(raises=TimeoutError())),
+    ]
+    with pytest.raises(InsufficientReviewsError, match="Only 0 of 3"):
+        synthesize_node({"results": results}, llm_builder=lambda _: None)
+
+
+def test_a_retry_asks_again_only_the_model_whose_review_was_unusable():
+    good = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+    bad = _CountingBuilder(output=ReviewOutput.model_validate(_ALL_MALFORMED))
+
+    for _ in range(2):
+        review_with("good-model", "payload-retry-malformed", llm_builder=good)
+        retried = review_with("bad-model", "payload-retry-malformed", llm_builder=bad)
+
+    assert good.calls == 1
+    assert bad.calls == 2
+    assert not retried.ok and retried.cached is False
 
 
 def test_salvage_runs_inside_langchains_own_tool_parser():
