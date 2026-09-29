@@ -33,7 +33,7 @@ def provider_of(model_name: str) -> str | None:
     return None
 
 
-def _cleaned_api_key(env_var: str) -> dict[str, str]:
+def _cleaned_api_key(*env_vars: str) -> dict[str, str]:
     """kwargs for an explicit, whitespace-stripped api_key, or {} if unset.
 
     A key sourced from a GitHub Actions secret, shell profile, or .env file
@@ -46,12 +46,28 @@ def _cleaned_api_key(env_var: str) -> dict[str, str]:
     error.` -- indistinguishable from real network flakiness without reading
     the exception's `__cause__` (see nodes._describe_error). Stripped once
     here, close to the wire, rather than trusting three different provider
-    SDKs' own env-var parsing to do it. Returns {} when the var is unset so
-    each provider's own "missing key" error still fires normally -- this
+    SDKs' own env-var parsing to do it. Returns {} when no var is set at all
+    so each provider's own "missing key" error still fires normally -- this
     only defends a key that is present but malformed, not a missing one.
+
+    `env_vars` are tried in order and the first non-blank one wins, which is
+    how a provider with a fallback variable is resolved here rather than by
+    the SDK. The SDK cannot be left to do it: the Action sets GOOGLE_API_KEY
+    to "" whenever its secret is absent, and langchain-google-genai takes any
+    set value -- "" blocked the GEMINI_API_KEY fallback when passed explicitly,
+    and "   " or "\\n" were read from the environment raw when not. When every
+    var is set but blank, an explicit "" is passed for the same reason: left
+    to itself the SDK would send the raw whitespace instead.
     """
-    value = os.environ.get(env_var)
-    return {} if value is None else {"api_key": value.strip()}
+    blank = False
+    for env_var in env_vars:
+        raw = os.environ.get(env_var)
+        if raw is None:
+            continue
+        if raw.strip():
+            return {"api_key": raw.strip()}
+        blank = True
+    return {"api_key": ""} if blank else {}
 
 
 def build_llm(model_name: str):
@@ -139,6 +155,7 @@ def build_llm(model_name: str):
             timeout=config.google_timeout(),
             max_retries=1,
             thinking_level="high",
-            **_cleaned_api_key("GOOGLE_API_KEY"),
+            # GOOGLE_API_KEY first: the precedence langchain-google-genai gives them.
+            **_cleaned_api_key("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         )
     raise ValueError(f"Unrecognized model ID {model_name!r} — cannot pick a provider.")

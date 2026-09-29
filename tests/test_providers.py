@@ -123,3 +123,47 @@ def test_gemini_without_thinking_level_support_is_not_a_supported_model(model):
     assert provider_of(model) is None
     with pytest.raises(ValueError, match="Unrecognized model ID"):
         build_llm(model)
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_cleaned_api_key_never_hands_the_sdk_raw_whitespace(monkeypatch, blank):
+    """Set but blank passes an explicit "": omitting the kwarg would let the
+    SDK read the raw "   " or "\\n" from the environment itself."""
+    monkeypatch.setenv("SOME_KEY", blank)
+    assert _cleaned_api_key("SOME_KEY") == {"api_key": ""}
+
+
+def test_cleaned_api_key_takes_the_first_non_blank_var(monkeypatch):
+    monkeypatch.setenv("FIRST", "  ")
+    monkeypatch.setenv("SECOND", " k2\n")
+    assert _cleaned_api_key("FIRST", "SECOND") == {"api_key": "k2"}
+    monkeypatch.delenv("FIRST")
+    monkeypatch.delenv("SECOND")
+    assert _cleaned_api_key("FIRST", "SECOND") == {}
+
+
+# Built through the real, installed client rather than a capturing stub: the
+# live failure was in what langchain-google-genai does with the kwargs and the
+# environment together, which a stub cannot show. Construction makes no call.
+
+
+def _google_key(monkeypatch, **env):
+    for var in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    return build_llm("gemini-3.8-flash").google_api_key.get_secret_value()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_a_blank_google_key_falls_back_to_gemini_in_the_real_client(monkeypatch, blank):
+    assert _google_key(monkeypatch, GOOGLE_API_KEY=blank, GEMINI_API_KEY="gem") == "gem"
+
+
+def test_google_key_keeps_precedence_over_gemini_in_the_real_client(monkeypatch):
+    assert _google_key(monkeypatch, GOOGLE_API_KEY="goo", GEMINI_API_KEY="gem") == "goo"
+
+
+def test_an_all_blank_google_key_fails_as_missing_in_the_real_client(monkeypatch):
+    with pytest.raises(Exception, match="API key required"):
+        _google_key(monkeypatch, GOOGLE_API_KEY="  \n")

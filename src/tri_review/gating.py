@@ -86,3 +86,105 @@ def matches_any_of_each(paths: list[str], patterns: tuple[str, ...]) -> bool:
     entirely by patterns the operator supplied -- the two have different remedies.
     """
     return any(matches_any(path, patterns) for path in paths)
+
+
+_SECTION_START = re.compile(r"^(?=diff --git )", re.MULTILINE)
+
+
+def filter_diff(diff: str, patterns: tuple[str, ...]) -> str:
+    """Drop every file section of a unified diff whose path matches `patterns`.
+
+    Done here rather than by `gh pr diff --exclude` or git's `:(exclude)`
+    pathspecs, because each of those reads a glob by its own rules. `gh` uses
+    Go's `path.Match`, where `**` is just `*` and `*` stops at `/`: there
+    `**/*.md` drops `docs/a.md` but keeps `README.md` and `docs/x/y/z.md`,
+    while `partition` above -- which decides what the user is told was
+    skipped -- drops all three. A file reported as skipped and then reviewed
+    anyway is what that disagreement looked like. One matcher for both means
+    the report and the payload cannot diverge.
+    """
+    if not patterns:
+        return diff
+    return "".join(
+        section
+        for section in _SECTION_START.split(diff)
+        if not (section.startswith("diff --git ") and matches_any(_section_path(section), patterns))
+    )
+
+
+def _section_path(section: str) -> str:
+    """The path one file section of a diff is about.
+
+    The post-image path where there is one, the pre-image path for a deletion.
+    Sections with no `---`/`+++` lines at all (binary files, pure renames,
+    mode changes) fall back to `rename to`, then the `diff --git` header.
+    """
+    new = old = renamed = None
+    for line in section.splitlines():
+        if line.startswith("@@"):
+            break
+        if line.startswith("+++ "):
+            new = diff_path(line[4:], "b/")
+        elif line.startswith("--- "):
+            old = diff_path(line[4:], "a/")
+        elif line.startswith("rename to "):
+            renamed = diff_path(line[len("rename to "):])
+    for path in (new, old):
+        if path and path != "/dev/null":
+            return path
+    if renamed:
+        return renamed
+    header = section.split("\n", 1)[0]
+    quoted = _QUOTED_B_PATH.search(header)
+    if quoted:
+        return diff_path(quoted.group(), "b/")
+    _, found, tail = header.rpartition(" b/")
+    return tail if found else header
+
+
+# The post-image half of a `diff --git "a/..." "b/..."` header, when quoted.
+_QUOTED_B_PATH = re.compile(r'"b/(?:[^"\\]|\\.)*"$')
+
+_GIT_ESCAPES = {
+    "a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r",
+    '"': '"', "\\": "\\",
+}
+
+
+def diff_path(field: str, prefix: str = "") -> str:
+    """Decode a path as git prints it in a diff, minus its `a/`/`b/` prefix.
+
+    The changed-file list `partition` sees comes from GitHub's API as plain
+    text, so a diff path must be decoded to the same string before the two
+    can agree. Git C-quotes any path with a control character, `"`, `\\` or
+    (by default) a non-ASCII byte: `docs/café.md` arrives as
+    `"b/docs/caf\\303\\251.md"`. An unquoted path is taken verbatim up to
+    the tab git appends after names containing a space -- never stripped,
+    since a trailing space is part of the name and an unquoted name cannot
+    contain a tab.
+    """
+    if field.startswith('"'):
+        path = _unquote(field)
+    else:
+        path = field.split("\t", 1)[0]
+    return path[len(prefix):] if prefix and path.startswith(prefix) else path
+
+
+def _unquote(field: str) -> str:
+    """Decode git's C-style quoting: the escapes plus octal bytes, as UTF-8."""
+    out = bytearray()
+    i = 1
+    while i < len(field) and field[i] != '"':
+        char = field[i]
+        if char == "\\" and i + 1 < len(field):
+            escaped = field[i + 1]
+            if escaped in "01234567":
+                out.append(int(field[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+            out += _GIT_ESCAPES.get(escaped, escaped).encode()
+            i += 2
+            continue
+        out += char.encode()
+        i += 1
+    return out.decode("utf-8", errors="replace")

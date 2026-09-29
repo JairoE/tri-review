@@ -147,9 +147,21 @@ def review_with(
             raise parsing_error
         output = raw_result["parsed"]
         findings = output.findings if output is not None else []
+        malformed = output.malformed if output is not None else []
+        if malformed and not findings:
+            # Nothing usable came back, so this is a failure, not an empty
+            # review: it must not count toward the two reviews synthesis
+            # needs, and -- returned before the cache write, like any failure
+            # -- a retry asks this model again rather than replaying it.
+            return ReviewResult(
+                model=model_name,
+                error=_all_malformed_error(malformed),
+                malformed_findings=malformed,
+            )
         result = ReviewResult(
             model=model_name,
             findings=findings,
+            malformed_findings=malformed,
             low_confidence_reason=_low_confidence_reason(raw_result["raw"], findings),
         )
     except Exception as exc:  # noqa: BLE001 - one flaky provider must not abort the run
@@ -228,6 +240,15 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
     return None
 
 
+def _all_malformed_error(malformed: list[str]) -> str:
+    """The error for a review whose every finding was set aside as malformed."""
+    count = len(malformed)
+    return (
+        f"returned {count} finding{'' if count == 1 else 's'}, none matching the "
+        "findings schema, so nothing it reported could be used: " + "; ".join(malformed)
+    )
+
+
 def _describe_error(exc: Exception) -> str:
     """Format a reviewer failure, including the real cause behind a chained exception.
 
@@ -296,7 +317,12 @@ def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
         ],
         indent=2,
     )
-    header = _failure_note(failed) + _diversity_note(succeeded) + _low_confidence_note(succeeded)
+    header = (
+        _failure_note(failed)
+        + _diversity_note(succeeded)
+        + _low_confidence_note(succeeded)
+        + _malformed_note(succeeded)
+    )
 
     try:
         llm = llm_builder(config.synthesizer_model())
@@ -352,6 +378,29 @@ def _low_confidence_note(succeeded) -> str:
     return (
         f"> **{len(flagged)} reviewer(s) returned 0 findings flagged low-confidence.** "
         "Do not read these as a clean pass or as corroboration.\n"
+        f"{lines}\n\n"
+    )
+
+
+def _malformed_note(succeeded) -> str:
+    """Name the findings a reviewer returned that were set aside as malformed.
+
+    The review still counts -- what did validate is in the report -- but a
+    reader weighing "only one model found this" needs to know another model
+    may have said something here that could not be kept.
+    """
+    flagged = [r for r in succeeded if r.malformed_findings]
+    if not flagged:
+        return ""
+    lines = "\n".join(
+        f"- `{r.model}`: {len(r.malformed_findings)} of "
+        f"{len(r.malformed_findings) + len(r.findings)} set aside -- "
+        + "; ".join(r.malformed_findings)
+        for r in flagged
+    )
+    return (
+        f"> **{len(flagged)} reviewer(s) returned findings that did not match the schema.** "
+        "Those findings are not in this report.\n"
         f"{lines}\n\n"
     )
 

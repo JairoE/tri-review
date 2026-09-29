@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, github
+from . import config, gating, github
 
 # Reads one repository-relative path and returns its text, or None if there is
 # nothing readable there. Never receives a path that escapes the repo textually
@@ -74,17 +74,16 @@ def parse_changed_files(diff: str) -> list[str]:
 
     Reads the `+++ b/path` header rather than the `diff --git` line: the latter is
     ambiguous for paths containing spaces, and `+++ /dev/null` cleanly marks a
-    deletion (whose content there is no point reading from disk).
+    deletion (whose content there is no point reading from disk). Quoted paths
+    are decoded by the same rule the exclude filter uses (`gating.diff_path`).
     """
     paths: list[str] = []
     for line in diff.splitlines():
         if not line.startswith("+++ "):
             continue
-        target = line[4:].split("\t", 1)[0].strip()
+        target = gating.diff_path(line[4:], "b/")
         if target == "/dev/null":
             continue
-        if target.startswith("b/"):
-            target = target[2:]
         if target and target not in paths:
             paths.append(target)
     return paths

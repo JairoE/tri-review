@@ -1,0 +1,39 @@
+name: test
+
+# Runs the suite against this PR's own code. The tri-review workflow cannot
+# stand in for it: that one runs the pinned release on main, never the PR's
+# src/, so it stays green whatever a PR breaks.
+#
+# Secret-free by construction, which is what makes running PR-authored code
+# here acceptable: no `environment:` (the provider keys live on the "env"
+# environment), a read-only token, and nothing in the suite calls a provider.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.11'
+
+      # Pinned by version: tests/test_action_lockfile.py shells out to uv, and
+      # a newer uv can export the lockfile differently.
+      - name: Install uv
+        run: python -m pip install uv==0.11.19
+
+      - name: Install dependencies from uv.lock
+        run: uv sync --locked --extra dev
+
+      - name: Run tests
+        run: uv run pytest -q

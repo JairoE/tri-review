@@ -132,7 +132,8 @@ def test_fetch_diff_empty(monkeypatch):
 
 
 def test_fetch_diff_empty_names_the_excludes_as_the_cause(monkeypatch):
-    monkeypatch.setattr(github, "_run", lambda args: _proc(stdout=""))
+    only_docs = "diff --git a/docs/x/y.md b/docs/x/y.md\n--- a/docs/x/y.md\n+++ b/docs/x/y.md\n"
+    monkeypatch.setattr(github, "_run", lambda args: _proc(stdout=only_docs))
     with pytest.raises(NothingToReview, match="exclude patterns are applied"):
         github.fetch_diff("42", exclude=("**/*.md",))
 
@@ -376,25 +377,31 @@ def test_fetch_file_content_returns_none_for_binary(monkeypatch):
 # --- large-diff fallback / --exclude ----------------------------------------
 
 
-def test_fetch_diff_forwards_exclude_patterns_to_gh(monkeypatch):
+_MIXED_DIFF = (
+    "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n"
+    "diff --git a/docs/app_state.md b/docs/app_state.md\n--- a/docs/app_state.md\n"
+    "+++ b/docs/app_state.md\n@@ -1 +1 @@\n-a\n+b\n"
+    "diff --git a/docs/superpowers/plans/p.md b/docs/superpowers/plans/p.md\n"
+    "--- a/docs/superpowers/plans/p.md\n+++ b/docs/superpowers/plans/p.md\n@@ -1 +1 @@\n-a\n+b\n"
+    "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-a\n+b\n"
+)
+
+
+def test_fetch_diff_filters_excludes_itself_rather_than_through_gh(monkeypatch):
+    """gh's --exclude reads `**/*.md` by Go's path.Match: it dropped
+    docs/app_state.md but kept docs/superpowers/plans/p.md, which the skip
+    report had just listed as excluded. Filtering is ours now, at any depth."""
     seen = {}
 
     def fake_run(args):
         seen["args"] = args
-        return _proc(stdout="diff --git a/x b/x\n+hi\n")
+        return _proc(stdout=_MIXED_DIFF)
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.fetch_diff("42", exclude=("**/*.lock", "frontend/src/api/generated.ts"))
-    assert seen["args"] == [
-        "gh",
-        "pr",
-        "diff",
-        "42",
-        "--exclude",
-        "**/*.lock",
-        "--exclude",
-        "frontend/src/api/generated.ts",
-    ]
+    diff = github.fetch_diff("42", exclude=("**/*.md",))
+    assert seen["args"] == ["gh", "pr", "diff", "42"]
+    assert "src/app.ts" in diff
+    assert ".md" not in diff
 
 
 _REPO_URL = "https://github.com/octocat/Hello-World.git"
@@ -438,7 +445,7 @@ def test_fetch_diff_falls_back_locally_on_taking_too_long_response(monkeypatch):
     assert "diff --git" in github.fetch_diff("2")
 
 
-def test_fetch_diff_local_fallback_applies_exclude_pathspecs(monkeypatch):
+def test_fetch_diff_local_fallback_applies_excludes_to_its_output(monkeypatch):
     def fake_run(args):
         if args[:3] == ["gh", "pr", "diff"]:
             return _proc(returncode=1, stderr="too_large")
@@ -450,17 +457,14 @@ def test_fetch_diff_local_fallback_applies_exclude_pathspecs(monkeypatch):
             assert args[2:] == [_REPO_URL, "main"]
             return _proc()
         if args[:2] == ["git", "diff"]:
-            assert args[2:] == [
-                "FETCH_HEAD...HEAD",
-                "--",
-                ".",
-                ":(exclude)**/*.lock",
-            ]
-            return _proc(stdout="diff --git a/x b/x\n+hi\n")
+            assert args[2:] == ["FETCH_HEAD...HEAD"]
+            return _proc(stdout=_MIXED_DIFF)
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr(github, "_run", fake_run)
-    assert "diff --git" in github.fetch_diff("2", exclude=("**/*.lock",))
+    diff = github.fetch_diff("2", exclude=("**/*.md",))
+    assert "src/app.ts" in diff
+    assert ".md" not in diff
 
 
 def test_fetch_diff_falls_back_locally_when_too_large(monkeypatch):

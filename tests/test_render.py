@@ -70,3 +70,15 @@ def test_a_failed_model_renders_its_error_in_place():
     md = render_findings_md(ReviewResult(model="m1", error="AuthError: no API key"))
     assert "did not report" in md
     assert "AuthError: no API key" in md
+
+
+def test_malformed_findings_are_named_under_the_ones_that_were_kept():
+    md = render_findings_md(
+        ReviewResult(
+            model="m1",
+            findings=[_finding()],
+            malformed_findings=["findings[1] (src/b.py): severity: bad value"],
+        )
+    )
+    assert "Off-by-one in the loop bound" in md
+    assert "1 malformed finding set aside: findings[1] (src/b.py)" in md
