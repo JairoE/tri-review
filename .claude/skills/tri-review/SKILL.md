@@ -33,6 +33,12 @@ point at the install command in this repo's README (`uv sync` or
 tri-review --pr <N>
 ```
 
+If the user names models, pass each as a spec, `[provider:]model[@effort]`:
+`--reviewer` once per reviewer, `--synthesizer` for the model that writes the
+report, and `--effort` for a default reviewer effort. Any model can fill any
+role, e.g. `--synthesizer gpt-astra@medium --reviewer gpt-6-sol@high
+--reviewer gpt-5.6-sol@high`.
+
 If the user seems unsure about cost or scope before committing to a real run,
 mention `--dry-run` — it shows exactly what would be sent (files, estimated
 tokens) without calling any model or needing API keys.
@@ -45,7 +51,7 @@ tri-review's exit code says exactly what went wrong:
 |---|---|---|
 | `2` | Preflight failed — no `gh`, not authenticated, not a repo, or a bad flag | If it's `gh`: install from cli.github.com. If unauthenticated: run `gh auth login` yourself, don't attempt an interactive login on the user's behalf. |
 | `3` | No such PR | Ask for a PR number or URL, or confirm one is actually open on the current branch. |
-| `4` | Fewer than two models reported | Usually missing/invalid API keys. At least two of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` must be set (env or `.env` in the run directory) — point at whichever the error output names as missing. |
+| `4` | Too few models reported for the panel (two, or one for a one-model panel) | Usually missing/invalid API keys. Each chosen model needs its provider's key among `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` (env or `.env` in the run directory) — point at whichever the error output names as missing. |
 
 ## Step 5 — present the report
 
