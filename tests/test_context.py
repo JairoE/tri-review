@@ -295,3 +295,12 @@ def test_context_summary_round_trips_a_real_context(tmp_path):
 def test_context_summary_carries_the_refusals(tmp_path):
     ctx = build_context(_diff_touching("../secret.txt"), root=tmp_path)
     assert ContextSummary.of(ctx).rejected == ["../secret.txt"]
+
+
+def test_parse_changed_files_decodes_quoted_paths_and_keeps_trailing_spaces():
+    diff = (
+        'diff --git "a/docs/caf\\303\\251.py" "b/docs/caf\\303\\251.py"\n'
+        '--- /dev/null\n+++ "b/docs/caf\\303\\251.py"\n@@ -0,0 +1 @@\n+x\n'
+        "diff --git a/keep.py  b/keep.py \n--- /dev/null\n+++ b/keep.py \t\n@@ -0,0 +1 @@\n+x\n"
+    )
+    assert parse_changed_files(diff) == ["docs/café.py", "keep.py "]

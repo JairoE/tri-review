@@ -124,21 +124,67 @@ def _section_path(section: str) -> str:
         if line.startswith("@@"):
             break
         if line.startswith("+++ "):
-            new = _strip_prefix(line[4:], "b/")
+            new = diff_path(line[4:], "b/")
         elif line.startswith("--- "):
-            old = _strip_prefix(line[4:], "a/")
+            old = diff_path(line[4:], "a/")
         elif line.startswith("rename to "):
-            renamed = line[len("rename to "):]
+            renamed = diff_path(line[len("rename to "):])
     for path in (new, old):
         if path and path != "/dev/null":
             return path
     if renamed:
         return renamed
     header = section.split("\n", 1)[0]
+    quoted = _QUOTED_B_PATH.search(header)
+    if quoted:
+        return diff_path(quoted.group(), "b/")
     _, found, tail = header.rpartition(" b/")
     return tail if found else header
 
 
-def _strip_prefix(target: str, prefix: str) -> str:
-    target = target.split("\t", 1)[0].strip()
-    return target[len(prefix):] if target.startswith(prefix) else target
+# The post-image half of a `diff --git "a/..." "b/..."` header, when quoted.
+_QUOTED_B_PATH = re.compile(r'"b/(?:[^"\\]|\\.)*"$')
+
+_GIT_ESCAPES = {
+    "a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r",
+    '"': '"', "\\": "\\",
+}
+
+
+def diff_path(field: str, prefix: str = "") -> str:
+    """Decode a path as git prints it in a diff, minus its `a/`/`b/` prefix.
+
+    The changed-file list `partition` sees comes from GitHub's API as plain
+    text, so a diff path must be decoded to the same string before the two
+    can agree. Git C-quotes any path with a control character, `"`, `\\` or
+    (by default) a non-ASCII byte: `docs/café.md` arrives as
+    `"b/docs/caf\\303\\251.md"`. An unquoted path is taken verbatim up to
+    the tab git appends after names containing a space -- never stripped,
+    since a trailing space is part of the name and an unquoted name cannot
+    contain a tab.
+    """
+    if field.startswith('"'):
+        path = _unquote(field)
+    else:
+        path = field.split("\t", 1)[0]
+    return path[len(prefix):] if prefix and path.startswith(prefix) else path
+
+
+def _unquote(field: str) -> str:
+    """Decode git's C-style quoting: the escapes plus octal bytes, as UTF-8."""
+    out = bytearray()
+    i = 1
+    while i < len(field) and field[i] != '"':
+        char = field[i]
+        if char == "\\" and i + 1 < len(field):
+            escaped = field[i + 1]
+            if escaped in "01234567":
+                out.append(int(field[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+            out += _GIT_ESCAPES.get(escaped, escaped).encode()
+            i += 2
+            continue
+        out += char.encode()
+        i += 1
+    return out.decode("utf-8", errors="replace")
