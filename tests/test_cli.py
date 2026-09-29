@@ -129,8 +129,9 @@ def test_a_configured_slot_can_carry_a_full_spec(monkeypatch):
 
 def test_a_bad_configured_slot_fails_before_the_pr_is_fetched(monkeypatch):
     monkeypatch.setenv("TRI_REVIEW_MODEL_A", "llama-9000")
-    with pytest.raises(click.BadParameter, match="TRI_REVIEW_MODEL_A"):
+    with pytest.raises(click.BadParameter, match="llama-9000") as exc:
         _resolve_models(())
+    assert "TRI_REVIEW_MODEL_A" in exc.value.param_hint
 
 
 def test_effort_flag_beats_the_env_var(monkeypatch):
@@ -146,16 +147,18 @@ def test_effort_flag_beats_the_env_var(monkeypatch):
 def test_a_bad_effort_flag_is_a_usage_error():
     from tri_review.cli import _resolve_effort
 
-    with pytest.raises(click.BadParameter, match="--effort"):
+    with pytest.raises(click.BadParameter, match="unknown effort") as exc:
         _resolve_effort("hihg")
+    assert exc.value.param_hint == "--effort"
 
 
 def test_a_bad_effort_env_var_is_reported_not_silently_ignored(monkeypatch):
     from tri_review.cli import _resolve_effort
 
     monkeypatch.setenv("TRI_REVIEW_EFFORT", "hihg")
-    with pytest.raises(click.BadParameter, match="unknown effort"):
+    with pytest.raises(click.BadParameter, match="unknown effort") as exc:
         _resolve_effort(None)
+    assert exc.value.param_hint == "TRI_REVIEW_EFFORT"
 
 
 def test_a_silently_failing_configuration_is_warned_about(capsys):
@@ -885,8 +888,9 @@ def test_a_bad_synthesizer_env_var_is_named_in_the_error(monkeypatch):
     from tri_review.cli import _resolve_synthesizer
 
     monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "llama-9000")
-    with pytest.raises(click.BadParameter, match="TRI_REVIEW_SYNTHESIZER"):
+    with pytest.raises(click.BadParameter, match="llama-9000") as exc:
         _resolve_synthesizer(None, ["gpt-5.1"])
+    assert exc.value.param_hint == "TRI_REVIEW_SYNTHESIZER"
 
 
 def test_a_different_synthesizer_does_not_replay_the_stored_report(monkeypatch, tmp_path):
@@ -933,3 +937,12 @@ def test_a_different_default_effort_does_not_replay_the_stored_report(monkeypatc
 
     assert isinstance(result.exception, _ReachedTheModels)
     assert "panel changed" in result.output
+
+
+def test_every_bad_spec_is_listed_on_its_own_line():
+    with pytest.raises(click.BadParameter) as exc:
+        _resolve_models(("llama-9000", "gpt-5.1@hihg"))
+    lines = str(exc.value.message).splitlines()
+    assert any("llama-9000" in line for line in lines)
+    assert any("hihg" in line for line in lines)
+    assert not any("llama-9000" in line and "hihg" in line for line in lines)

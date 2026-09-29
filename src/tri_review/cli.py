@@ -209,9 +209,13 @@ def _parse_specs(texts: tuple[str, ...], source: str) -> list:
         except ValueError as exc:
             problems.append(str(exc))
     if problems:
-        raise click.BadParameter(
-            f"in {source}: " + "; ".join(problems), param_hint=source
-        )
+        # Click prefixes "Invalid value for <param_hint>:", which already names
+        # the flag or env var, so the message is only the problems themselves.
+        if len(problems) == 1:
+            message = problems[0]
+        else:
+            message = "\n" + "\n".join(f"  - {p}" for p in problems)
+        raise click.BadParameter(message, param_hint=source)
     return specs
 
 
@@ -278,7 +282,7 @@ def _resolve_effort(flag: str | None) -> str | None:
     if level is not None and level not in EFFORT_LEVELS:
         source = "--effort" if flag else "TRI_REVIEW_EFFORT"
         raise click.BadParameter(
-            f"unknown effort {level!r} in {source}; expected one of {', '.join(EFFORT_LEVELS)}",
+            f"unknown effort {level!r}; expected one of {', '.join(EFFORT_LEVELS)}",
             param_hint=source,
         )
     return level
