@@ -29,7 +29,8 @@ PROVIDERS = ("openai", "anthropic", "google")
 EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 PROVIDER_PREFIXES: dict[str, tuple[str, ...]] = {
-    "openai": ("gpt-", "o1", "o3", "o4"),
+    # `ft:` is how OpenAI names every fine-tune (ft:gpt-4o-mini:org::id).
+    "openai": ("gpt-", "o1", "o3", "o4", "ft:"),
     "anthropic": ("claude-",),
     # Gemini 3 only, deliberately. The Google reviewer is only reliable at
     # thinking_level="high" (see build_llm), and thinking_level is a Gemini 3
@@ -69,21 +70,27 @@ class ModelSpec:
         if not raw:
             raise ValueError("empty model spec")
 
+        # Only a known provider name before the first colon is a provider
+        # prefix. Anything else is part of the model ID: OpenAI fine-tunes are
+        # colon-separated (ft:gpt-4o-mini:org::id), and reading `ft` as an
+        # unknown provider refused every one of them.
         explicit: str | None = None
         rest = raw
-        if ":" in rest:
-            head, _, tail = rest.partition(":")
-            if head.lower() in PROVIDERS:
-                explicit, rest = head.lower(), tail
-            else:
-                raise ValueError(
-                    f"unknown provider {head!r} in {raw!r}; expected one of "
-                    + ", ".join(PROVIDERS)
-                )
+        head, sep, tail = rest.partition(":")
+        if sep and head.lower() in PROVIDERS:
+            explicit, rest = head.lower(), tail
 
         effort: str | None = None
         if "@" in rest:
             rest, _, level = rest.rpartition("@")
+            # One suffix at most. Without this, `gpt-5.1@high@low` parsed as
+            # a model literally named `gpt-5.1@high` at low effort -- a typo
+            # that would fail only at the provider, after the PR was fetched.
+            if "@" in rest:
+                raise ValueError(
+                    f"more than one '@' in {raw!r}; a spec takes at most one "
+                    "@effort suffix"
+                )
             effort = level.strip().lower()
             if effort not in EFFORT_LEVELS:
                 raise ValueError(
@@ -245,6 +252,14 @@ def build_llm(spec: str | ModelSpec):
         # Generous max_tokens: on current Anthropic models max_tokens caps
         # thinking plus response together, so a tight value truncates output.
         #
+        # An effort setting switches on adaptive thinking (langchain-anthropic
+        # sends thinking={"type": "adaptive"} alongside output_config.effort),
+        # and 8000 was sized for a call with none. At high effort on a large
+        # diff the thinking alone can fill it, truncating the JSON answer into
+        # a parse failure. So a call with effort gets room to think. The
+        # SDK's refusal of large non-streaming max_tokens only applies at its
+        # default timeout, and a timeout is always set here.
+        #
         # max_retries=2 (vs. 1 for the other two providers): kept as a small
         # cushion against genuine transient connectivity issues. The repeated
         # live failures that originally motivated this turned out to be a
@@ -255,7 +270,7 @@ def build_llm(spec: str | ModelSpec):
             model=model_name,
             timeout=timeout,
             max_retries=2,
-            max_tokens=8000,
+            max_tokens=8000 if effort is None else 32_000,
             **({"effort": effort} if effort is not None else {}),
             **_cleaned_api_key("ANTHROPIC_API_KEY"),
         )

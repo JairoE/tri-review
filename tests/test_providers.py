@@ -355,3 +355,90 @@ def test_other_providers_carry_no_caveat_at_any_effort():
     for level in EFFORT_LEVELS:
         assert caveat_for(ModelSpec.parse(f"gpt-5.1@{level}")) is None
         assert caveat_for(ModelSpec.parse(f"claude-opus-5@{level}")) is None
+
+
+# --- review findings on PR #25 -----------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["gpt-5.1@high@low", "gpt-5.1@@high", "openai:m@x@high"])
+def test_a_spec_takes_at_most_one_effort_suffix(bad):
+    """`gpt-5.1@high@low` used to parse as a model named `gpt-5.1@high`."""
+    with pytest.raises(ValueError, match="more than one '@'"):
+        ModelSpec.parse(bad)
+
+
+def test_a_bare_openai_fine_tune_id_is_recognised():
+    """Fine-tune IDs are colon-separated; `ft` is not a provider name."""
+    spec = ModelSpec.parse("ft:gpt-4o-mini:acme::abc123@low")
+    assert spec == ModelSpec(provider="openai", model="ft:gpt-4o-mini:acme::abc123", effort="low")
+    assert str(spec) == "ft:gpt-4o-mini:acme::abc123@low"
+    assert ModelSpec.parse(str(spec)) == spec, "the canonical form parses back to itself"
+
+
+def test_an_explicit_provider_still_works_in_front_of_a_colon_id():
+    spec = ModelSpec.parse("openai:ft:gpt-4o-mini:acme::abc123")
+    assert spec.model == "ft:gpt-4o-mini:acme::abc123"
+
+
+def test_an_unknown_word_before_a_colon_is_part_of_the_id_not_a_provider():
+    with pytest.raises(ValueError, match="unrecognized model ID 'llama:gpt-5.1'"):
+        ModelSpec.parse("llama:gpt-5.1")
+
+
+# What each provider is actually sent. Built through the installed clients and
+# read from the request payload they would put on the wire, so the claim under
+# test is "the API receives this effort", not "some attribute holds it".
+
+
+def _messages():
+    from langchain_core.messages import HumanMessage
+
+    return [HumanMessage(content="review this")]
+
+
+def test_openai_sends_reasoning_effort_on_the_wire(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    payload = build_llm("gpt-5.1@low")._get_request_payload(_messages())
+    assert payload["reasoning_effort"] == "low"
+
+
+def test_openai_without_effort_sends_none(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    payload = build_llm("gpt-5.1")._get_request_payload(_messages())
+    assert payload.get("reasoning_effort") is None
+
+
+def test_anthropic_sends_effort_as_output_config_on_the_wire(monkeypatch):
+    """Answers the review's doubt: the installed client takes `effort` and
+    translates it into the API's own output_config.effort."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    payload = build_llm("claude-opus-5@medium")._get_request_payload(_messages())
+    assert payload["output_config"] == {"effort": "medium"}
+
+
+def test_anthropic_with_effort_gets_room_for_the_thinking_it_turns_on(monkeypatch):
+    """Effort switches on adaptive thinking, which shares max_tokens with the
+    answer. The 8000 sized for a no-thinking call would truncate it."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    payload = build_llm("claude-opus-5@high")._get_request_payload(_messages())
+    assert payload["thinking"]["type"] == "adaptive"
+    assert payload["max_tokens"] > 8000
+
+
+def test_anthropic_without_effort_is_the_call_it_always_was(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    payload = build_llm("claude-sonnet-5")._get_request_payload(_messages())
+    assert payload["max_tokens"] == 8000
+    assert payload.get("thinking") is None
+    assert payload.get("output_config") is None
+
+
+@pytest.mark.parametrize("spec, level", [("gemini-3.8-flash@low", "LOW"), ("gemini-3.8-flash", "HIGH")])
+def test_google_sends_thinking_level_on_the_wire(monkeypatch, spec, level):
+    """Answers the review's doubt: `reasoning_effort` and `thinking_level` are
+    one field in the installed client, and the request carries it."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+    llm = build_llm(spec)
+    assert llm.thinking_level == llm.reasoning_effort
+    request = llm._prepare_request(_messages())
+    assert request["config"].thinking_config.thinking_level.value == level

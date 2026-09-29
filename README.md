@@ -451,7 +451,7 @@ Each example only needs the key for the providers it uses. To let a PR label swi
 
 ### How specs behave
 
-**The provider** is inferred from the ID's prefix: `gpt-`, `o1`, `o3` and `o4` are OpenAI, `claude-` is Anthropic, and `gemini-3` is Google. Name it explicitly to route an ID nothing recognises, such as `openai:my-finetune`. A prefix the ID already implies is dropped, so `openai:gpt-5.1` and `gpt-5.1` are the same reviewer.
+**The provider** is inferred from the ID's prefix: `gpt-`, `o1`, `o3`, `o4` and `ft:` are OpenAI, `claude-` is Anthropic, and `gemini-3` is Google. So an OpenAI fine-tune such as `ft:gpt-4o-mini:acme::abc123` works as written. Name the provider explicitly to route any other ID nothing recognises, such as `openai:my-model`. A prefix the ID already implies is dropped, so `openai:gpt-5.1` and `gpt-5.1` are the same reviewer.
 
 **The effort** is passed under each provider's own name for it: `reasoning_effort` for OpenAI, `effort` for Anthropic, `thinking_level` for Gemini. The accepted levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Which of those a given model honours is the provider's call, and a level it rejects fails that one reviewer with the provider's own error. With no suffix and no `--effort`, nothing is sent. Gemini is the exception and runs at `high` unless told otherwise, for the reason under [Configuration](#configuration).
 
