@@ -80,13 +80,13 @@ inputs:
     required: false
     default: ${{ github.token }}
   openai-api-key:
-    description: 'OpenAI API key. At least two of the three provider keys are required.'
+    description: 'OpenAI API key. Needed when any reviewer or the synthesizer is a OpenAI model; the default panel needs at least two of the three keys.'
     required: false
   anthropic-api-key:
-    description: 'Anthropic API key. At least two of the three provider keys are required.'
+    description: 'Anthropic API key. Needed when any reviewer or the synthesizer is a Anthropic model; the default panel needs at least two of the three keys.'
     required: false
   google-api-key:
-    description: 'Google API key. At least two of the three provider keys are required.'
+    description: 'Google API key. Needed when any reviewer or the synthesizer is a Google model; the default panel needs at least two of the three keys.'
     required: false
 
 outputs:

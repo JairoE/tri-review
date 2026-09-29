@@ -61,7 +61,7 @@ Reviews every PR automatically. Nothing to install on your machine.
 
 No `gh` login, no Python install, no per-developer setup — the workflow does all
 of it inside CI. See [GitHub Action](#github-action) below for the full list of
-inputs (choosing models, excluding files, etc.).
+inputs (excluding files, capping reviews, etc.), and [Choosing models](#choosing-models) to pick the reviewers and synthesizer.
 
 ### Option B: CLI, no checkout (one-off reviews)
 
@@ -333,57 +333,137 @@ every entry automatically. Entries expire after 14 days
 (`TRI_REVIEW_CACHE_TTL_DAYS`, `0` to disable), and the cache directory is safe to
 delete at any time. `--fresh` bypasses both this and the stored report.
 
-### Choosing the panel
+## Choosing models
 
-Every role takes a model spec, and any model can fill any role:
+Every run has two roles, and any model can fill either one:
+
+- **Reviewers** read the PR independently and report findings. Pick as many as you want.
+- **The synthesizer** reads the reviewers' findings and writes the report. It can be one of the reviewers or a different model.
+
+Each model is named with a spec:
 
 ```
 [provider:]model[@effort]
 ```
 
-- **`--reviewer SPEC`** picks a reviewer. Repeat it for as many as you want. `--model` is the same flag under its older name.
-- **`--synthesizer SPEC`** picks the model that writes the report from the reviews. It can be one of the reviewers or a different model. It defaults to `TRI_REVIEW_SYNTHESIZER`, else the first reviewer.
-- **`--effort LEVEL`** sets the effort for every reviewer whose spec has no `@effort` of its own. It never applies to the synthesizer, which takes its own suffix.
+| Part | Required | Example | Meaning |
+|---|---|---|---|
+| `provider:` | Only when the ID doesn't imply it | `openai:` | Routes an ID nothing recognises, such as a fine-tune |
+| `model` | Yes | `gpt-6-sol` | The provider's model ID, exactly as they publish it |
+| `@effort` | No | `@high` | Reasoning effort for this one model |
+
+With nothing chosen, the panel is the three configured slots and the synthesizer is the first reviewer.
+
+The model IDs in the examples below are illustrative. Check the exact strings against your provider's model list before copying them.
+
+### On the command line
+
+| Flag | Takes | Default |
+|---|---|---|
+| `--reviewer` | one spec, repeat for each reviewer | the three configured slots |
+| `--synthesizer` | one spec | `TRI_REVIEW_SYNTHESIZER`, else the first reviewer |
+| `--effort` | one level, for reviewers without their own `@effort` | nothing sent; each provider's default |
+
+`--model` still works as the older name for `--reviewer`.
+
+**Example 1. Sol synthesizes, two Terra versions review.**
 
 ```bash
-# Sol synthesizes, two Terra versions review
-tri-review --pr 123 --synthesizer gpt-6-sol \
-  --reviewer gpt-5.6-terra --reviewer gpt-5.5-terra
+tri-review --pr 123 \
+  --synthesizer gpt-6-sol \
+  --reviewer gpt-5.6-terra \
+  --reviewer gpt-5.5-terra
+```
 
-# Astra synthesizes at medium, two Sol versions review at high
-tri-review --pr 123 --synthesizer gpt-astra@medium \
-  --reviewer gpt-6-sol@high --reviewer gpt-5.6-sol@high
+**Example 2. Astra synthesizes, GPT 6 Sol and GPT 5.6 Sol review.**
 
-# The same, with the reviewers' effort set once
-tri-review --pr 123 --synthesizer gpt-astra@medium --effort high \
+```bash
+tri-review --pr 123 \
+  --synthesizer gpt-astra \
+  --reviewer gpt-6-sol \
+  --reviewer gpt-5.6-sol
+```
+
+**Example 3. Astra synthesizes at medium effort, both Sol reviewers run at high.**
+
+```bash
+tri-review --pr 123 \
+  --synthesizer gpt-astra@medium \
+  --reviewer gpt-6-sol@high \
+  --reviewer gpt-5.6-sol@high
+```
+
+The third example can also set the reviewers' effort once. `--effort` never applies to the synthesizer, which keeps its own suffix:
+
+```bash
+tri-review --pr 123 --effort high \
+  --synthesizer gpt-astra@medium \
   --reviewer gpt-6-sol --reviewer gpt-5.6-sol
 ```
 
-The model IDs above are illustrative. Check the exact strings against your provider's model list.
+Add `--dry-run` to any of these to see the resolved panel and synthesizer without calling a model.
 
-**The provider** is inferred from the ID's prefix (`gpt-`, `o1`, `o3`, `o4`, `claude-`, `gemini-3`). Name it explicitly to route an ID nothing recognises, such as a fine-tune or a new family: `openai:my-finetune`. A prefix the ID already implies is dropped, so `openai:gpt-5.1` and `gpt-5.1` are the same reviewer.
+### In the GitHub Action
 
-**The effort** is passed under each provider's own name for it: `reasoning_effort` for OpenAI, `effort` for Anthropic, `thinking_level` for Gemini. The accepted levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Which of those a given model honours is the provider's call, and a level it rejects fails that one reviewer with the provider's own error. With no suffix and no `--effort`, nothing is sent and the provider's default applies. Gemini is the exception and runs at `high` unless told otherwise, for the reason under [Configuration](#configuration).
+| Input | Takes | Default |
+|---|---|---|
+| `reviewers` | specs separated by spaces or newlines | the three configured slots |
+| `synthesizer` | one spec | the first reviewer |
+| `effort` | one level, for reviewers without their own `@effort` | nothing sent; each provider's default |
+
+`models` still works as the older name for `reviewers`. These inputs arrive in the first release after v1.1.0, so pin to that release or a later commit on `main` to use them.
+
+The same three setups as Action steps:
+
+**Example 1. Sol synthesizes, two Terra versions review.**
+
+```yaml
+- uses: JairoE/tri-review@v1
+  with:
+    synthesizer: gpt-6-sol
+    reviewers: gpt-5.6-terra gpt-5.5-terra
+    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+**Example 2. Astra synthesizes, GPT 6 Sol and GPT 5.6 Sol review.**
+
+```yaml
+- uses: JairoE/tri-review@v1
+  with:
+    synthesizer: gpt-astra
+    reviewers: gpt-6-sol gpt-5.6-sol
+    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+**Example 3. Astra synthesizes at medium effort, both Sol reviewers run at high.**
+
+```yaml
+- uses: JairoE/tri-review@v1
+  with:
+    synthesizer: gpt-astra@medium
+    reviewers: |
+      gpt-6-sol@high
+      gpt-5.6-sol@high
+    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+Each example only needs the key for the providers it uses. To let a PR label switch between setups for one run, see [Choosing the panel per PR](#choosing-the-panel-per-pr).
+
+### How specs behave
+
+**The provider** is inferred from the ID's prefix: `gpt-`, `o1`, `o3` and `o4` are OpenAI, `claude-` is Anthropic, and `gemini-3` is Google. Name it explicitly to route an ID nothing recognises, such as `openai:my-finetune`. A prefix the ID already implies is dropped, so `openai:gpt-5.1` and `gpt-5.1` are the same reviewer.
+
+**The effort** is passed under each provider's own name for it: `reasoning_effort` for OpenAI, `effort` for Anthropic, `thinking_level` for Gemini. The accepted levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Which of those a given model honours is the provider's call, and a level it rejects fails that one reviewer with the provider's own error. With no suffix and no `--effort`, nothing is sent. Gemini is the exception and runs at `high` unless told otherwise, for the reason under [Configuration](#configuration).
 
 **The same model at two efforts is two reviewers**, so `--reviewer gpt-5.1@high --reviewer gpt-5.1@low` compares a model against itself. The same spec twice is collapsed into one.
 
-**One reviewer is allowed.** The CLI warns before the run and the report opens by saying nothing was corroborated. A larger panel that degrades to one review still exits `4`: it was meant to triangulate and could not.
+**One reviewer is allowed.** The CLI warns before the run and the report opens by saying nothing was corroborated. A larger panel that degrades to one review still exits `4`, because it was meant to triangulate and could not.
 
-Every report opens with a line naming each reviewer and the synthesizer, with their efforts, so a reader can see which models "2 of 3 agreed" refers to.
+**Every report names its panel.** Its first line lists each reviewer and the synthesizer with their efforts, so a reader can see which models "2 of 3 agreed" refers to.
 
-Unparseable specs are rejected before the PR is fetched, all of them in one error, so a typo costs you nothing.
+**Typos cost nothing.** Every bad spec is rejected before the PR is fetched, all of them in one error.
 
-**Mixing providers is the point.** If you only hold one provider's key you can still fill the panel from it:
-
-```bash
-tri-review --pr 123 --reviewer gpt-6-sol --reviewer gpt-5.6-sol --reviewer gpt-5.6-terra
-```
-
-but understand what you are buying. The premise of this tool is that *independent*
-models rarely hallucinate the same thing; two checkpoints of one family share
-training data and failure modes, so they agree on each other's mistakes. A
-single-provider run still works and still reports, but the report opens with a
-banner saying its consensus is weak evidence. Cross-provider is the real product.
+**Mixing providers is the point.** All three examples above use one provider, which works, but understand what you are buying. The premise of this tool is that *independent* models rarely hallucinate the same thing. Two checkpoints of one family share training data and failure modes, so they agree on each other's mistakes. A single-provider run still reports, but its report opens with a banner saying its consensus is weak evidence. Cross-provider is the real product.
 
 ## Dismissing a finding
 
@@ -447,7 +527,7 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_TRIAGE_MODEL` | same as model C | Model asked whether the diff changes behaviour |
 
 Every model variable takes a full spec (`[provider:]model[@effort]`, see
-[Choosing the panel](#choosing-the-panel)), so you can point any slot at any
+[Choosing models](#choosing-models)), so you can point any slot at any
 supported provider — including three models from the same provider if you only
 have one key, with the caveat described above.
 
@@ -584,7 +664,7 @@ A PR the gates skip posts a short "Nothing to review" comment and passes, rather
 | `post-comment` | `true` | Whether to post a PR comment at all |
 | `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
 | `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
-| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
+| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | One for each provider your panel and synthesizer use. The default panel needs at least two |
 
 ### Choosing the panel per PR
 
