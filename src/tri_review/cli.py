@@ -499,7 +499,8 @@ def _run(
     tree_reason = github.working_tree_reason(head_sha) if repo is None else None
 
     if identity and not fresh and _replay(
-        identity, pr_number, head_sha, models, patterns, output, tree_reason
+        identity, pr_number, head_sha, models, patterns, output, tree_reason,
+        synthesizer,
     ):
         return
 
@@ -545,6 +546,7 @@ def _run(
                 pr=str(pr_number),
                 head_sha=head_sha,
                 models=list(models),
+                synthesizer=synthesizer,
                 excludes=list(patterns),
                 report=report,
                 results=results,
@@ -567,13 +569,14 @@ def _replay(
     patterns: tuple[str, ...],
     output: Path | None,
     tree_reason: str | None = None,
+    synthesizer: str | None = None,
 ) -> bool:
     """Print the stored review if it still answers the question. True if it did."""
     record = history.load(identity, str(pr_number))
     if record is None:
         return False
 
-    reason = history.stale_reason(record, head_sha, models, patterns)
+    reason = history.stale_reason(record, head_sha, models, patterns, synthesizer)
     if reason is not None:
         console.print(f"[dim]Stored review is out of date ({reason}). Reviewing.[/dim]")
         return False

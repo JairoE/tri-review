@@ -37,6 +37,11 @@ class RunRecord:
     report: str
     results: list[ReviewResult] = field(default_factory=list)
     created_at: str = ""
+    # The spec that wrote `report`. Empty on records written before it was
+    # stored, which is "unknown", and unknown never matches a real one -- so an
+    # old record is re-reviewed once rather than replayed under a synthesizer
+    # nobody can vouch for.
+    synthesizer: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -46,6 +51,7 @@ class RunRecord:
                 "pr": self.pr,
                 "head_sha": self.head_sha,
                 "models": self.models,
+                "synthesizer": self.synthesizer,
                 "excludes": self.excludes,
                 "created_at": self.created_at or _now(),
                 "report": self.report,
@@ -69,6 +75,7 @@ class RunRecord:
                 pr=str(obj["pr"]),
                 head_sha=str(obj["head_sha"]),
                 models=[str(m) for m in obj.get("models", [])],
+                synthesizer=str(obj.get("synthesizer", "")),
                 excludes=[str(e) for e in obj.get("excludes", [])],
                 report=str(obj.get("report", "")),
                 results=[ReviewResult.model_validate(r) for r in obj.get("results", [])],
@@ -146,14 +153,18 @@ def stale_reason(
     head_sha: str,
     models: list[str],
     excludes: tuple[str, ...],
+    synthesizer: str | None = None,
 ) -> str | None:
     """Why `record` cannot stand in for the run about to happen, or None if it can.
 
-    All three inputs are load-bearing. A different head SHA is different code.
+    Every input is load-bearing. A different head SHA is different code.
     A different panel is a different set of opinions -- replaying Sonnet's review
-    when the user asked for Terra's would answer a question they did not ask. A
-    different exclude set is a different slice of the PR. Any of them changing
-    makes the stored report an answer to another question.
+    when the user asked for Terra's would answer a question they did not ask.
+    The panel's specs carry their efforts, so the same model at another effort
+    is a different panel too. A different synthesizer wrote a different report
+    from the same findings. A different exclude set is a different slice of the
+    PR. Any of them changing makes the stored report an answer to another
+    question. `synthesizer` is None only for callers that do not know it.
     """
     if not head_sha or record.head_sha != head_sha:
         return f"the PR has moved on ({_short(record.head_sha)} -> {_short(head_sha)})"
@@ -161,6 +172,11 @@ def stale_reason(
         return (
             f"the panel changed ({', '.join(record.models) or 'none'} -> "
             f"{', '.join(models)})"
+        )
+    if synthesizer is not None and record.synthesizer != synthesizer:
+        return (
+            f"the synthesizer changed ({record.synthesizer or 'unknown'} -> "
+            f"{synthesizer})"
         )
     if record.excludes != list(excludes):
         return "the exclude patterns changed"

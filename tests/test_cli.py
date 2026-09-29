@@ -348,16 +348,21 @@ def test_an_empty_file_list_is_left_to_the_diff_fetch(monkeypatch):
     assert isinstance(result.exception, _ReachedTheModels)
 
 
-def _seed_history(tmp_path, monkeypatch, head_sha="abc123def456", models=None):
+def _seed_history(
+    tmp_path, monkeypatch, head_sha="abc123def456", models=None, synthesizer=None
+):
     from tri_review import config, history
 
     monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    panel = models or [config.model_a(), config.model_b(), config.model_c()]
     history.save(
         history.RunRecord(
             repo="octocat/Hello-World",
             pr="42",
             head_sha=head_sha,
-            models=models or [config.model_a(), config.model_b(), config.model_c()],
+            models=panel,
+            # The default: the first reviewer, since nothing names one.
+            synthesizer=synthesizer or panel[0],
             excludes=list(config.default_excludes()),
             report="## Consensus Findings\n\nStored report from the last run.",
         )
@@ -558,6 +563,7 @@ def _stub_cwd_mode(monkeypatch, tmp_path, tree_reason):
             pr="42",
             head_sha="abc123def456",
             models=[config.model_a(), config.model_b(), config.model_c()],
+            synthesizer=config.model_a(),
             excludes=list(config.default_excludes()),
             report="## Consensus Findings\n\nStored report from the last run.",
         )
@@ -876,3 +882,49 @@ def test_a_bad_synthesizer_env_var_is_named_in_the_error(monkeypatch):
     monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "llama-9000")
     with pytest.raises(click.BadParameter, match="TRI_REVIEW_SYNTHESIZER"):
         _resolve_synthesizer(None, ["gpt-5.1"])
+
+
+def test_a_different_synthesizer_does_not_replay_the_stored_report(monkeypatch, tmp_path):
+    """Same findings, different writer: the stored report answers another question."""
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    _seed_history(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: (_ for _ in ()).throw(_ReachedTheModels())
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42", "--synthesizer", "claude-opus-5@high"],
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "synthesizer changed" in result.output
+
+
+def test_a_different_default_effort_does_not_replay_the_stored_report(monkeypatch, tmp_path):
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    _seed_history(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: (_ for _ in ()).throw(_ReachedTheModels())
+    )
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--effort", "high"]
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "panel changed" in result.output

@@ -190,3 +190,33 @@ def test_a_run_where_every_model_reported_still_replays(tmp_path):
         )
         is None
     )
+
+
+def test_a_changed_synthesizer_is_a_different_report():
+    record = _record(synthesizer="gpt-5.6-terra")
+    panel = ["gpt-5.6-terra", "claude-sonnet-5"]
+    assert history.stale_reason(record, "abc123def456", panel, ("**/*.md",), "gpt-5.6-terra") is None
+    reason = history.stale_reason(record, "abc123def456", panel, ("**/*.md",), "gpt-astra")
+    assert reason is not None and "synthesizer changed" in reason
+
+
+def test_a_record_with_no_stored_synthesizer_is_not_replayed_under_a_known_one():
+    """Written before the field existed: unknown never vouches for a real spec."""
+    reason = history.stale_reason(
+        _record(), "abc123def456", ["gpt-5.6-terra", "claude-sonnet-5"], ("**/*.md",),
+        "gpt-5.6-terra",
+    )
+    assert reason is not None and "unknown" in reason
+
+
+def test_the_same_model_at_another_effort_is_a_different_panel():
+    reason = history.stale_reason(
+        _record(), "abc123def456", ["gpt-5.6-terra@high", "claude-sonnet-5"], ("**/*.md",)
+    )
+    assert reason is not None and "panel changed" in reason
+
+
+def test_the_synthesizer_survives_the_roundtrip(tmp_path):
+    history.save(_record(synthesizer="gpt-astra@medium"), directory=tmp_path)
+    loaded = history.load("octocat/Hello-World", "42", directory=tmp_path)
+    assert loaded.synthesizer == "gpt-astra@medium"
