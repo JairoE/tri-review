@@ -342,3 +342,60 @@ def test_a_larger_panel_that_degrades_to_one_is_still_insufficient():
 def test_no_results_at_all_is_insufficient():
     with pytest.raises(InsufficientReviewsError):
         synthesize_node({"results": []}, llm_builder=lambda _: CapturingLLM())
+
+
+# --- review findings on PR #25, second round ---------------------------------
+
+
+def test_a_successful_synthesis_says_so():
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    out = synthesize_node(state, llm_builder=lambda _: CapturingLLM(), synthesizer="s")
+    assert out["synthesized"] is True
+
+
+def test_a_failed_synthesis_says_so_so_it_is_not_stored_as_the_answer():
+    """The fallback report is shown, but a re-run must retry the synthesizer."""
+    llm = CapturingLLM(raises=RuntimeError("credential validation failed"))
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    out = synthesize_node(state, llm_builder=lambda _: llm, synthesizer="s")
+    assert out["synthesized"] is False
+    assert "Synthesis failed" in out["final_report"]
+
+
+def test_the_panel_line_marks_reviewers_that_did_not_report():
+    state = {
+        "results": [
+            _result("gpt-6-sol", "a"),
+            _result("gpt-5.6-sol", "b"),
+            _result("claude-opus-5", error="no key"),
+        ]
+    }
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="s"
+    )["final_report"]
+    first_line = report.splitlines()[0]
+    assert "`claude-opus-5` (did not report)" in first_line
+    assert "`gpt-6-sol` (did not report)" not in first_line
+
+
+@pytest.mark.parametrize(
+    "outcomes, required",
+    [
+        (["ok"], 1),
+        (["ok", "ok"], 2),
+        (["ok", "fail"], 2),
+        (["ok", "fail", "fail"], 2),
+        (["ok", "ok", "fail"], 2),
+    ],
+)
+def test_one_of_one_or_two_of_anything_larger(outcomes, required):
+    results = [
+        _result(f"m{i}", "a") if o == "ok" else _result(f"m{i}", error="down")
+        for i, o in enumerate(outcomes)
+    ]
+    succeeded = outcomes.count("ok")
+    if succeeded >= required:
+        synthesize_node({"results": results}, llm_builder=lambda _: CapturingLLM())
+    else:
+        with pytest.raises(InsufficientReviewsError):
+            synthesize_node({"results": results}, llm_builder=lambda _: CapturingLLM())

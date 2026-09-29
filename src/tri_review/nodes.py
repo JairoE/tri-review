@@ -296,7 +296,11 @@ def synthesize_node(
     succeeded = [r for r in results if r.ok]
     failed = [r for r in results if not r.ok]
 
-    if len(succeeded) < min(2, len(results)) or not succeeded:
+    # One graph node per panel member, each appending exactly one result, so
+    # len(results) is the panel size. Stated as a rule rather than min(), so
+    # an empty panel reads as "needs two" instead of hiding in arithmetic.
+    required = 1 if len(results) == 1 else 2
+    if len(succeeded) < required:
         detail = "; ".join(f"{r.model}: {r.error}" for r in failed) or "no models ran"
         raise InsufficientReviewsError(
             f"Only {len(succeeded)} of {len(results)} models returned a review, so there is "
@@ -306,17 +310,19 @@ def synthesize_node(
     if synthesizer is None:
         synthesizer = config.synthesizer_model() or results[0].model
 
-    return {
-        "final_report": _synthesize(
-            succeeded, failed, llm_builder, state.get("dismissals") or [], synthesizer
-        )
-    }
+    report, synthesized = _synthesize(
+        succeeded, failed, llm_builder, state.get("dismissals") or [], synthesizer
+    )
+    return {"final_report": report, "synthesized": synthesized}
 
 
 def _synthesize(
     succeeded, failed, llm_builder, recorded_dismissals=(), synthesizer: str = ""
-) -> str:
-    """Ask a model to cross-reference the structured findings into one report."""
+) -> tuple[str, bool]:
+    """Ask a model to cross-reference the structured findings into one report.
+
+    Returns the report and whether the synthesizer actually wrote it.
+    """
     # Only the synthesizer sees recorded dismissals. The reviewers stay blind
     # to them so their findings stay independent -- a dismissal changes how
     # something is reported, never whether it is found. Resolved upstream in
@@ -351,14 +357,14 @@ def _synthesize(
                 HumanMessage(content=payload),
             ]
         )
-        return header + _text_of(response)
+        return header + _text_of(response), True
     except Exception as exc:  # noqa: BLE001 - the reviews already cost money; don't lose them
         return (
             header
             + f"> Synthesis failed ({type(exc).__name__}: {exc}). "
             "Raw findings from each model follow.\n\n"
             + _raw_listing(succeeded)
-        )
+        ), False
 
 
 def _panel_line(succeeded, failed, synthesizer: str) -> str:
@@ -368,7 +374,10 @@ def _panel_line(succeeded, failed, synthesizer: str) -> str:
     panel. A reader weighing "2 of 3 agreed" needs to see which 3, and at what
     effort, without digging up the workflow run that produced it.
     """
-    reviewers = ", ".join(f"`{r.model}`" for r in [*succeeded, *failed])
+    reviewers = ", ".join(
+        [f"`{r.model}`" for r in succeeded]
+        + [f"`{r.model}` (did not report)" for r in failed]
+    )
     return f"_Reviewers: {reviewers} · Synthesizer: `{synthesizer}`_\n\n"
 
 

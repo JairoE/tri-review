@@ -252,13 +252,16 @@ def build_llm(spec: str | ModelSpec):
         # Generous max_tokens: on current Anthropic models max_tokens caps
         # thinking plus response together, so a tight value truncates output.
         #
-        # An effort setting switches on adaptive thinking (langchain-anthropic
-        # sends thinking={"type": "adaptive"} alongside output_config.effort),
-        # and 8000 was sized for a call with none. At high effort on a large
-        # diff the thinking alone can fill it, truncating the JSON answer into
-        # a parse failure. So a call with effort gets room to think. The
+        # With an effort setting, langchain-anthropic also sends
+        # thinking={"type": "adaptive"}. Current Sonnet and Opus models think
+        # adaptively by default anyway, at their default effort, and 8000 is
+        # what that default has run at. A chosen effort can ask for far more
+        # thinking than the default (xhigh, max), and on a large diff that can
+        # fill 8000 on its own, truncating the JSON answer into a parse
+        # failure. So a call with an explicit effort gets 32000. Every model
+        # that accepts effort supports at least 64K output tokens, and the
         # SDK's refusal of large non-streaming max_tokens only applies at its
-        # default timeout, and a timeout is always set here.
+        # default timeout, which is never used here.
         #
         # max_retries=2 (vs. 1 for the other two providers): kept as a small
         # cushion against genuine transient connectivity issues. The repeated

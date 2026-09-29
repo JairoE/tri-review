@@ -357,6 +357,31 @@ def test_other_providers_carry_no_caveat_at_any_effort():
         assert caveat_for(ModelSpec.parse(f"claude-opus-5@{level}")) is None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "gpt-5.1",
+        "gpt-5.1@high",
+        "openai:gpt-5.1@low",
+        "openai:my-finetune",
+        "openai:my-finetune@xhigh",
+        "ft:gpt-4o-mini:acme::abc123",
+        "claude-opus-5@max",
+        "anthropic:gpt-looking-name@medium",
+        "gemini-3.8-flash",
+        "google:gemini-2.5-pro@low",
+        " gpt-5.1@HIGH ",
+    ],
+)
+def test_the_canonical_form_always_parses_back_to_the_same_spec(text):
+    """The CLI stores canonical strings and later parses them again (the cache
+    key, history, the warning pass, build_llm). If the round trip ever broke,
+    every one of those would disagree with what the user asked for."""
+    spec = ModelSpec.parse(text)
+    assert ModelSpec.parse(str(spec)) == spec
+    assert str(ModelSpec.parse(str(spec))) == str(spec)
+
+
 # --- review findings on PR #25 -----------------------------------------------
 
 

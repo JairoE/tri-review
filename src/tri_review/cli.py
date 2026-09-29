@@ -527,7 +527,7 @@ def _run(
     from .graph import build_review_graph
 
     app = build_review_graph(models=models, use_cache=not fresh, synthesizer=synthesizer)
-    report, results = _stream_graph(
+    report, results, synthesized = _stream_graph(
         app, pr_number, repo, patterns, len(models), head_sha, diff
     )
 
@@ -540,6 +540,15 @@ def _run(
         console.print(
             f"[dim]Not storing this review: {tree_reason}, so it is not a review "
             f"of {head_sha[:8]} and must not be replayed as one.[/dim]"
+        )
+    elif identity and not synthesized:
+        # A synthesizer outage must not become this commit's stored answer.
+        # Without --fresh the reviews are already in the per-model cache, so a
+        # re-run buys only the synthesis.
+        cached = "" if fresh else " The reviews are cached and will not be bought again."
+        console.print(
+            f"[dim]Not storing this review: synthesis with {escape(synthesizer)} "
+            f"failed, so re-running retries it.{cached}[/dim]"
         )
     elif identity:
         saved = history.save(
@@ -623,15 +632,18 @@ def _stream_graph(
     model_count: int,
     head_sha: str = "",
     diff: str = "",
-) -> tuple[str, list]:
+) -> tuple[str, list, bool]:
     """Drive the graph, reporting each node's outcome as it lands.
 
-    Returns the report and the individual results. The results are what a later
-    run compares against to say which findings were resolved, so they have to
-    survive the graph rather than being folded into prose and discarded.
+    Returns the report, the individual results, and whether the synthesizer
+    wrote the report (False for the raw-findings fallback). The results are
+    what a later run compares against to say which findings were resolved, so
+    they have to survive the graph rather than being folded into prose and
+    discarded.
     """
     report = ""
     results: list = []
+    synthesized = False
 
     with Progress(
         SpinnerColumn(),
@@ -667,8 +679,9 @@ def _stream_graph(
                 elif node == "synthesize":
                     progress.update(task, description="Synthesizing...")
                     report = update["final_report"]
+                    synthesized = update.get("synthesized", True)
 
-    return report, results
+    return report, results, synthesized
 
 
 def _print_result(result, via=console) -> None:

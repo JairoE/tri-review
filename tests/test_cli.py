@@ -946,3 +946,58 @@ def test_every_bad_spec_is_listed_on_its_own_line():
     assert any("llama-9000" in line for line in lines)
     assert any("hihg" in line for line in lines)
     assert not any("llama-9000" in line and "hihg" in line for line in lines)
+
+
+class _FakeApp:
+    """Stands in for the compiled graph: yields one synthesize update."""
+
+    def __init__(self, synthesized):
+        self.synthesized = synthesized
+
+    def stream(self, _initial, stream_mode="updates"):
+        yield {
+            "synthesize": {
+                "final_report": "## Consensus Findings\n\nFresh report.",
+                "synthesized": self.synthesized,
+            }
+        }
+
+
+def _run_with_synthesis(monkeypatch, tmp_path, synthesized):
+    from tri_review import history
+
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: _FakeApp(synthesized)
+    )
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42",
+         "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5",
+         "--synthesizer", "claude-opus-5@high"],
+    )
+    return result, history.load("octocat/Hello-World", "42")
+
+
+def test_a_failed_synthesis_is_not_stored_for_replay(monkeypatch, tmp_path):
+    """A synthesizer outage must not become the stored answer for this commit."""
+    result, stored = _run_with_synthesis(monkeypatch, tmp_path, synthesized=False)
+
+    assert result.exit_code == 0, result.output
+    assert stored is None
+    assert "synthesis with claude-opus-5@high failed" in result.output
+
+
+def test_a_successful_synthesis_is_still_stored(monkeypatch, tmp_path):
+    result, stored = _run_with_synthesis(monkeypatch, tmp_path, synthesized=True)
+
+    assert result.exit_code == 0, result.output
+    assert stored is not None and stored.synthesizer == "claude-opus-5@high"
