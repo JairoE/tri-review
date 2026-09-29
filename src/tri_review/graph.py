@@ -98,18 +98,27 @@ def build_review_graph(
     models: list[str] | None = None,
     llm_builder=providers.build_llm,
     use_cache: bool = True,
+    synthesizer: str | None = None,
 ):
     """Compile the review graph. `models` defaults to the three configured slots.
+
+    `synthesizer` is any model spec; unset, it is TRI_REVIEW_SYNTHESIZER, else
+    the first reviewer. Resolved here rather than in the node so the model
+    that writes the report is fixed before any reviewer is paid for.
 
     `use_cache` off is what --fresh threads down to: it forces every reviewer to
     call its provider even when an identical payload was reviewed before.
     """
     models = models or [config.model_a(), config.model_b(), config.model_c()]
+    synthesizer = synthesizer or config.synthesizer_model() or models[0]
 
     workflow = StateGraph(ReviewState)
     workflow.add_node("fetch_context", fetch_context_node)
     # Bind the same builder the reviewers use, so tests can stub the synthesizer too.
-    workflow.add_node("synthesize", lambda state: nodes.synthesize_node(state, llm_builder))
+    workflow.add_node(
+        "synthesize",
+        lambda state: nodes.synthesize_node(state, llm_builder, synthesizer),
+    )
 
     workflow.set_entry_point("fetch_context")
 

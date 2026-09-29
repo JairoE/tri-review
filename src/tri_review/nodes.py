@@ -279,8 +279,14 @@ def make_review_node(model_name: str, llm_builder=build_llm, use_cache: bool = T
     return node
 
 
-def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
-    """Cross-reference the reviews. Requires at least two successful ones."""
+def synthesize_node(
+    state: ReviewState, llm_builder=build_llm, synthesizer: str | None = None
+) -> dict:
+    """Cross-reference the reviews. Requires at least two successful ones.
+
+    `synthesizer` is any model spec, reviewer or not. The graph always passes
+    one; the fallback is for direct callers and mirrors the CLI's default.
+    """
     results = state.get("results", [])
     succeeded = [r for r in results if r.ok]
     failed = [r for r in results if not r.ok]
@@ -292,14 +298,19 @@ def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
             f"nothing to triangulate.\nFailures: {detail}"
         )
 
+    if synthesizer is None:
+        synthesizer = config.synthesizer_model() or results[0].model
+
     return {
         "final_report": _synthesize(
-            succeeded, failed, llm_builder, state.get("dismissals") or []
+            succeeded, failed, llm_builder, state.get("dismissals") or [], synthesizer
         )
     }
 
 
-def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
+def _synthesize(
+    succeeded, failed, llm_builder, recorded_dismissals=(), synthesizer: str = ""
+) -> str:
     """Ask a model to cross-reference the structured findings into one report."""
     # Only the synthesizer sees recorded dismissals. The reviewers stay blind
     # to them so their findings stay independent -- a dismissal changes how
@@ -318,14 +329,15 @@ def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
         indent=2,
     )
     header = (
-        _failure_note(failed)
+        _panel_line(succeeded, failed, synthesizer)
+        + _failure_note(failed)
         + _diversity_note(succeeded)
         + _low_confidence_note(succeeded)
         + _malformed_note(succeeded)
     )
 
     try:
-        llm = llm_builder(config.synthesizer_model())
+        llm = llm_builder(synthesizer)
         response = llm.invoke(
             [
                 SystemMessage(content=SYNTHESIS_PROMPT),
@@ -341,6 +353,17 @@ def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
             "Raw findings from each model follow.\n\n"
             + _raw_listing(succeeded)
         )
+
+
+def _panel_line(succeeded, failed, synthesizer: str) -> str:
+    """Name who reviewed and who wrote the report, with their efforts.
+
+    With any model allowed in any role, a report no longer implies its own
+    panel. A reader weighing "2 of 3 agreed" needs to see which 3, and at what
+    effort, without digging up the workflow run that produced it.
+    """
+    reviewers = ", ".join(f"`{r.model}`" for r in [*succeeded, *failed])
+    return f"_Reviewers: {reviewers} · Synthesizer: `{synthesizer}`_\n\n"
 
 
 def _diversity_note(succeeded) -> str:

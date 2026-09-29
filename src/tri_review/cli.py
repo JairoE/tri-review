@@ -62,6 +62,17 @@ console = Console()
     ),
 )
 @click.option(
+    "--synthesizer",
+    default=None,
+    metavar="SPEC",
+    help=(
+        "Model that cross-references the reviews into the report, as "
+        "[provider:]model[@effort]. Any model, whether or not it is also a "
+        "reviewer. Defaults to TRI_REVIEW_SYNTHESIZER, else the first reviewer. "
+        "--effort does not apply to it; give it its own @effort."
+    ),
+)
+@click.option(
     "--effort",
     default=None,
     metavar="LEVEL",
@@ -125,6 +136,7 @@ def main(
     url: str | None,
     dry_run: bool,
     models: tuple[str, ...],
+    synthesizer: str | None,
     effort: str | None,
     output: Path | None,
     excludes: tuple[str, ...],
@@ -139,7 +151,7 @@ def main(
             repo, pr = _merge_url(url, repo, pr)
         _run(
             pr, repo, dry_run, models, output, excludes,
-            no_default_excludes, fresh, use_triage, effort,
+            no_default_excludes, fresh, use_triage, effort, synthesizer,
         )
     except NothingToReview as exc:
         # Not a failure: nothing was found worth spending on, and nothing was
@@ -247,6 +259,23 @@ def _resolve_models(selected: tuple[str, ...], effort: str | None = None) -> lis
         )
 
     return models
+
+
+def _resolve_synthesizer(flag: str | None, models: list[str]) -> str:
+    """The synthesizer's canonical spec: the flag, else the env var, else reviewer one.
+
+    Validated with the reviewers, before the PR is fetched: a typo here would
+    otherwise surface only after every review had been paid for, as a
+    "synthesis failed" report of raw findings.
+    """
+    text = (flag or "").strip()
+    source = "--synthesizer"
+    if not text:
+        text = config.synthesizer_model() or ""
+        source = "TRI_REVIEW_SYNTHESIZER"
+    if not text:
+        return models[0]
+    return str(_parse_specs((text,), source)[0])
 
 
 def _resolve_effort(flag: str | None) -> str | None:
@@ -431,8 +460,10 @@ def _run(
     fresh: bool = False,
     use_triage: bool | None = None,
     effort: str | None = None,
+    synthesizer: str | None = None,
 ) -> None:
     models = _resolve_models(selected, _resolve_effort(effort))
+    synthesizer = _resolve_synthesizer(synthesizer, models)
     patterns, skippable = _resolve_excludes(excludes, no_default_excludes)
 
     github.preflight(repo)
@@ -451,6 +482,7 @@ def _run(
         ctx = context.preview_context(pr_number, repo, patterns)
         _print_context(pr_number, ctx)
         console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
+        console.print(f"[dim]would synthesize with: {synthesizer}[/dim]")
         _warn_about(models)
         console.print("[dim]--dry-run: stopping before any model call.[/dim]")
         return
@@ -476,7 +508,8 @@ def _run(
     console.print(
         Panel(
             f"[bold cyan]tri-review[/bold cyan]  {repo + ' ' if repo else ''}PR #{pr_number}\n"
-            f"[dim]{'  ·  '.join(models)}[/dim]",
+            f"[dim]{'  ·  '.join(models)}[/dim]\n"
+            f"[dim]synthesizer: {synthesizer}[/dim]",
             expand=False,
         )
     )
@@ -490,7 +523,7 @@ def _run(
     # where its "keeps --dry-run fast" comment was not actually true.)
     from .graph import build_review_graph
 
-    app = build_review_graph(models=models, use_cache=not fresh)
+    app = build_review_graph(models=models, use_cache=not fresh, synthesizer=synthesizer)
     report, results = _stream_graph(
         app, pr_number, repo, patterns, len(models), head_sha, diff
     )

@@ -821,3 +821,58 @@ def test_a_source_file_named_after_the_changelog_is_still_source(monkeypatch):
     result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
 
     assert isinstance(result.exception, _ReachedTheModels)
+
+
+# --- --synthesizer -----------------------------------------------------------
+
+
+def test_the_synthesizer_flag_takes_any_spec():
+    from tri_review.cli import _resolve_synthesizer
+
+    assert _resolve_synthesizer("gpt-astra@medium", ["gpt-6-sol"]) == "gpt-astra@medium"
+    assert _resolve_synthesizer("openai:my-finetune", ["gpt-6-sol"]) == "openai:my-finetune"
+
+
+def test_the_synthesizer_defaults_to_the_first_reviewer(monkeypatch):
+    from tri_review.cli import _resolve_synthesizer
+
+    monkeypatch.delenv("TRI_REVIEW_SYNTHESIZER", raising=False)
+    assert _resolve_synthesizer(None, ["gpt-6-sol@high", "gpt-5.6-sol"]) == "gpt-6-sol@high"
+
+
+def test_the_synthesizer_flag_beats_the_env_var(monkeypatch):
+    from tri_review.cli import _resolve_synthesizer
+
+    monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "claude-opus-5")
+    assert _resolve_synthesizer("gpt-astra", ["m"]) == "gpt-astra"
+    assert _resolve_synthesizer(None, ["m"]) == "claude-opus-5"
+
+
+def test_the_synthesizer_does_not_inherit_the_reviewers_effort():
+    """--effort is for reviewers. The synthesizer gets its own suffix or none."""
+    from tri_review.cli import _resolve_synthesizer
+
+    assert _resolve_synthesizer("gpt-astra", ["gpt-6-sol@high"]) == "gpt-astra"
+
+
+def test_a_bad_synthesizer_fails_before_touching_github(monkeypatch):
+    called = []
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a: called.append("preflight"))
+
+    result = CliRunner().invoke(
+        main,
+        ["--pr", "1", "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5",
+         "--synthesizer", "llama-9000"],
+    )
+
+    assert result.exit_code != 0
+    assert "--synthesizer" in result.output
+    assert called == []
+
+
+def test_a_bad_synthesizer_env_var_is_named_in_the_error(monkeypatch):
+    from tri_review.cli import _resolve_synthesizer
+
+    monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "llama-9000")
+    with pytest.raises(click.BadParameter, match="TRI_REVIEW_SYNTHESIZER"):
+        _resolve_synthesizer(None, ["gpt-5.1"])

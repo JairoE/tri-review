@@ -242,3 +242,66 @@ def test_no_malformed_findings_adds_no_note():
     state = {"results": [_result("m1", "a"), _result("m2", "b")]}
     report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
     assert "did not match the schema" not in report
+
+
+# --- choosing the synthesizer -----------------------------------------------
+
+
+def test_the_named_synthesizer_is_the_one_built():
+    built = []
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    synthesize_node(
+        state,
+        llm_builder=lambda spec: built.append(spec) or CapturingLLM(),
+        synthesizer="gpt-astra@medium",
+    )
+    assert built == ["gpt-astra@medium"]
+
+
+def test_the_synthesizer_need_not_be_a_reviewer():
+    state = {"results": [_result("gpt-6-sol@high", "a"), _result("gpt-5.6-sol@high", "b")]}
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="gpt-astra@medium"
+    )["final_report"]
+    assert "Synthesizer: `gpt-astra@medium`" in report
+
+
+def test_without_a_named_synthesizer_the_first_reviewer_writes_the_report(monkeypatch):
+    """Not a hidden config slot: that synthesized a flag-picked panel with a model
+    the user never named, and possibly had no key for."""
+    monkeypatch.delenv("TRI_REVIEW_SYNTHESIZER", raising=False)
+    built = []
+    state = {"results": [_result("gpt-6-sol", "a"), _result("gpt-5.6-sol", "b")]}
+    synthesize_node(state, llm_builder=lambda spec: built.append(spec) or CapturingLLM())
+    assert built == ["gpt-6-sol"]
+
+
+def test_the_env_var_still_names_a_standing_synthesizer(monkeypatch):
+    monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "claude-opus-5@high")
+    built = []
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    synthesize_node(state, llm_builder=lambda spec: built.append(spec) or CapturingLLM())
+    assert built == ["claude-opus-5@high"]
+
+
+def test_the_report_names_every_reviewer_including_the_ones_that_failed():
+    state = {
+        "results": [
+            _result("gpt-6-sol@high", "a"),
+            _result("gpt-5.6-sol@high", "b"),
+            _result("claude-opus-5", error="no key"),
+        ]
+    }
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="gpt-astra@medium"
+    )["final_report"]
+    first_line = report.splitlines()[0]
+    for spec in ("gpt-6-sol@high", "gpt-5.6-sol@high", "claude-opus-5", "gpt-astra@medium"):
+        assert f"`{spec}`" in first_line
+
+
+def test_the_panel_line_survives_a_failed_synthesis():
+    llm = CapturingLLM(raises=RuntimeError("synth exploded"))
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    report = synthesize_node(state, llm_builder=lambda _: llm, synthesizer="s")["final_report"]
+    assert "Synthesizer: `s`" in report

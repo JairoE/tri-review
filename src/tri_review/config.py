@@ -120,9 +120,15 @@ def default_effort() -> str | None:
     return (os.environ.get("TRI_REVIEW_EFFORT") or "").strip().lower() or None
 
 
-def synthesizer_model() -> str:
-    """Model that cross-references the reviews. Defaults to slot A."""
-    return os.environ.get("TRI_REVIEW_SYNTHESIZER") or model_a()
+def synthesizer_model() -> str | None:
+    """The standing synthesizer spec, or None to use the panel's first reviewer.
+
+    It used to fall back to slot A, which was invisible and usually wrong once
+    the panel was picked by flag: `--reviewer gpt-6-sol --reviewer gpt-5.6-sol`
+    still synthesized with whatever TRI_REVIEW_MODEL_A said. The first
+    reviewer is the model the user demonstrably has a key for and chose.
+    """
+    return (os.environ.get("TRI_REVIEW_SYNTHESIZER") or "").strip() or None
 
 
 def token_budget() -> int:

@@ -382,3 +382,33 @@ def test_a_failed_ledger_fetch_yields_no_ledger(monkeypatch):
     monkeypatch.setattr(graph_mod.github, "fetch_file_content", boom)
 
     assert graph_mod.fetch_context_node({"pr_number": "7"})["dismissals"] == []
+
+
+def test_the_graph_synthesizes_with_the_named_model(stub_context):
+    built = []
+
+    def builder(spec):
+        built.append(spec)
+        return StubLLM(spec)
+
+    app = graph_mod.build_review_graph(
+        models=["m1", "m2"], llm_builder=builder, synthesizer="the-synth"
+    )
+    out = app.invoke({"pr_number": "1", "results": []})
+
+    assert built[-1] == "the-synth"
+    assert "Synthesizer: `the-synth`" in out["final_report"]
+
+
+def test_the_graph_defaults_the_synthesizer_to_the_first_reviewer(stub_context, monkeypatch):
+    monkeypatch.delenv("TRI_REVIEW_SYNTHESIZER", raising=False)
+    built = []
+
+    def builder(spec):
+        built.append(spec)
+        return StubLLM(spec)
+
+    app = graph_mod.build_review_graph(models=["first", "second"], llm_builder=builder)
+    app.invoke({"pr_number": "1", "results": []})
+
+    assert built[-1] == "first"
