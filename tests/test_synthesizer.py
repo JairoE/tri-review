@@ -305,3 +305,40 @@ def test_the_panel_line_survives_a_failed_synthesis():
     state = {"results": [_result("m1", "a"), _result("m2", "b")]}
     report = synthesize_node(state, llm_builder=lambda _: llm, synthesizer="s")["final_report"]
     assert "Synthesizer: `s`" in report
+
+
+
+# --- a panel of one -----------------------------------------------------------
+
+
+def test_a_panel_of_one_is_reported_as_uncorroborated():
+    state = {"results": [_result("gpt-6-sol@high", "a")]}
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="gpt-astra"
+    )["final_report"]
+    assert "Single reviewer: `gpt-6-sol@high`" in report
+    assert "reviewers are" not in report, "one model is not a single-provider panel"
+
+
+def test_a_panel_of_one_that_fails_is_still_insufficient():
+    state = {"results": [_result("m1", error="no key")]}
+    with pytest.raises(InsufficientReviewsError, match="Only 0 of 1"):
+        synthesize_node(state, llm_builder=lambda _: CapturingLLM())
+
+
+def test_a_larger_panel_that_degrades_to_one_is_still_insufficient():
+    """Chosen as a triangulation and failed as one: exit 4, as before."""
+    state = {
+        "results": [
+            _result("m1", "a"),
+            _result("m2", error="down"),
+            _result("m3", error="down"),
+        ]
+    }
+    with pytest.raises(InsufficientReviewsError, match="Only 1 of 3"):
+        synthesize_node(state, llm_builder=lambda _: CapturingLLM())
+
+
+def test_no_results_at_all_is_insufficient():
+    with pytest.raises(InsufficientReviewsError):
+        synthesize_node({"results": []}, llm_builder=lambda _: CapturingLLM())

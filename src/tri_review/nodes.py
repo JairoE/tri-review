@@ -282,7 +282,12 @@ def make_review_node(model_name: str, llm_builder=build_llm, use_cache: bool = T
 def synthesize_node(
     state: ReviewState, llm_builder=build_llm, synthesizer: str | None = None
 ) -> dict:
-    """Cross-reference the reviews. Requires at least two successful ones.
+    """Cross-reference the reviews. Requires two successful ones, or one of one.
+
+    A panel of one was chosen that way, so its single review is the whole run
+    and is reported, labelled as uncorroborated. A larger panel that degrades
+    to one is a failed run: it was meant to triangulate and could not, and the
+    Action's fail-on-insufficient-reviews exists to say so.
 
     `synthesizer` is any model spec, reviewer or not. The graph always passes
     one; the fallback is for direct callers and mirrors the CLI's default.
@@ -291,7 +296,7 @@ def synthesize_node(
     succeeded = [r for r in results if r.ok]
     failed = [r for r in results if not r.ok]
 
-    if len(succeeded) < 2:
+    if len(succeeded) < min(2, len(results)) or not succeeded:
         detail = "; ".join(f"{r.model}: {r.error}" for r in failed) or "no models ran"
         raise InsufficientReviewsError(
             f"Only {len(succeeded)} of {len(results)} models returned a review, so there is "
@@ -330,6 +335,7 @@ def _synthesize(
     )
     header = (
         _panel_line(succeeded, failed, synthesizer)
+        + _single_reviewer_note(succeeded, failed)
         + _failure_note(failed)
         + _diversity_note(succeeded)
         + _low_confidence_note(succeeded)
@@ -366,6 +372,17 @@ def _panel_line(succeeded, failed, synthesizer: str) -> str:
     return f"_Reviewers: {reviewers} · Synthesizer: `{synthesizer}`_\n\n"
 
 
+def _single_reviewer_note(succeeded, failed) -> str:
+    """Say plainly that a one-model run corroborated nothing."""
+    if len(succeeded) != 1 or failed:
+        return ""
+    return (
+        f"> **Single reviewer: `{succeeded[0].model}`.** Nothing here was corroborated "
+        "by a second model, so every finding is unverified and there is no consensus "
+        "to report. Treat this as one code review, not a triangulated one.\n\n"
+    )
+
+
 def _diversity_note(succeeded) -> str:
     """Warn when the surviving reviewers all came from one provider.
 
@@ -377,7 +394,7 @@ def _diversity_note(succeeded) -> str:
     single-provider one.
     """
     providers = {provider_of(r.model) for r in succeeded}
-    if len(providers) > 1 or None in providers:
+    if len(succeeded) < 2 or len(providers) > 1 or None in providers:
         return ""
     return (
         f"> **All {len(succeeded)} reviewers are `{providers.pop()}` models.** Models from one "

@@ -22,7 +22,11 @@ class PRNotFoundError(TriReviewError):
 
 
 class InsufficientReviewsError(TriReviewError):
-    """Fewer than two models returned a review, so there is nothing to triangulate."""
+    """Too few models returned a review for the panel that was asked for.
+
+    Two for any panel of two or more; one for a panel of one. A triangulation
+    that degraded to a single review is a failure, not a smaller success.
+    """
 
     exit_code = 4
 

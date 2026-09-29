@@ -248,17 +248,9 @@ def _resolve_models(selected: tuple[str, ...], effort: str | None = None) -> lis
     # canonical form, so `openai:gpt-5.1` and `gpt-5.1` are one reviewer while
     # `gpt-5.1@high` and `gpt-5.1@low` are two: a different effort is a
     # different call, and comparing its answers is a legitimate thing to want.
-    models = list(dict.fromkeys(str(s) for s in specs))
-
-    if len(models) < 2:
-        raise click.BadParameter(
-            f"need at least 2 distinct models to triangulate, got {len(models)}. "
-            "Pass --reviewer twice or more with different specs, or omit it to use "
-            "the configured three.",
-            param_hint="--reviewer",
-        )
-
-    return models
+    # One reviewer is allowed: it is a plain code review rather than a
+    # triangulated one, and both the pre-run warning and the report say so.
+    return list(dict.fromkeys(str(s) for s in specs))
 
 
 def _resolve_synthesizer(flag: str | None, models: list[str]) -> str:
@@ -296,6 +288,12 @@ def _warn_about(models: list[str]) -> None:
     """Print the caveat for any spec measured to fail silently. Never refuses."""
     from .providers import ModelSpec, caveat_for
 
+    if len(models) == 1:
+        console.print(
+            f"[yellow]Warning: one reviewer ({escape(models[0])}) has nothing to "
+            "corroborate its findings against. The report will say so; pass "
+            "--reviewer again for a triangulated review.[/yellow]"
+        )
     for text in models:
         caveat = caveat_for(ModelSpec.parse(text))
         if caveat:

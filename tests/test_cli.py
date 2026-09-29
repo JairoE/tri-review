@@ -29,9 +29,16 @@ def test_more_than_three_models_are_allowed():
     assert _resolve_models(chosen) == list(chosen)
 
 
-def test_single_model_is_rejected():
-    with pytest.raises(click.BadParameter, match="at least 2 distinct models"):
-        _resolve_models(("gpt-5.1",))
+def test_a_single_reviewer_is_allowed():
+    assert _resolve_models(("gpt-5.1",)) == ["gpt-5.1"]
+
+
+def test_a_single_reviewer_is_warned_about(capsys):
+    from tri_review.cli import _warn_about
+
+    _warn_about(["gpt-5.1"])
+
+    assert "nothing to corroborate" in capsys.readouterr().out
 
 
 def test_unknown_model_id_is_rejected_up_front():
@@ -55,9 +62,8 @@ def test_duplicate_models_are_collapsed():
     ]
 
 
-def test_the_same_model_twice_is_not_a_panel():
-    with pytest.raises(click.BadParameter, match="at least 2 distinct models"):
-        _resolve_models(("gpt-5.1", "gpt-5.1"))
+def test_the_same_model_twice_is_one_reviewer():
+    assert _resolve_models(("gpt-5.1", "gpt-5.1")) == ["gpt-5.1"]
 
 
 def test_help_documents_the_flag():
@@ -84,8 +90,7 @@ def test_the_same_model_at_two_efforts_is_two_reviewers():
 
 
 def test_a_redundant_provider_prefix_is_the_same_reviewer():
-    with pytest.raises(click.BadParameter, match="at least 2 distinct"):
-        _resolve_models(("openai:gpt-5.1", "gpt-5.1"))
+    assert _resolve_models(("openai:gpt-5.1", "gpt-5.1")) == ["gpt-5.1"]
 
 
 def test_an_explicit_provider_routes_an_unknown_id():
