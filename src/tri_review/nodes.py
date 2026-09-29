@@ -279,28 +279,50 @@ def make_review_node(model_name: str, llm_builder=build_llm, use_cache: bool = T
     return node
 
 
-def synthesize_node(state: ReviewState, llm_builder=build_llm) -> dict:
-    """Cross-reference the reviews. Requires at least two successful ones."""
+def synthesize_node(
+    state: ReviewState, llm_builder=build_llm, synthesizer: str | None = None
+) -> dict:
+    """Cross-reference the reviews. Requires two successful ones, or one of one.
+
+    A panel of one was chosen that way, so its single review is the whole run
+    and is reported, labelled as uncorroborated. A larger panel that degrades
+    to one is a failed run: it was meant to triangulate and could not, and the
+    Action's fail-on-insufficient-reviews exists to say so.
+
+    `synthesizer` is any model spec, reviewer or not. The graph always passes
+    one; the fallback is for direct callers and mirrors the CLI's default.
+    """
     results = state.get("results", [])
     succeeded = [r for r in results if r.ok]
     failed = [r for r in results if not r.ok]
 
-    if len(succeeded) < 2:
+    # One graph node per panel member, each appending exactly one result, so
+    # len(results) is the panel size. Stated as a rule rather than min(), so
+    # an empty panel reads as "needs two" instead of hiding in arithmetic.
+    required = 1 if len(results) == 1 else 2
+    if len(succeeded) < required:
         detail = "; ".join(f"{r.model}: {r.error}" for r in failed) or "no models ran"
         raise InsufficientReviewsError(
             f"Only {len(succeeded)} of {len(results)} models returned a review, so there is "
             f"nothing to triangulate.\nFailures: {detail}"
         )
 
-    return {
-        "final_report": _synthesize(
-            succeeded, failed, llm_builder, state.get("dismissals") or []
-        )
-    }
+    if synthesizer is None:
+        synthesizer = config.synthesizer_model() or results[0].model
+
+    report, synthesized = _synthesize(
+        succeeded, failed, llm_builder, state.get("dismissals") or [], synthesizer
+    )
+    return {"final_report": report, "synthesized": synthesized}
 
 
-def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
-    """Ask a model to cross-reference the structured findings into one report."""
+def _synthesize(
+    succeeded, failed, llm_builder, recorded_dismissals=(), synthesizer: str = ""
+) -> tuple[str, bool]:
+    """Ask a model to cross-reference the structured findings into one report.
+
+    Returns the report and whether the synthesizer actually wrote it.
+    """
     # Only the synthesizer sees recorded dismissals. The reviewers stay blind
     # to them so their findings stay independent -- a dismissal changes how
     # something is reported, never whether it is found. Resolved upstream in
@@ -318,14 +340,16 @@ def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
         indent=2,
     )
     header = (
-        _failure_note(failed)
+        _panel_line(succeeded, failed, synthesizer)
+        + _single_reviewer_note(succeeded, failed)
+        + _failure_note(failed)
         + _diversity_note(succeeded)
         + _low_confidence_note(succeeded)
         + _malformed_note(succeeded)
     )
 
     try:
-        llm = llm_builder(config.synthesizer_model())
+        llm = llm_builder(synthesizer)
         response = llm.invoke(
             [
                 SystemMessage(content=SYNTHESIS_PROMPT),
@@ -333,14 +357,39 @@ def _synthesize(succeeded, failed, llm_builder, recorded_dismissals=()) -> str:
                 HumanMessage(content=payload),
             ]
         )
-        return header + _text_of(response)
+        return header + _text_of(response), True
     except Exception as exc:  # noqa: BLE001 - the reviews already cost money; don't lose them
         return (
             header
             + f"> Synthesis failed ({type(exc).__name__}: {exc}). "
             "Raw findings from each model follow.\n\n"
             + _raw_listing(succeeded)
-        )
+        ), False
+
+
+def _panel_line(succeeded, failed, synthesizer: str) -> str:
+    """Name who reviewed and who wrote the report, with their efforts.
+
+    With any model allowed in any role, a report no longer implies its own
+    panel. A reader weighing "2 of 3 agreed" needs to see which 3, and at what
+    effort, without digging up the workflow run that produced it.
+    """
+    reviewers = ", ".join(
+        [f"`{r.model}`" for r in succeeded]
+        + [f"`{r.model}` (did not report)" for r in failed]
+    )
+    return f"_Reviewers: {reviewers} · Synthesizer: `{synthesizer}`_\n\n"
+
+
+def _single_reviewer_note(succeeded, failed) -> str:
+    """Say plainly that a one-model run corroborated nothing."""
+    if len(succeeded) != 1 or failed:
+        return ""
+    return (
+        f"> **Single reviewer: `{succeeded[0].model}`.** Nothing here was corroborated "
+        "by a second model, so every finding is unverified and there is no consensus "
+        "to report. Treat this as one code review, not a triangulated one.\n\n"
+    )
 
 
 def _diversity_note(succeeded) -> str:
@@ -354,7 +403,7 @@ def _diversity_note(succeeded) -> str:
     single-provider one.
     """
     providers = {provider_of(r.model) for r in succeeded}
-    if len(providers) > 1 or None in providers:
+    if len(succeeded) < 2 or len(providers) > 1 or None in providers:
         return ""
     return (
         f"> **All {len(succeeded)} reviewers are `{providers.pop()}` models.** Models from one "

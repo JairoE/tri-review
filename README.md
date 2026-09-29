@@ -61,7 +61,7 @@ Reviews every PR automatically. Nothing to install on your machine.
 
 No `gh` login, no Python install, no per-developer setup — the workflow does all
 of it inside CI. See [GitHub Action](#github-action) below for the full list of
-inputs (choosing models, excluding files, etc.).
+inputs (excluding files, capping reviews, etc.), and [Choosing models](#choosing-models) to pick the reviewers and synthesizer.
 
 ### Option B: CLI, no checkout (one-off reviews)
 
@@ -105,7 +105,7 @@ Lets you say "review this PR with tri-review" while working in Claude Code.
 
 - Python 3.11+
 - The [GitHub CLI](https://cli.github.com) (`gh`), authenticated once with `gh auth login`. There is no `GITHUB_TOKEN` to manage — `tri-review` uses your existing `gh` session.
-- API keys for at least two of the three providers.
+- An API key for each provider your panel uses. The default panel spans all three and needs at least two of them to report.
 
 ## Install
 
@@ -333,34 +333,137 @@ every entry automatically. Entries expire after 14 days
 (`TRI_REVIEW_CACHE_TTL_DAYS`, `0` to disable), and the cache directory is safe to
 delete at any time. `--fresh` bypasses both this and the stored report.
 
-### Choosing the panel
+## Choosing models
 
-Repeat `--model` to pick which models review the PR, overriding the configured slots:
+Every run has two roles, and any model can fill either one:
+
+- **Reviewers** read the PR independently and report findings. Pick as many as you want.
+- **The synthesizer** reads the reviewers' findings and writes the report. It can be one of the reviewers or a different model.
+
+Each model is named with a spec:
+
+```
+[provider:]model[@effort]
+```
+
+| Part | Required | Example | Meaning |
+|---|---|---|---|
+| `provider:` | Only when the ID doesn't imply it | `openai:` | Routes an ID nothing recognises, such as a fine-tune |
+| `model` | Yes | `gpt-6-sol` | The provider's model ID, exactly as they publish it |
+| `@effort` | No | `@high` | Reasoning effort for this one model |
+
+With nothing chosen, the panel is the three configured slots and the synthesizer is the first reviewer.
+
+The model IDs in the examples below are illustrative. Check the exact strings against your provider's model list before copying them.
+
+### On the command line
+
+| Flag | Takes | Default |
+|---|---|---|
+| `--reviewer` | one spec, repeat for each reviewer | the three configured slots |
+| `--synthesizer` | one spec | `TRI_REVIEW_SYNTHESIZER`, else the first reviewer |
+| `--effort` | one level, for reviewers without their own `@effort` | nothing sent; each provider's default |
+
+`--model` still works as the older name for `--reviewer`.
+
+**Example 1. Sol synthesizes, two Terra versions review.**
 
 ```bash
 tri-review --pr 123 \
-  --model gpt-5.6-terra \
-  --model claude-sonnet-5 \
-  --model gemini-3.8-flash
+  --synthesizer gpt-6-sol \
+  --reviewer gpt-5.6-terra \
+  --reviewer gpt-5.5-terra
 ```
 
-At least two *distinct* models are required, since one model can't corroborate
-anything — repeated IDs are collapsed before that count. More than three is allowed.
-Unrecognized model IDs and too-short panels are rejected before the PR is fetched,
-so a typo costs you nothing.
-
-**Mix providers.** If you only hold one provider's key you can still fill the panel
-from it:
+**Example 2. Astra synthesizes, GPT 6 Sol and GPT 5.6 Sol review.**
 
 ```bash
-tri-review --pr 123 --model gpt-5.1 --model gpt-4.1 --model gpt-4o
+tri-review --pr 123 \
+  --synthesizer gpt-astra \
+  --reviewer gpt-6-sol \
+  --reviewer gpt-5.6-sol
 ```
 
-but understand what you are buying. The premise of this tool is that *independent*
-models rarely hallucinate the same thing; two checkpoints of one family share
-training data and failure modes, so they agree on each other's mistakes. A
-single-provider run still works and still reports, but the report opens with a
-banner saying its consensus is weak evidence. Cross-provider is the real product.
+**Example 3. Astra synthesizes at medium effort, both Sol reviewers run at high.**
+
+```bash
+tri-review --pr 123 \
+  --synthesizer gpt-astra@medium \
+  --reviewer gpt-6-sol@high \
+  --reviewer gpt-5.6-sol@high
+```
+
+The third example can also set the reviewers' effort once. `--effort` never applies to the synthesizer, which keeps its own suffix:
+
+```bash
+tri-review --pr 123 --effort high \
+  --synthesizer gpt-astra@medium \
+  --reviewer gpt-6-sol --reviewer gpt-5.6-sol
+```
+
+Add `--dry-run` to any of these to see the resolved panel and synthesizer without calling a model.
+
+### In the GitHub Action
+
+| Input | Takes | Default |
+|---|---|---|
+| `reviewers` | specs separated by spaces or newlines | the three configured slots |
+| `synthesizer` | one spec | the first reviewer |
+| `effort` | one level, for reviewers without their own `@effort` | nothing sent; each provider's default |
+
+`models` still works as the older name for `reviewers`. These inputs arrive in the first release after v1.1.0, so pin to that release or a later commit on `main` to use them.
+
+The same three setups as Action steps:
+
+**Example 1. Sol synthesizes, two Terra versions review.**
+
+```yaml
+- uses: JairoE/tri-review@v1
+  with:
+    synthesizer: gpt-6-sol
+    reviewers: gpt-5.6-terra gpt-5.5-terra
+    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+**Example 2. Astra synthesizes, GPT 6 Sol and GPT 5.6 Sol review.**
+
+```yaml
+- uses: JairoE/tri-review@v1
+  with:
+    synthesizer: gpt-astra
+    reviewers: gpt-6-sol gpt-5.6-sol
+    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+**Example 3. Astra synthesizes at medium effort, both Sol reviewers run at high.**
+
+```yaml
+- uses: JairoE/tri-review@v1
+  with:
+    synthesizer: gpt-astra@medium
+    reviewers: |
+      gpt-6-sol@high
+      gpt-5.6-sol@high
+    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+Each example only needs the key for the providers it uses. To let a PR label switch between setups for one run, see [Choosing the panel per PR](#choosing-the-panel-per-pr).
+
+### How specs behave
+
+**The provider** is inferred from the ID's prefix: `gpt-`, `o1`, `o3`, `o4` and `ft:` are OpenAI, `claude-` is Anthropic, and `gemini-3` is Google. So an OpenAI fine-tune such as `ft:gpt-4o-mini:acme::abc123` works as written. Name the provider explicitly to route any other ID nothing recognises, such as `openai:my-model`. A prefix the ID already implies is dropped, so `openai:gpt-5.1` and `gpt-5.1` are the same reviewer.
+
+**The effort** is passed under each provider's own name for it: `reasoning_effort` for OpenAI, `effort` for Anthropic, `thinking_level` for Gemini. The accepted levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Which of those a given model honours is the provider's call, and a level it rejects fails that one reviewer with the provider's own error. With no suffix and no `--effort`, nothing is sent. Gemini is the exception and runs at `high` unless told otherwise, for the reason under [Configuration](#configuration).
+
+**The same model at two efforts is two reviewers**, so `--reviewer gpt-5.1@high --reviewer gpt-5.1@low` compares a model against itself. The same spec twice is collapsed into one.
+
+**One reviewer is allowed.** The CLI warns before the run and the report opens by saying nothing was corroborated. A larger panel that degrades to one review still exits `4`, because it was meant to triangulate and could not.
+
+**Every report names its panel.** Its first line lists each reviewer and the synthesizer with their efforts, so a reader can see which models "2 of 3 agreed" refers to.
+
+**Typos cost nothing.** Every bad spec is rejected before the PR is fetched, all of them in one error.
+
+**Mixing providers is the point.** All three examples above use one provider, which works, but understand what you are buying. The premise of this tool is that *independent* models rarely hallucinate the same thing. Two checkpoints of one family share training data and failure modes, so they agree on each other's mistakes. A single-provider run still reports, but its report opens with a banner saying its consensus is weak evidence. Cross-provider is the real product.
 
 ## Dismissing a finding
 
@@ -413,7 +516,8 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_MODEL_A` | `gpt-5.6-terra` | First reviewer |
 | `TRI_REVIEW_MODEL_B` | `claude-sonnet-5` | Second reviewer |
 | `TRI_REVIEW_MODEL_C` | `gemini-3.8-flash` | Third reviewer |
-| `TRI_REVIEW_SYNTHESIZER` | same as model A | Model that cross-references the reviews |
+| `TRI_REVIEW_SYNTHESIZER` | the first reviewer | Model spec that writes the report from the reviews |
+| `TRI_REVIEW_EFFORT` | unset | Effort for reviewers whose spec has no `@effort`; unset sends nothing |
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
 | `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds (the Google reviewer uses 300 unless this is set) |
 | `TRI_REVIEW_EXCLUDE` | see `DEFAULT_EXCLUDES` | Comma- or newline-separated globs that replace the built-in skip set |
@@ -422,31 +526,34 @@ Every value is an environment variable override; defaults are in `src/tri_review
 | `TRI_REVIEW_TRIAGE` | unset | Set to `1` to run the behaviour-change gate on every run |
 | `TRI_REVIEW_TRIAGE_MODEL` | same as model C | Model asked whether the diff changes behaviour |
 
-The provider is chosen from the model ID prefix (`gpt-`, `o1`, `o3`, `o4`, `claude-`,
-`gemini-3`), so
-you can point any slot at any supported provider — including three models from the
-same provider if you only have one key, with the caveat described above.
+Every model variable takes a full spec (`[provider:]model[@effort]`, see
+[Choosing models](#choosing-models)), so you can point any slot at any
+supported provider — including three models from the same provider if you only
+have one key, with the caveat described above.
 
-Google models must be Gemini 3 (`gemini-3*`). The Google reviewer runs at
-`thinking_level="high"`, which older Gemini families do not accept, and without it
-Gemini was measured returning an empty review on 9 of 10 runs of a diff with known
-bugs — so older models and family-agnostic aliases like `gemini-flash-latest` are
-rejected up front rather than run in the configuration that fails silently.
+The Google reviewer runs at `thinking_level="high"` unless its spec says otherwise.
+Without it Gemini was measured returning an empty review on 9 of 10 runs of a diff
+with known bugs, and at `low` or `medium` on every run. Only Gemini 3 accepts
+`thinking_level`, so a bare ID is inferred as Google only when it starts with
+`gemini-3`. An older family or an alias like `gemini-flash-latest` needs an explicit
+`google:` prefix. Both choices are allowed, and both print a warning before the run
+because the failure they risk is an empty review that reads as a clean pass.
 
-`--model` takes precedence over `TRI_REVIEW_MODEL_A/B/C`: use the env vars for your
-standing default panel, and the flag for a one-off.
+`--reviewer` takes precedence over `TRI_REVIEW_MODEL_A/B/C`, `--synthesizer` over
+`TRI_REVIEW_SYNTHESIZER`, and `--effort` over `TRI_REVIEW_EFFORT`: use the env vars
+for your standing default panel, and the flags for a one-off.
 
 ## How it behaves
 
 - **A PR with nothing to review is a success, not an error.** If every changed file is documentation, a lockfile, or generated output, the run stops at exit `0` before any model is called and names what it skipped. Exiting non-zero there would fail a CI check on a docs-only pull request, which is backwards.
 - **A retry after a flake only re-calls what failed.** Reviews are cached on an exact content hash, so when a provider drops out and the run exits `4`, re-running reuses the reviews already paid for and buys just the missing one.
 - **A model that fails does not sink the run.** If one provider is down, rate-limited, or missing a key, the other two still produce a report and the failure is noted at the top.
-- **Fewer than two reviews is an error.** A single-model review is just a code review, so `tri-review` exits non-zero rather than pretending it triangulated anything.
+- **Fewer reviews than the panel promised is an error.** A panel of two or more needs two reviews back, so a triangulation that degrades to one model's opinion exits non-zero rather than pretending it triangulated anything. A panel of one, chosen deliberately, needs its one review and is reported as uncorroborated.
 - **Large PRs degrade rather than fail.** If the diff plus changed-file contents exceed the token budget, the largest files' contents are dropped (their diff hunks are kept) and the dropped files are named in a warning. If the diff *alone* busts the budget, that is called out too — no file contents can be included and the providers may reject the payload.
 - **Consensus between same-family models is labeled as weak.** If every reviewer that reported came from one provider, the report opens with a banner saying so rather than presenting their agreement as corroboration.
 - **The diff is untrusted input.** Paths in it are written by whoever opened the PR, so a diff header pointing outside the repository — via `../` or a symlink the PR adds — is refused and named in the run output instead of being read and shipped to the model providers.
 
-Exit codes: `0` success — including a PR that held nothing worth reviewing, `2` environment problem (no `gh`, not authenticated, not a repo, or a bad flag), `3` no such PR, `4` fewer than two reviews, `130` interrupted.
+Exit codes: `0` success — including a PR that held nothing worth reviewing, `2` environment problem (no `gh`, not authenticated, not a repo, or a bad flag), `3` no such PR, `4` too few reviews for the panel, `130` interrupted.
 
 ## Sample output
 
@@ -545,16 +652,53 @@ A PR the gates skip posts a short "Nothing to review" comment and passes, rather
 | Input | Default | Purpose |
 |---|---|---|
 | `pr-number` | autodetected | Which PR to review; usually left unset |
-| `models` | the three configured slots | Space-separated model IDs, same rules as `--model` |
+| `reviewers` | the three configured slots | Whitespace-separated model specs, same rules as `--reviewer` |
+| `models` | none | Older name for `reviewers`; `reviewers` wins when both are set |
+| `synthesizer` | the first reviewer | Model spec that writes the report, same as `--synthesizer` |
+| `effort` | none | Effort for reviewers without their own `@effort`, same as `--effort` |
 | `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
 | `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
-| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (fewer than two reviews) fails the check or just posts a warning |
+| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (too few reviews for the panel) fails the check or just posts a warning |
 | `max-reviews` | none (no cap) | Most reports to produce on one PR; later runs skip with `skip-reason: cap`. See [Capping reviews per PR](#capping-reviews-per-pr) |
 | `force` | `false` | `'true'` ignores `max-reviews` for this run, e.g. `${{ github.event.action == 'labeled' }}` |
 | `post-comment` | `true` | Whether to post a PR comment at all |
 | `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
 | `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
-| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | At least two required |
+| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | One for each provider your panel and synthesizer use. The default panel needs at least two |
+
+### Choosing the panel per PR
+
+The model inputs are ordinary expressions, so a label can switch the panel for one
+run. This workflow reviews every push with the defaults, and a `tri-review:deep`
+label buys one run with a heavier panel:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  review:
+    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:deep'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: JairoE/tri-review@v1
+        with:
+          reviewers: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high' || '' }}
+          synthesizer: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-astra@medium' || '' }}
+          # A label run is an explicit request, so let it past max-reviews.
+          force: ${{ github.event.action == 'labeled' }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+```
+
+An empty input means the default, so the non-label branch of each expression is
+`''`. Only people who can label the PR can apply the override, and the PR's own
+content never chooses its panel.
 
 ### Capping reviews per PR
 
@@ -681,7 +825,7 @@ The suite is offline — every provider call is stubbed, so it runs without API 
 ## Architecture
 
 A LangGraph state machine: a context node resolves the PR and assembles the payload,
-three reviewer nodes fan out concurrently (wall time is the slowest model, not the
+one reviewer node per panel member fans out concurrently (wall time is the slowest model, not the
 sum), and a synthesizer fans back in. Reviewers return structured `Finding` objects
 rather than prose, which is what lets the synthesizer match the same issue across
 models by file and line instead of comparing wording.

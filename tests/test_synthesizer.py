@@ -242,3 +242,160 @@ def test_no_malformed_findings_adds_no_note():
     state = {"results": [_result("m1", "a"), _result("m2", "b")]}
     report = synthesize_node(state, llm_builder=lambda _: CapturingLLM())["final_report"]
     assert "did not match the schema" not in report
+
+
+# --- choosing the synthesizer -----------------------------------------------
+
+
+def test_the_named_synthesizer_is_the_one_built():
+    built = []
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    synthesize_node(
+        state,
+        llm_builder=lambda spec: built.append(spec) or CapturingLLM(),
+        synthesizer="gpt-astra@medium",
+    )
+    assert built == ["gpt-astra@medium"]
+
+
+def test_the_synthesizer_need_not_be_a_reviewer():
+    state = {"results": [_result("gpt-6-sol@high", "a"), _result("gpt-5.6-sol@high", "b")]}
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="gpt-astra@medium"
+    )["final_report"]
+    assert "Synthesizer: `gpt-astra@medium`" in report
+
+
+def test_without_a_named_synthesizer_the_first_reviewer_writes_the_report(monkeypatch):
+    """Not a hidden config slot: that synthesized a flag-picked panel with a model
+    the user never named, and possibly had no key for."""
+    monkeypatch.delenv("TRI_REVIEW_SYNTHESIZER", raising=False)
+    built = []
+    state = {"results": [_result("gpt-6-sol", "a"), _result("gpt-5.6-sol", "b")]}
+    synthesize_node(state, llm_builder=lambda spec: built.append(spec) or CapturingLLM())
+    assert built == ["gpt-6-sol"]
+
+
+def test_the_env_var_still_names_a_standing_synthesizer(monkeypatch):
+    monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "claude-opus-5@high")
+    built = []
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    synthesize_node(state, llm_builder=lambda spec: built.append(spec) or CapturingLLM())
+    assert built == ["claude-opus-5@high"]
+
+
+def test_the_report_names_every_reviewer_including_the_ones_that_failed():
+    state = {
+        "results": [
+            _result("gpt-6-sol@high", "a"),
+            _result("gpt-5.6-sol@high", "b"),
+            _result("claude-opus-5", error="no key"),
+        ]
+    }
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="gpt-astra@medium"
+    )["final_report"]
+    first_line = report.splitlines()[0]
+    for spec in ("gpt-6-sol@high", "gpt-5.6-sol@high", "claude-opus-5", "gpt-astra@medium"):
+        assert f"`{spec}`" in first_line
+
+
+def test_the_panel_line_survives_a_failed_synthesis():
+    llm = CapturingLLM(raises=RuntimeError("synth exploded"))
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    report = synthesize_node(state, llm_builder=lambda _: llm, synthesizer="s")["final_report"]
+    assert "Synthesizer: `s`" in report
+
+
+
+# --- a panel of one -----------------------------------------------------------
+
+
+def test_a_panel_of_one_is_reported_as_uncorroborated():
+    state = {"results": [_result("gpt-6-sol@high", "a")]}
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="gpt-astra"
+    )["final_report"]
+    assert "Single reviewer: `gpt-6-sol@high`" in report
+    assert "reviewers are" not in report, "one model is not a single-provider panel"
+
+
+def test_a_panel_of_one_that_fails_is_still_insufficient():
+    state = {"results": [_result("m1", error="no key")]}
+    with pytest.raises(InsufficientReviewsError, match="Only 0 of 1"):
+        synthesize_node(state, llm_builder=lambda _: CapturingLLM())
+
+
+def test_a_larger_panel_that_degrades_to_one_is_still_insufficient():
+    """Chosen as a triangulation and failed as one: exit 4, as before."""
+    state = {
+        "results": [
+            _result("m1", "a"),
+            _result("m2", error="down"),
+            _result("m3", error="down"),
+        ]
+    }
+    with pytest.raises(InsufficientReviewsError, match="Only 1 of 3"):
+        synthesize_node(state, llm_builder=lambda _: CapturingLLM())
+
+
+def test_no_results_at_all_is_insufficient():
+    with pytest.raises(InsufficientReviewsError):
+        synthesize_node({"results": []}, llm_builder=lambda _: CapturingLLM())
+
+
+# --- review findings on PR #25, second round ---------------------------------
+
+
+def test_a_successful_synthesis_says_so():
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    out = synthesize_node(state, llm_builder=lambda _: CapturingLLM(), synthesizer="s")
+    assert out["synthesized"] is True
+
+
+def test_a_failed_synthesis_says_so_so_it_is_not_stored_as_the_answer():
+    """The fallback report is shown, but a re-run must retry the synthesizer."""
+    llm = CapturingLLM(raises=RuntimeError("credential validation failed"))
+    state = {"results": [_result("m1", "a"), _result("m2", "b")]}
+    out = synthesize_node(state, llm_builder=lambda _: llm, synthesizer="s")
+    assert out["synthesized"] is False
+    assert "Synthesis failed" in out["final_report"]
+
+
+def test_the_panel_line_marks_reviewers_that_did_not_report():
+    state = {
+        "results": [
+            _result("gpt-6-sol", "a"),
+            _result("gpt-5.6-sol", "b"),
+            _result("claude-opus-5", error="no key"),
+        ]
+    }
+    report = synthesize_node(
+        state, llm_builder=lambda _: CapturingLLM(), synthesizer="s"
+    )["final_report"]
+    first_line = report.splitlines()[0]
+    assert "`claude-opus-5` (did not report)" in first_line
+    assert "`gpt-6-sol` (did not report)" not in first_line
+
+
+@pytest.mark.parametrize(
+    "outcomes, required",
+    [
+        (["ok"], 1),
+        (["ok", "ok"], 2),
+        (["ok", "fail"], 2),
+        (["ok", "fail", "fail"], 2),
+        (["ok", "ok", "fail"], 2),
+    ],
+)
+def test_one_of_one_or_two_of_anything_larger(outcomes, required):
+    results = [
+        _result(f"m{i}", "a") if o == "ok" else _result(f"m{i}", error="down")
+        for i, o in enumerate(outcomes)
+    ]
+    succeeded = outcomes.count("ok")
+    if succeeded >= required:
+        synthesize_node({"results": results}, llm_builder=lambda _: CapturingLLM())
+    else:
+        with pytest.raises(InsufficientReviewsError):
+            synthesize_node({"results": results}, llm_builder=lambda _: CapturingLLM())

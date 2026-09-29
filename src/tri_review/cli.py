@@ -47,14 +47,40 @@ console = Console()
     help="Show what would be sent to the models, then exit without calling them.",
 )
 @click.option(
+    "--reviewer",
     "--model",
     "models",
     multiple=True,
-    metavar="MODEL_ID",
+    metavar="SPEC",
     help=(
-        "Model to review with. Repeat to pick the panel, e.g. "
-        "--model gpt-5.6-terra --model claude-sonnet-5 --model gemini-3.7-flash. "
-        "Defaults to the three configured slots. At least two are required."
+        "Model to review with, as [provider:]model[@effort]. Repeat to pick the "
+        "panel, e.g. --reviewer gpt-5.6-terra@high --reviewer claude-sonnet-5 "
+        "--reviewer gemini-3.8-flash. The provider is inferred from the ID's "
+        "prefix; name it explicitly (openai:my-finetune) to route an ID nothing "
+        "recognises. Defaults to the three configured slots. --model is the "
+        "same flag under its old name."
+    ),
+)
+@click.option(
+    "--synthesizer",
+    default=None,
+    metavar="SPEC",
+    help=(
+        "Model that cross-references the reviews into the report, as "
+        "[provider:]model[@effort]. Any model, whether or not it is also a "
+        "reviewer. Defaults to TRI_REVIEW_SYNTHESIZER, else the first reviewer. "
+        "--effort does not apply to it; give it its own @effort."
+    ),
+)
+@click.option(
+    "--effort",
+    default=None,
+    metavar="LEVEL",
+    help=(
+        "Effort for every reviewer whose spec has no @effort of its own (one of "
+        "none, minimal, low, medium, high, xhigh, max; which of those a model "
+        "honours is the provider's call). Unset sends nothing and lets each "
+        "provider default. Overrides TRI_REVIEW_EFFORT."
     ),
 )
 @click.option(
@@ -110,6 +136,8 @@ def main(
     url: str | None,
     dry_run: bool,
     models: tuple[str, ...],
+    synthesizer: str | None,
+    effort: str | None,
     output: Path | None,
     excludes: tuple[str, ...],
     no_default_excludes: bool,
@@ -123,7 +151,7 @@ def main(
             repo, pr = _merge_url(url, repo, pr)
         _run(
             pr, repo, dry_run, models, output, excludes,
-            no_default_excludes, fresh, use_triage,
+            no_default_excludes, fresh, use_triage, effort, synthesizer,
         )
     except NothingToReview as exc:
         # Not a failure: nothing was found worth spending on, and nothing was
@@ -166,42 +194,114 @@ def _merge_url(url: str, repo: str | None, pr: str | None) -> tuple[str, str]:
     return url_repo, url_pr
 
 
-def _resolve_models(selected: tuple[str, ...]) -> list[str]:
-    """Pick the review panel: --model flags if given, else the configured slots.
+def _parse_specs(texts: tuple[str, ...], source: str) -> list:
+    """Parse every spec, reporting all the bad ones in one usage error.
+
+    One error per run, not one per re-run: someone with two typos should not
+    have to fix them one at a time to discover the second.
+    """
+    from .providers import ModelSpec
+
+    specs, problems = [], []
+    for text in texts:
+        try:
+            specs.append(ModelSpec.parse(text))
+        except ValueError as exc:
+            problems.append(str(exc))
+    if problems:
+        # Click prefixes "Invalid value for <param_hint>:", which already names
+        # the flag or env var, so the message is only the problems themselves.
+        if len(problems) == 1:
+            message = problems[0]
+        else:
+            message = "\n" + "\n".join(f"  - {p}" for p in problems)
+        raise click.BadParameter(message, param_hint=source)
+    return specs
+
+
+def _resolve_models(selected: tuple[str, ...], effort: str | None = None) -> list[str]:
+    """Pick the review panel: --reviewer flags if given, else the configured slots.
+
+    Returns canonical spec strings (see providers.ModelSpec.__str__), which is
+    the form the cache key, the history record and the report all use.
 
     Validated here rather than per-node so a typo fails before the PR is
-    fetched, instead of surfacing later as an unexplained missing review.
+    fetched, instead of surfacing later as an unexplained missing review. The
+    configured slots go through the same parser, so an env var can carry a
+    full spec and a bad one fails just as early.
+
+    `effort` fills in every spec that has no suffix of its own; a suffix
+    always wins. It is the flag or TRI_REVIEW_EFFORT, resolved by the caller.
     """
+    from dataclasses import replace
+
     from . import config
-    from .providers import PROVIDER_PREFIXES, provider_of
 
     if not selected:
-        return [config.model_a(), config.model_b(), config.model_c()]
+        selected = (config.model_a(), config.model_b(), config.model_c())
+        source = "TRI_REVIEW_MODEL_A/B/C"
+    else:
+        source = "--reviewer"
 
-    # The same model twice cannot corroborate itself -- it would just pay for one
-    # opinion and report it as consensus. Collapse before counting.
-    models = list(dict.fromkeys(selected))
+    specs = _parse_specs(selected, source)
+    if effort is not None:
+        specs = [replace(s, effort=effort) if s.effort is None else s for s in specs]
 
-    if len(models) < 2:
+    # The same spec twice cannot corroborate itself -- it would just pay for one
+    # opinion and report it as consensus. Collapse before counting. Keyed on the
+    # canonical form, so `openai:gpt-5.1` and `gpt-5.1` are one reviewer while
+    # `gpt-5.1@high` and `gpt-5.1@low` are two: a different effort is a
+    # different call, and comparing its answers is a legitimate thing to want.
+    # One reviewer is allowed: it is a plain code review rather than a
+    # triangulated one, and both the pre-run warning and the report say so.
+    return list(dict.fromkeys(str(s) for s in specs))
+
+
+def _resolve_synthesizer(flag: str | None, models: list[str]) -> str:
+    """The synthesizer's canonical spec: the flag, else the env var, else reviewer one.
+
+    Validated with the reviewers, before the PR is fetched: a typo here would
+    otherwise surface only after every review had been paid for, as a
+    "synthesis failed" report of raw findings.
+    """
+    text = (flag or "").strip()
+    source = "--synthesizer"
+    if not text:
+        text = config.synthesizer_model() or ""
+        source = "TRI_REVIEW_SYNTHESIZER"
+    if not text:
+        return models[0]
+    return str(_parse_specs((text,), source)[0])
+
+
+def _resolve_effort(flag: str | None) -> str | None:
+    """The default effort for unsuffixed reviewers: the flag, else the env var."""
+    from .providers import EFFORT_LEVELS
+
+    level = (flag or "").strip().lower() or config.default_effort()
+    if level is not None and level not in EFFORT_LEVELS:
+        source = "--effort" if flag else "TRI_REVIEW_EFFORT"
         raise click.BadParameter(
-            f"need at least 2 distinct models to triangulate, got {len(models)}. "
-            "Pass --model twice or more with different IDs, or omit it to use the "
-            "configured three.",
-            param_hint="--model",
+            f"unknown effort {level!r}; expected one of {', '.join(EFFORT_LEVELS)}",
+            param_hint=source,
         )
+    return level
 
-    unknown = [name for name in models if provider_of(name) is None]
-    if unknown:
-        supported = ", ".join(
-            f"{provider} ({', '.join(p + '*' for p in prefixes)})"
-            for provider, prefixes in PROVIDER_PREFIXES.items()
-        )
-        raise click.BadParameter(
-            f"unrecognized model ID(s): {', '.join(unknown)}. Supported: {supported}.",
-            param_hint="--model",
-        )
 
-    return models
+def _warn_about(models: list[str]) -> None:
+    """Print the caveat for any spec measured to fail silently. Never refuses."""
+    from .providers import ModelSpec, caveat_for
+
+    if len(models) == 1:
+        console.print(
+            f"[yellow]Warning: one reviewer ({escape(models[0])}) has nothing to "
+            "corroborate its findings against. The report will say so; pass "
+            "--reviewer again for a triangulated review.[/yellow]"
+        )
+    for text in models:
+        caveat = caveat_for(ModelSpec.parse(text))
+        if caveat:
+            console.print(f"[yellow]Warning: {escape(caveat)}[/yellow]")
 
 
 def _resolve_excludes(
@@ -361,8 +461,11 @@ def _run(
     no_default_excludes: bool = False,
     fresh: bool = False,
     use_triage: bool | None = None,
+    effort: str | None = None,
+    synthesizer: str | None = None,
 ) -> None:
-    models = _resolve_models(selected)
+    models = _resolve_models(selected, _resolve_effort(effort))
+    synthesizer = _resolve_synthesizer(synthesizer, models)
     patterns, skippable = _resolve_excludes(excludes, no_default_excludes)
 
     github.preflight(repo)
@@ -381,6 +484,8 @@ def _run(
         ctx = context.preview_context(pr_number, repo, patterns)
         _print_context(pr_number, ctx)
         console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
+        console.print(f"[dim]would synthesize with: {synthesizer}[/dim]")
+        _warn_about(models)
         console.print("[dim]--dry-run: stopping before any model call.[/dim]")
         return
 
@@ -396,7 +501,8 @@ def _run(
     tree_reason = github.working_tree_reason(head_sha) if repo is None else None
 
     if identity and not fresh and _replay(
-        identity, pr_number, head_sha, models, patterns, output, tree_reason
+        identity, pr_number, head_sha, models, patterns, output, tree_reason,
+        synthesizer,
     ):
         return
 
@@ -405,10 +511,12 @@ def _run(
     console.print(
         Panel(
             f"[bold cyan]tri-review[/bold cyan]  {repo + ' ' if repo else ''}PR #{pr_number}\n"
-            f"[dim]{'  ·  '.join(models)}[/dim]",
+            f"[dim]{'  ·  '.join(models)}[/dim]\n"
+            f"[dim]synthesizer: {synthesizer}[/dim]",
             expand=False,
         )
     )
+    _warn_about(models)
 
     # Imported here, and below every path that returns early, because pulling in
     # langgraph drags langchain_core's runnables in with it -- tens of seconds
@@ -418,8 +526,8 @@ def _run(
     # where its "keeps --dry-run fast" comment was not actually true.)
     from .graph import build_review_graph
 
-    app = build_review_graph(models=models, use_cache=not fresh)
-    report, results = _stream_graph(
+    app = build_review_graph(models=models, use_cache=not fresh, synthesizer=synthesizer)
+    report, results, synthesized = _stream_graph(
         app, pr_number, repo, patterns, len(models), head_sha, diff
     )
 
@@ -433,6 +541,15 @@ def _run(
             f"[dim]Not storing this review: {tree_reason}, so it is not a review "
             f"of {head_sha[:8]} and must not be replayed as one.[/dim]"
         )
+    elif identity and not synthesized:
+        # A synthesizer outage must not become this commit's stored answer.
+        # Without --fresh the reviews are already in the per-model cache, so a
+        # re-run buys only the synthesis.
+        cached = "" if fresh else " The reviews are cached and will not be bought again."
+        console.print(
+            f"[dim]Not storing this review: synthesis with {escape(synthesizer)} "
+            f"failed, so re-running retries it.{cached}[/dim]"
+        )
     elif identity:
         saved = history.save(
             history.RunRecord(
@@ -440,6 +557,7 @@ def _run(
                 pr=str(pr_number),
                 head_sha=head_sha,
                 models=list(models),
+                synthesizer=synthesizer,
                 excludes=list(patterns),
                 report=report,
                 results=results,
@@ -462,13 +580,14 @@ def _replay(
     patterns: tuple[str, ...],
     output: Path | None,
     tree_reason: str | None = None,
+    synthesizer: str | None = None,
 ) -> bool:
     """Print the stored review if it still answers the question. True if it did."""
     record = history.load(identity, str(pr_number))
     if record is None:
         return False
 
-    reason = history.stale_reason(record, head_sha, models, patterns)
+    reason = history.stale_reason(record, head_sha, models, patterns, synthesizer)
     if reason is not None:
         console.print(f"[dim]Stored review is out of date ({reason}). Reviewing.[/dim]")
         return False
@@ -513,15 +632,18 @@ def _stream_graph(
     model_count: int,
     head_sha: str = "",
     diff: str = "",
-) -> tuple[str, list]:
+) -> tuple[str, list, bool]:
     """Drive the graph, reporting each node's outcome as it lands.
 
-    Returns the report and the individual results. The results are what a later
-    run compares against to say which findings were resolved, so they have to
-    survive the graph rather than being folded into prose and discarded.
+    Returns the report, the individual results, and whether the synthesizer
+    wrote the report (False for the raw-findings fallback). The results are
+    what a later run compares against to say which findings were resolved, so
+    they have to survive the graph rather than being folded into prose and
+    discarded.
     """
     report = ""
     results: list = []
+    synthesized = False
 
     with Progress(
         SpinnerColumn(),
@@ -557,8 +679,9 @@ def _stream_graph(
                 elif node == "synthesize":
                     progress.update(task, description="Synthesizing...")
                     report = update["final_report"]
+                    synthesized = update.get("synthesized", True)
 
-    return report, results
+    return report, results, synthesized
 
 
 def _print_result(result, via=console) -> None:

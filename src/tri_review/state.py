@@ -35,3 +35,7 @@ class ReviewState(TypedDict, total=False):
     # operator.add makes the parallel reviewer nodes append rather than overwrite.
     results: Annotated[list[ReviewResult], operator.add]
     final_report: str
+    # False when the synthesizer call failed and `final_report` is the raw
+    # findings fallback. That report is still shown, but it must not be stored
+    # as the answer for this commit: a re-run should retry the synthesis.
+    synthesized: bool

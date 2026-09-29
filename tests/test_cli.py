@@ -29,9 +29,16 @@ def test_more_than_three_models_are_allowed():
     assert _resolve_models(chosen) == list(chosen)
 
 
-def test_single_model_is_rejected():
-    with pytest.raises(click.BadParameter, match="at least 2 distinct models"):
-        _resolve_models(("gpt-5.1",))
+def test_a_single_reviewer_is_allowed():
+    assert _resolve_models(("gpt-5.1",)) == ["gpt-5.1"]
+
+
+def test_a_single_reviewer_is_warned_about(capsys):
+    from tri_review.cli import _warn_about
+
+    _warn_about(["gpt-5.1"])
+
+    assert "nothing to corroborate" in capsys.readouterr().out
 
 
 def test_unknown_model_id_is_rejected_up_front():
@@ -55,15 +62,126 @@ def test_duplicate_models_are_collapsed():
     ]
 
 
-def test_the_same_model_twice_is_not_a_panel():
-    with pytest.raises(click.BadParameter, match="at least 2 distinct models"):
-        _resolve_models(("gpt-5.1", "gpt-5.1"))
+def test_the_same_model_twice_is_one_reviewer():
+    assert _resolve_models(("gpt-5.1", "gpt-5.1")) == ["gpt-5.1"]
 
 
 def test_help_documents_the_flag():
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
-    assert "--model" in result.output
+    assert "--reviewer" in result.output
+    assert "--model" in result.output, "the old name still works and is still documented"
+    assert "--effort" in result.output
+
+
+# --- model specs: [provider:]model[@effort] ----------------------------------
+
+
+def test_an_effort_suffix_is_part_of_the_panel():
+    assert _resolve_models(("gpt-5.1@high", "claude-opus-5@low")) == [
+        "gpt-5.1@high",
+        "claude-opus-5@low",
+    ]
+
+
+def test_the_same_model_at_two_efforts_is_two_reviewers():
+    """A different effort is a different call, so it can be compared against itself."""
+    assert _resolve_models(("gpt-5.1@high", "gpt-5.1@low")) == ["gpt-5.1@high", "gpt-5.1@low"]
+
+
+def test_a_redundant_provider_prefix_is_the_same_reviewer():
+    assert _resolve_models(("openai:gpt-5.1", "gpt-5.1")) == ["gpt-5.1"]
+
+
+def test_an_explicit_provider_routes_an_unknown_id():
+    assert _resolve_models(("openai:my-finetune", "claude-opus-5")) == [
+        "openai:my-finetune",
+        "claude-opus-5",
+    ]
+
+
+def test_a_bad_effort_is_rejected_up_front():
+    with pytest.raises(click.BadParameter, match="unknown effort"):
+        _resolve_models(("gpt-5.1@hihg", "claude-opus-5"))
+
+
+def test_the_default_effort_fills_in_only_unsuffixed_specs():
+    assert _resolve_models(("gpt-5.1", "claude-opus-5@low"), effort="high") == [
+        "gpt-5.1@high",
+        "claude-opus-5@low",
+    ]
+
+
+def test_the_default_effort_applies_to_the_configured_slots_too():
+    panel = _resolve_models((), effort="medium")
+    assert all(spec.endswith("@medium") for spec in panel)
+
+
+def test_no_default_effort_leaves_the_configured_slots_bare():
+    """Every run before effort was configurable sent nothing; that must not change."""
+    assert "@" not in "".join(_resolve_models(()))
+
+
+def test_a_configured_slot_can_carry_a_full_spec(monkeypatch):
+    monkeypatch.setenv("TRI_REVIEW_MODEL_A", "openai:my-finetune@high")
+    assert _resolve_models(())[0] == "openai:my-finetune@high"
+
+
+def test_a_bad_configured_slot_fails_before_the_pr_is_fetched(monkeypatch):
+    monkeypatch.setenv("TRI_REVIEW_MODEL_A", "llama-9000")
+    with pytest.raises(click.BadParameter, match="llama-9000") as exc:
+        _resolve_models(())
+    assert "TRI_REVIEW_MODEL_A" in exc.value.param_hint
+
+
+def test_effort_flag_beats_the_env_var(monkeypatch):
+    from tri_review.cli import _resolve_effort
+
+    monkeypatch.setenv("TRI_REVIEW_EFFORT", "low")
+    assert _resolve_effort("high") == "high"
+    assert _resolve_effort(None) == "low"
+    monkeypatch.delenv("TRI_REVIEW_EFFORT")
+    assert _resolve_effort(None) is None
+
+
+def test_a_bad_effort_flag_is_a_usage_error():
+    from tri_review.cli import _resolve_effort
+
+    with pytest.raises(click.BadParameter, match="unknown effort") as exc:
+        _resolve_effort("hihg")
+    assert exc.value.param_hint == "--effort"
+
+
+def test_a_bad_effort_env_var_is_reported_not_silently_ignored(monkeypatch):
+    from tri_review.cli import _resolve_effort
+
+    monkeypatch.setenv("TRI_REVIEW_EFFORT", "hihg")
+    with pytest.raises(click.BadParameter, match="unknown effort") as exc:
+        _resolve_effort(None)
+    assert exc.value.param_hint == "TRI_REVIEW_EFFORT"
+
+
+def test_a_silently_failing_configuration_is_warned_about(capsys):
+    """Gemini below high was measured returning empty reviews; say so, do not refuse."""
+    from tri_review.cli import _warn_about
+
+    _warn_about(["gemini-3.8-flash@low", "gpt-5.1"])
+
+    out = capsys.readouterr().out
+    assert "Warning" in out and "gemini-3.8-flash@low" in out
+    assert "gpt-5.1" not in out.split("Warning")[1].split("\n")[0]
+
+
+def test_bad_effort_exits_before_touching_github(monkeypatch):
+    called = []
+    monkeypatch.setattr("tri_review.github.preflight", lambda: called.append("preflight"))
+
+    result = CliRunner().invoke(
+        main, ["--pr", "1", "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5", "--effort", "hihg"]
+    )
+
+    assert result.exit_code != 0
+    assert called == []
 
 
 def test_bad_flag_exits_before_touching_github(monkeypatch):
@@ -238,16 +356,21 @@ def test_an_empty_file_list_is_left_to_the_diff_fetch(monkeypatch):
     assert isinstance(result.exception, _ReachedTheModels)
 
 
-def _seed_history(tmp_path, monkeypatch, head_sha="abc123def456", models=None):
+def _seed_history(
+    tmp_path, monkeypatch, head_sha="abc123def456", models=None, synthesizer=None
+):
     from tri_review import config, history
 
     monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    panel = models or [config.model_a(), config.model_b(), config.model_c()]
     history.save(
         history.RunRecord(
             repo="octocat/Hello-World",
             pr="42",
             head_sha=head_sha,
-            models=models or [config.model_a(), config.model_b(), config.model_c()],
+            models=panel,
+            # The default: the first reviewer, since nothing names one.
+            synthesizer=synthesizer or panel[0],
             excludes=list(config.default_excludes()),
             report="## Consensus Findings\n\nStored report from the last run.",
         )
@@ -448,6 +571,7 @@ def _stub_cwd_mode(monkeypatch, tmp_path, tree_reason):
             pr="42",
             head_sha="abc123def456",
             models=[config.model_a(), config.model_b(), config.model_c()],
+            synthesizer=config.model_a(),
             excludes=list(config.default_excludes()),
             report="## Consensus Findings\n\nStored report from the last run.",
         )
@@ -711,3 +835,169 @@ def test_a_source_file_named_after_the_changelog_is_still_source(monkeypatch):
     result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
 
     assert isinstance(result.exception, _ReachedTheModels)
+
+
+# --- --synthesizer -----------------------------------------------------------
+
+
+def test_the_synthesizer_flag_takes_any_spec():
+    from tri_review.cli import _resolve_synthesizer
+
+    assert _resolve_synthesizer("gpt-astra@medium", ["gpt-6-sol"]) == "gpt-astra@medium"
+    assert _resolve_synthesizer("openai:my-finetune", ["gpt-6-sol"]) == "openai:my-finetune"
+
+
+def test_the_synthesizer_defaults_to_the_first_reviewer(monkeypatch):
+    from tri_review.cli import _resolve_synthesizer
+
+    monkeypatch.delenv("TRI_REVIEW_SYNTHESIZER", raising=False)
+    assert _resolve_synthesizer(None, ["gpt-6-sol@high", "gpt-5.6-sol"]) == "gpt-6-sol@high"
+
+
+def test_the_synthesizer_flag_beats_the_env_var(monkeypatch):
+    from tri_review.cli import _resolve_synthesizer
+
+    monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "claude-opus-5")
+    assert _resolve_synthesizer("gpt-astra", ["m"]) == "gpt-astra"
+    assert _resolve_synthesizer(None, ["m"]) == "claude-opus-5"
+
+
+def test_the_synthesizer_does_not_inherit_the_reviewers_effort():
+    """--effort is for reviewers. The synthesizer gets its own suffix or none."""
+    from tri_review.cli import _resolve_synthesizer
+
+    assert _resolve_synthesizer("gpt-astra", ["gpt-6-sol@high"]) == "gpt-astra"
+
+
+def test_a_bad_synthesizer_fails_before_touching_github(monkeypatch):
+    called = []
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a: called.append("preflight"))
+
+    result = CliRunner().invoke(
+        main,
+        ["--pr", "1", "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5",
+         "--synthesizer", "llama-9000"],
+    )
+
+    assert result.exit_code != 0
+    assert "--synthesizer" in result.output
+    assert called == []
+
+
+def test_a_bad_synthesizer_env_var_is_named_in_the_error(monkeypatch):
+    from tri_review.cli import _resolve_synthesizer
+
+    monkeypatch.setenv("TRI_REVIEW_SYNTHESIZER", "llama-9000")
+    with pytest.raises(click.BadParameter, match="llama-9000") as exc:
+        _resolve_synthesizer(None, ["gpt-5.1"])
+    assert exc.value.param_hint == "TRI_REVIEW_SYNTHESIZER"
+
+
+def test_a_different_synthesizer_does_not_replay_the_stored_report(monkeypatch, tmp_path):
+    """Same findings, different writer: the stored report answers another question."""
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    _seed_history(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: (_ for _ in ()).throw(_ReachedTheModels())
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42", "--synthesizer", "claude-opus-5@high"],
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "synthesizer changed" in result.output
+
+
+def test_a_different_default_effort_does_not_replay_the_stored_report(monkeypatch, tmp_path):
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    _seed_history(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: (_ for _ in ()).throw(_ReachedTheModels())
+    )
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--effort", "high"]
+    )
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "panel changed" in result.output
+
+
+def test_every_bad_spec_is_listed_on_its_own_line():
+    with pytest.raises(click.BadParameter) as exc:
+        _resolve_models(("llama-9000", "gpt-5.1@hihg"))
+    lines = str(exc.value.message).splitlines()
+    assert any("llama-9000" in line for line in lines)
+    assert any("hihg" in line for line in lines)
+    assert not any("llama-9000" in line and "hihg" in line for line in lines)
+
+
+class _FakeApp:
+    """Stands in for the compiled graph: yields one synthesize update."""
+
+    def __init__(self, synthesized):
+        self.synthesized = synthesized
+
+    def stream(self, _initial, stream_mode="updates"):
+        yield {
+            "synthesize": {
+                "final_report": "## Consensus Findings\n\nFresh report.",
+                "synthesized": self.synthesized,
+            }
+        }
+
+
+def _run_with_synthesis(monkeypatch, tmp_path, synthesized):
+    from tri_review import history
+
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: _FakeApp(synthesized)
+    )
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42",
+         "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5",
+         "--synthesizer", "claude-opus-5@high"],
+    )
+    return result, history.load("octocat/Hello-World", "42")
+
+
+def test_a_failed_synthesis_is_not_stored_for_replay(monkeypatch, tmp_path):
+    """A synthesizer outage must not become the stored answer for this commit."""
+    result, stored = _run_with_synthesis(monkeypatch, tmp_path, synthesized=False)
+
+    assert result.exit_code == 0, result.output
+    assert stored is None
+    assert "synthesis with claude-opus-5@high failed" in result.output
+
+
+def test_a_successful_synthesis_is_still_stored(monkeypatch, tmp_path):
+    result, stored = _run_with_synthesis(monkeypatch, tmp_path, synthesized=True)
+
+    assert result.exit_code == 0, result.output
+    assert stored is not None and stored.synthesizer == "claude-opus-5@high"

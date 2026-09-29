@@ -9,8 +9,27 @@ inputs:
   pr-number:
     description: 'PR number to review. Defaults to the number of the PR that triggered this run.'
     required: false
+  reviewers:
+    description: >
+      Whitespace-separated model specs, each [provider:]model[@effort], e.g.
+      "gpt-6-sol@high gpt-5.6-sol@high". Any number, any providers; one is
+      allowed and reported as uncorroborated. Leave empty for the configured
+      defaults.
+    required: false
   models:
-    description: 'Space-separated model IDs, e.g. "gpt-5.6-terra claude-sonnet-5 gemini-3.7-flash". Leave empty for the configured defaults.'
+    description: 'Older name for `reviewers`, still honoured. `reviewers` wins when both are set.'
+    required: false
+  synthesizer:
+    description: >
+      Model spec that writes the report from the reviews, e.g.
+      "gpt-astra@medium". Any model, reviewer or not. Defaults to the first
+      reviewer.
+    required: false
+  effort:
+    description: >
+      Effort for every reviewer whose spec has no @effort of its own (none,
+      minimal, low, medium, high, xhigh, max). Does not apply to the
+      synthesizer. Empty sends nothing and lets each provider default.
     required: false
   exclude:
     description: 'Newline-separated glob patterns to drop from the diff, e.g. "**/*.lock".'
@@ -61,13 +80,13 @@ inputs:
     required: false
     default: ${{ github.token }}
   openai-api-key:
-    description: 'OpenAI API key. At least two of the three provider keys are required.'
+    description: 'OpenAI API key. Needed when any reviewer or the synthesizer is a OpenAI model; the default panel needs at least two of the three keys.'
     required: false
   anthropic-api-key:
-    description: 'Anthropic API key. At least two of the three provider keys are required.'
+    description: 'Anthropic API key. Needed when any reviewer or the synthesizer is a Anthropic model; the default panel needs at least two of the three keys.'
     required: false
   google-api-key:
-    description: 'Google API key. At least two of the three provider keys are required.'
+    description: 'Google API key. Needed when any reviewer or the synthesizer is a Google model; the default panel needs at least two of the three keys.'
     required: false
 
 outputs:
@@ -156,7 +175,9 @@ runs:
         # a pull_request checkout often leaves HEAD detached, where branch-based
         # PR lookup can't resolve anything.
         INPUT_PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
-        INPUT_MODELS: ${{ inputs.models }}
+        INPUT_MODELS: ${{ inputs.reviewers || inputs.models }}
+        INPUT_SYNTHESIZER: ${{ inputs.synthesizer }}
+        INPUT_EFFORT: ${{ inputs.effort }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
         INPUT_TRIAGE: ${{ inputs.triage }}
         # Outside the checkout, which is the consumer's repo: a report.md that
@@ -171,9 +192,15 @@ runs:
         rm -f "$REPORT"
         args=(--output "$REPORT")
         [ -n "$INPUT_PR_NUMBER" ] && args+=(--pr "$INPUT_PR_NUMBER")
+        # Word-split on whitespace (spaces or newlines) but never glob: a spec
+        # is data from the workflow file, not a pattern for this shell.
+        set -f
         for m in $INPUT_MODELS; do
-          args+=(--model "$m")
+          args+=(--reviewer "$m")
         done
+        set +f
+        [ -n "$INPUT_SYNTHESIZER" ] && args+=(--synthesizer "$INPUT_SYNTHESIZER")
+        [ -n "$INPUT_EFFORT" ] && args+=(--effort "$INPUT_EFFORT")
         while IFS= read -r pattern; do
           [ -n "$pattern" ] && args+=(--exclude "$pattern")
         done <<< "$INPUT_EXCLUDE"

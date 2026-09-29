@@ -449,3 +449,19 @@ def test_the_malformed_list_is_never_shown_to_a_model():
 def test_a_non_list_findings_value_is_still_a_parse_failure():
     with pytest.raises(ValueError):
         ReviewOutput.model_validate({"findings": "none"})
+
+
+def test_the_same_model_at_another_effort_does_not_inherit_its_review(tmp_path, monkeypatch):
+    """Effort reaches the cache key through the canonical spec: a different call."""
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    calls = []
+
+    def builder(spec):
+        calls.append(spec)
+        return FakeLLM(ReviewOutput(findings=[]))
+
+    review_with("gpt-5.1@high", "same payload", llm_builder=builder)
+    review_with("gpt-5.1@low", "same payload", llm_builder=builder)
+    review_with("gpt-5.1@high", "same payload", llm_builder=builder)
+
+    assert calls == ["gpt-5.1@high", "gpt-5.1@low"]
