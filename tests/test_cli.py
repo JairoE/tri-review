@@ -63,7 +63,117 @@ def test_the_same_model_twice_is_not_a_panel():
 def test_help_documents_the_flag():
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
-    assert "--model" in result.output
+    assert "--reviewer" in result.output
+    assert "--model" in result.output, "the old name still works and is still documented"
+    assert "--effort" in result.output
+
+
+# --- model specs: [provider:]model[@effort] ----------------------------------
+
+
+def test_an_effort_suffix_is_part_of_the_panel():
+    assert _resolve_models(("gpt-5.1@high", "claude-opus-5@low")) == [
+        "gpt-5.1@high",
+        "claude-opus-5@low",
+    ]
+
+
+def test_the_same_model_at_two_efforts_is_two_reviewers():
+    """A different effort is a different call, so it can be compared against itself."""
+    assert _resolve_models(("gpt-5.1@high", "gpt-5.1@low")) == ["gpt-5.1@high", "gpt-5.1@low"]
+
+
+def test_a_redundant_provider_prefix_is_the_same_reviewer():
+    with pytest.raises(click.BadParameter, match="at least 2 distinct"):
+        _resolve_models(("openai:gpt-5.1", "gpt-5.1"))
+
+
+def test_an_explicit_provider_routes_an_unknown_id():
+    assert _resolve_models(("openai:my-finetune", "claude-opus-5")) == [
+        "openai:my-finetune",
+        "claude-opus-5",
+    ]
+
+
+def test_a_bad_effort_is_rejected_up_front():
+    with pytest.raises(click.BadParameter, match="unknown effort"):
+        _resolve_models(("gpt-5.1@hihg", "claude-opus-5"))
+
+
+def test_the_default_effort_fills_in_only_unsuffixed_specs():
+    assert _resolve_models(("gpt-5.1", "claude-opus-5@low"), effort="high") == [
+        "gpt-5.1@high",
+        "claude-opus-5@low",
+    ]
+
+
+def test_the_default_effort_applies_to_the_configured_slots_too():
+    panel = _resolve_models((), effort="medium")
+    assert all(spec.endswith("@medium") for spec in panel)
+
+
+def test_no_default_effort_leaves_the_configured_slots_bare():
+    """Every run before effort was configurable sent nothing; that must not change."""
+    assert "@" not in "".join(_resolve_models(()))
+
+
+def test_a_configured_slot_can_carry_a_full_spec(monkeypatch):
+    monkeypatch.setenv("TRI_REVIEW_MODEL_A", "openai:my-finetune@high")
+    assert _resolve_models(())[0] == "openai:my-finetune@high"
+
+
+def test_a_bad_configured_slot_fails_before_the_pr_is_fetched(monkeypatch):
+    monkeypatch.setenv("TRI_REVIEW_MODEL_A", "llama-9000")
+    with pytest.raises(click.BadParameter, match="TRI_REVIEW_MODEL_A"):
+        _resolve_models(())
+
+
+def test_effort_flag_beats_the_env_var(monkeypatch):
+    from tri_review.cli import _resolve_effort
+
+    monkeypatch.setenv("TRI_REVIEW_EFFORT", "low")
+    assert _resolve_effort("high") == "high"
+    assert _resolve_effort(None) == "low"
+    monkeypatch.delenv("TRI_REVIEW_EFFORT")
+    assert _resolve_effort(None) is None
+
+
+def test_a_bad_effort_flag_is_a_usage_error():
+    from tri_review.cli import _resolve_effort
+
+    with pytest.raises(click.BadParameter, match="--effort"):
+        _resolve_effort("hihg")
+
+
+def test_a_bad_effort_env_var_is_reported_not_silently_ignored(monkeypatch):
+    from tri_review.cli import _resolve_effort
+
+    monkeypatch.setenv("TRI_REVIEW_EFFORT", "hihg")
+    with pytest.raises(click.BadParameter, match="unknown effort"):
+        _resolve_effort(None)
+
+
+def test_a_silently_failing_configuration_is_warned_about(capsys):
+    """Gemini below high was measured returning empty reviews; say so, do not refuse."""
+    from tri_review.cli import _warn_about
+
+    _warn_about(["gemini-3.8-flash@low", "gpt-5.1"])
+
+    out = capsys.readouterr().out
+    assert "Warning" in out and "gemini-3.8-flash@low" in out
+    assert "gpt-5.1" not in out.split("Warning")[1].split("\n")[0]
+
+
+def test_bad_effort_exits_before_touching_github(monkeypatch):
+    called = []
+    monkeypatch.setattr("tri_review.github.preflight", lambda: called.append("preflight"))
+
+    result = CliRunner().invoke(
+        main, ["--pr", "1", "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5", "--effort", "hihg"]
+    )
+
+    assert result.exit_code != 0
+    assert called == []
 
 
 def test_bad_flag_exits_before_touching_github(monkeypatch):

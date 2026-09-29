@@ -110,6 +110,16 @@ def model_c() -> str:
     return os.environ.get("TRI_REVIEW_MODEL_C") or DEFAULT_MODEL_C
 
 
+def default_effort() -> str | None:
+    """Effort applied to every reviewer whose spec carries no `@effort` of its own.
+
+    None means "send nothing and let each provider default", which is what
+    every run did before effort was configurable. A reviewer's own suffix
+    always wins over this; the synthesizer never inherits it.
+    """
+    return (os.environ.get("TRI_REVIEW_EFFORT") or "").strip().lower() or None
+
+
 def synthesizer_model() -> str:
     """Model that cross-references the reviews. Defaults to slot A."""
     return os.environ.get("TRI_REVIEW_SYNTHESIZER") or model_a()

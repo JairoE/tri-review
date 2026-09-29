@@ -47,14 +47,29 @@ console = Console()
     help="Show what would be sent to the models, then exit without calling them.",
 )
 @click.option(
+    "--reviewer",
     "--model",
     "models",
     multiple=True,
-    metavar="MODEL_ID",
+    metavar="SPEC",
     help=(
-        "Model to review with. Repeat to pick the panel, e.g. "
-        "--model gpt-5.6-terra --model claude-sonnet-5 --model gemini-3.7-flash. "
-        "Defaults to the three configured slots. At least two are required."
+        "Model to review with, as [provider:]model[@effort]. Repeat to pick the "
+        "panel, e.g. --reviewer gpt-5.6-terra@high --reviewer claude-sonnet-5 "
+        "--reviewer gemini-3.8-flash. The provider is inferred from the ID's "
+        "prefix; name it explicitly (openai:my-finetune) to route an ID nothing "
+        "recognises. Defaults to the three configured slots. --model is the "
+        "same flag under its old name."
+    ),
+)
+@click.option(
+    "--effort",
+    default=None,
+    metavar="LEVEL",
+    help=(
+        "Effort for every reviewer whose spec has no @effort of its own (one of "
+        "none, minimal, low, medium, high, xhigh, max; which of those a model "
+        "honours is the provider's call). Unset sends nothing and lets each "
+        "provider default. Overrides TRI_REVIEW_EFFORT."
     ),
 )
 @click.option(
@@ -110,6 +125,7 @@ def main(
     url: str | None,
     dry_run: bool,
     models: tuple[str, ...],
+    effort: str | None,
     output: Path | None,
     excludes: tuple[str, ...],
     no_default_excludes: bool,
@@ -123,7 +139,7 @@ def main(
             repo, pr = _merge_url(url, repo, pr)
         _run(
             pr, repo, dry_run, models, output, excludes,
-            no_default_excludes, fresh, use_triage,
+            no_default_excludes, fresh, use_triage, effort,
         )
     except NothingToReview as exc:
         # Not a failure: nothing was found worth spending on, and nothing was
@@ -166,42 +182,95 @@ def _merge_url(url: str, repo: str | None, pr: str | None) -> tuple[str, str]:
     return url_repo, url_pr
 
 
-def _resolve_models(selected: tuple[str, ...]) -> list[str]:
-    """Pick the review panel: --model flags if given, else the configured slots.
+def _parse_specs(texts: tuple[str, ...], source: str) -> list:
+    """Parse every spec, reporting all the bad ones in one usage error.
+
+    One error per run, not one per re-run: someone with two typos should not
+    have to fix them one at a time to discover the second.
+    """
+    from .providers import ModelSpec
+
+    specs, problems = [], []
+    for text in texts:
+        try:
+            specs.append(ModelSpec.parse(text))
+        except ValueError as exc:
+            problems.append(str(exc))
+    if problems:
+        raise click.BadParameter(
+            f"in {source}: " + "; ".join(problems), param_hint=source
+        )
+    return specs
+
+
+def _resolve_models(selected: tuple[str, ...], effort: str | None = None) -> list[str]:
+    """Pick the review panel: --reviewer flags if given, else the configured slots.
+
+    Returns canonical spec strings (see providers.ModelSpec.__str__), which is
+    the form the cache key, the history record and the report all use.
 
     Validated here rather than per-node so a typo fails before the PR is
-    fetched, instead of surfacing later as an unexplained missing review.
+    fetched, instead of surfacing later as an unexplained missing review. The
+    configured slots go through the same parser, so an env var can carry a
+    full spec and a bad one fails just as early.
+
+    `effort` fills in every spec that has no suffix of its own; a suffix
+    always wins. It is the flag or TRI_REVIEW_EFFORT, resolved by the caller.
     """
+    from dataclasses import replace
+
     from . import config
-    from .providers import PROVIDER_PREFIXES, provider_of
 
     if not selected:
-        return [config.model_a(), config.model_b(), config.model_c()]
+        selected = (config.model_a(), config.model_b(), config.model_c())
+        source = "TRI_REVIEW_MODEL_A/B/C"
+    else:
+        source = "--reviewer"
 
-    # The same model twice cannot corroborate itself -- it would just pay for one
-    # opinion and report it as consensus. Collapse before counting.
-    models = list(dict.fromkeys(selected))
+    specs = _parse_specs(selected, source)
+    if effort is not None:
+        specs = [replace(s, effort=effort) if s.effort is None else s for s in specs]
+
+    # The same spec twice cannot corroborate itself -- it would just pay for one
+    # opinion and report it as consensus. Collapse before counting. Keyed on the
+    # canonical form, so `openai:gpt-5.1` and `gpt-5.1` are one reviewer while
+    # `gpt-5.1@high` and `gpt-5.1@low` are two: a different effort is a
+    # different call, and comparing its answers is a legitimate thing to want.
+    models = list(dict.fromkeys(str(s) for s in specs))
 
     if len(models) < 2:
         raise click.BadParameter(
             f"need at least 2 distinct models to triangulate, got {len(models)}. "
-            "Pass --model twice or more with different IDs, or omit it to use the "
-            "configured three.",
-            param_hint="--model",
-        )
-
-    unknown = [name for name in models if provider_of(name) is None]
-    if unknown:
-        supported = ", ".join(
-            f"{provider} ({', '.join(p + '*' for p in prefixes)})"
-            for provider, prefixes in PROVIDER_PREFIXES.items()
-        )
-        raise click.BadParameter(
-            f"unrecognized model ID(s): {', '.join(unknown)}. Supported: {supported}.",
-            param_hint="--model",
+            "Pass --reviewer twice or more with different specs, or omit it to use "
+            "the configured three.",
+            param_hint="--reviewer",
         )
 
     return models
+
+
+def _resolve_effort(flag: str | None) -> str | None:
+    """The default effort for unsuffixed reviewers: the flag, else the env var."""
+    from .providers import EFFORT_LEVELS
+
+    level = (flag or "").strip().lower() or config.default_effort()
+    if level is not None and level not in EFFORT_LEVELS:
+        source = "--effort" if flag else "TRI_REVIEW_EFFORT"
+        raise click.BadParameter(
+            f"unknown effort {level!r} in {source}; expected one of {', '.join(EFFORT_LEVELS)}",
+            param_hint=source,
+        )
+    return level
+
+
+def _warn_about(models: list[str]) -> None:
+    """Print the caveat for any spec measured to fail silently. Never refuses."""
+    from .providers import ModelSpec, caveat_for
+
+    for text in models:
+        caveat = caveat_for(ModelSpec.parse(text))
+        if caveat:
+            console.print(f"[yellow]Warning: {escape(caveat)}[/yellow]")
 
 
 def _resolve_excludes(
@@ -361,8 +430,9 @@ def _run(
     no_default_excludes: bool = False,
     fresh: bool = False,
     use_triage: bool | None = None,
+    effort: str | None = None,
 ) -> None:
-    models = _resolve_models(selected)
+    models = _resolve_models(selected, _resolve_effort(effort))
     patterns, skippable = _resolve_excludes(excludes, no_default_excludes)
 
     github.preflight(repo)
@@ -381,6 +451,7 @@ def _run(
         ctx = context.preview_context(pr_number, repo, patterns)
         _print_context(pr_number, ctx)
         console.print(f"\n[dim]would review with: {', '.join(models)}[/dim]")
+        _warn_about(models)
         console.print("[dim]--dry-run: stopping before any model call.[/dim]")
         return
 
@@ -409,6 +480,7 @@ def _run(
             expand=False,
         )
     )
+    _warn_about(models)
 
     # Imported here, and below every path that returns early, because pulling in
     # langgraph drags langchain_core's runnables in with it -- tens of seconds
