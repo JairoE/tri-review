@@ -24,37 +24,6 @@ def _pr_meta_or_empty(pr_number: str, repo: str | None) -> dict:
         return {}
 
 
-def _trusted_ledger(repo: str | None, meta: dict) -> str | None:
-    """The dismissal ledger as of the PR's base commit, or None.
-
-    Always the base, never the PR's own content and never the working tree.
-    The Action checks out the PR head, so anything reachable on disk there is
-    written by the author of the change under review -- and this file can only
-    ever downgrade findings about that change.
-
-    Fetched through the contents API rather than `git show` because the Action
-    clones at fetch-depth 1: the base commit is not in the local object store,
-    so a git read would fail and look exactly like "no dismissals recorded".
-
-    Every failure returns None, which errs toward reporting more rather than
-    less. There is no fallback to a less trusted source: a ledger that cannot
-    be read from the base is treated as absent, not as whatever the PR says.
-    """
-    base = meta.get("base_sha")
-    if not base:
-        return None
-    identity = repo
-    if not identity:
-        try:
-            identity = github.parse_pr_url(meta.get("url") or "")[0]
-        except Exception:  # noqa: BLE001 - cannot name the repo, cannot trust a ledger
-            return None
-    try:
-        return github.fetch_file_content(identity, dismissals.DISMISSALS_PATH.as_posix(), base)
-    except Exception:  # noqa: BLE001 - same failure class as above
-        return None
-
-
 def fetch_context_node(state: ReviewState) -> dict:
     """Resolve the PR, fetch its diff, and assemble the review payload.
 
@@ -79,8 +48,10 @@ def fetch_context_node(state: ReviewState) -> dict:
         reader = context.filesystem_reader(Path.cwd())
 
     # Same trusted source in both modes: the PR's base commit. See
-    # _trusted_ledger for why the working tree is never consulted.
-    ledger = _trusted_ledger(repo, meta)
+    # dismissals.trusted_ledger for why the working tree is never consulted.
+    ledger = state.get("ledger")
+    if ledger is None:
+        ledger = dismissals.trusted_ledger(repo, meta)
 
     ctx = context.build_context(diff, reader=reader)
     return {

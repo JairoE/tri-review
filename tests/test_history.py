@@ -220,3 +220,79 @@ def test_the_synthesizer_survives_the_roundtrip(tmp_path):
     history.save(_record(synthesizer="gpt-astra@medium"), directory=tmp_path)
     loaded = history.load("octocat/Hello-World", "42", directory=tmp_path)
     assert loaded.synthesizer == "gpt-astra@medium"
+
+
+# --- dismissal ledger --------------------------------------------------------
+
+_PANEL = ["gpt-5.6-terra", "claude-sonnet-5"]
+_LEDGER = '[[dismissed]]\nclaim = "x"\nreason = "y"\n'
+
+
+def test_a_new_dismissal_stops_the_report_replaying():
+    """#27: a dismissal merged after the review changes what it should say."""
+    record = _record(synthesizer="gpt-5.6-terra", ledger_digest="")
+    digest = history.ledger_digest(_LEDGER)
+    reason = history.stale_reason(
+        record, "abc123def456", _PANEL, ("**/*.md",), "gpt-5.6-terra", digest
+    )
+    assert reason is not None and "dismissal ledger changed" in reason
+
+
+def test_an_unchanged_ledger_still_replays():
+    digest = history.ledger_digest(_LEDGER)
+    record = _record(synthesizer="gpt-5.6-terra", ledger_digest=digest)
+    assert (
+        history.stale_reason(
+            record, "abc123def456", _PANEL, ("**/*.md",), "gpt-5.6-terra", digest
+        )
+        is None
+    )
+
+
+def test_a_ledger_that_dismisses_nothing_is_no_ledger():
+    """Absent, blank and comments-only all mean nothing dismissed."""
+    assert history.ledger_digest(None) == ""
+    assert history.ledger_digest("  \n") == ""
+    assert history.ledger_digest("# [[dismissed]]\n# claim = \"x\"\n") == ""
+
+
+def test_editing_a_comment_does_not_change_the_ledger():
+    assert history.ledger_digest(_LEDGER) == history.ledger_digest("# note\n" + _LEDGER)
+    assert history.ledger_digest(_LEDGER) != history.ledger_digest(
+        _LEDGER + '\n[[dismissed]]\nclaim = "z"\nreason = "w"\n'
+    )
+
+
+def test_a_malformed_ledger_still_goes_stale_rather_than_raising():
+    """The fresh run, not the replay check, is what reports a broken file."""
+    assert history.ledger_digest("[[dismissed]]\nclaim = 1\n") != ""
+
+
+def test_a_record_without_the_field_replays_when_there_is_still_no_ledger(tmp_path):
+    """Records written before the digest was stored must not all go stale."""
+    path = history.path_for("octocat/Hello-World", "42", tmp_path)
+    history.save(_record(synthesizer="gpt-5.6-terra"), tmp_path)
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    del obj["ledger_digest"]
+    path.write_text(json.dumps(obj), encoding="utf-8")
+
+    loaded = history.load("octocat/Hello-World", "42", tmp_path)
+    assert loaded is not None and loaded.ledger_digest == ""
+    assert (
+        history.stale_reason(loaded, "abc123def456", _PANEL, ("**/*.md",), "gpt-5.6-terra", "")
+        is None
+    )
+
+
+def test_the_ledger_digest_survives_the_roundtrip(tmp_path):
+    digest = history.ledger_digest(_LEDGER)
+    history.save(_record(ledger_digest=digest), tmp_path)
+    loaded = history.load("octocat/Hello-World", "42", tmp_path)
+    assert loaded is not None and loaded.ledger_digest == digest
+
+
+def test_reordering_the_ledger_does_not_change_it():
+    a = '[[dismissed]]\nclaim = "a"\nreason = "x"\n'
+    b = '[[dismissed]]\nclaim = "b"\nreason = "y"\n'
+    assert history.ledger_digest(a + b) == history.ledger_digest(b + a)
+

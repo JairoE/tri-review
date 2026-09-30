@@ -13,7 +13,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from . import config, context, gating, github, history, triage
+from . import config, context, dismissals, gating, github, history, triage
 from .errors import NothingToReview, PRNotFoundError, TriReviewError
 
 console = Console()
@@ -500,9 +500,18 @@ def _run(
     # at the SHA itself, so there is nothing to disagree with.
     tree_reason = github.working_tree_reason(head_sha) if repo is None else None
 
+    # The ledger the synthesizer will be shown, read once from the trusted base
+    # and handed to the graph so it is not read again. A dismissal merged since
+    # the last run changes what the report should say, so it has to stop that
+    # report replaying -- and a stored report has to record which one it saw.
+    # Only history needs it, and there is no history without an identity; with
+    # none, the graph reads it itself.
+    ledger_text = (dismissals.trusted_ledger(repo, meta) or "") if identity else None
+    ledger = history.ledger_digest(ledger_text)
+
     if identity and not fresh and _replay(
         identity, pr_number, head_sha, models, patterns, output, tree_reason,
-        synthesizer,
+        synthesizer, ledger,
     ):
         return
 
@@ -528,7 +537,7 @@ def _run(
 
     app = build_review_graph(models=models, use_cache=not fresh, synthesizer=synthesizer)
     report, results, synthesized = _stream_graph(
-        app, pr_number, repo, patterns, len(models), head_sha, diff
+        app, pr_number, repo, patterns, len(models), head_sha, diff, ledger_text
     )
 
     console.print()
@@ -558,6 +567,7 @@ def _run(
                 head_sha=head_sha,
                 models=list(models),
                 synthesizer=synthesizer,
+                ledger_digest=ledger,
                 excludes=list(patterns),
                 report=report,
                 results=results,
@@ -581,13 +591,16 @@ def _replay(
     output: Path | None,
     tree_reason: str | None = None,
     synthesizer: str | None = None,
+    ledger_digest: str | None = None,
 ) -> bool:
     """Print the stored review if it still answers the question. True if it did."""
     record = history.load(identity, str(pr_number))
     if record is None:
         return False
 
-    reason = history.stale_reason(record, head_sha, models, patterns, synthesizer)
+    reason = history.stale_reason(
+        record, head_sha, models, patterns, synthesizer, ledger_digest
+    )
     if reason is not None:
         console.print(f"[dim]Stored review is out of date ({reason}). Reviewing.[/dim]")
         return False
@@ -632,6 +645,7 @@ def _stream_graph(
     model_count: int,
     head_sha: str = "",
     diff: str = "",
+    ledger: str | None = None,
 ) -> tuple[str, list, bool]:
     """Drive the graph, reporting each node's outcome as it lands.
 
@@ -664,6 +678,9 @@ def _stream_graph(
             "excludes": excludes,
             "results": [],
         }
+        if ledger is not None:
+            # Already read from the base by the caller; see ReviewState.ledger.
+            initial["ledger"] = ledger
         for chunk in app.stream(initial, stream_mode="updates"):
             for node, update in chunk.items():
                 if node == "fetch_context":

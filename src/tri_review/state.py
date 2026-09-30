@@ -32,6 +32,12 @@ class ReviewState(TypedDict, total=False):
     # any model is called -- so a malformed ledger fails the run while it is
     # still free, rather than after three reviews have been paid for.
     dismissals: list
+    # The ledger's raw text, when the caller already read it from the base (the
+    # CLI needs it before the graph starts, to decide whether a stored report
+    # still stands). "" means it read and found none. Present to avoid asking
+    # GitHub twice and so the stored digest is of exactly what the synthesizer
+    # saw -- never to substitute a ledger from anywhere but the base.
+    ledger: str
     # operator.add makes the parallel reviewer nodes append rather than overwrite.
     results: Annotated[list[ReviewResult], operator.add]
     final_report: str
