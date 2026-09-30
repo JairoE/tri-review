@@ -87,10 +87,14 @@ jobs:
           # synthesizer is the first reviewer, which then judges its own
           # findings (#29). This one is not on the panel.
           synthesizer: gpt-6.1-sol@medium
+          # Two OpenAI reviewers and one Anthropic, so agreement can cross a
+          # provider boundary. claude-sonnet-5, not 5.5: v1.2.1 gets a 400 from
+          # sonnet-5-5 (it rejects the forced tool call tri-review uses), and on
+          # a measured PR sonnet-5 was also the reviewer that found the most (#35).
           reviewers: |
             gpt-6-sol@high
             gpt-5.6-sol@high
-            gpt-5.6-terra
+            claude-sonnet-5
           # Two reviews per PR; the tri-review:again label forces one more.
           max-reviews: 2
           force: ${{ github.event.action == 'labeled' }}
