@@ -125,6 +125,34 @@ def test_synthesizer_failure_falls_back_to_raw_findings():
     assert "alpha" in report and "beta" in report
 
 
+def test_the_raw_fallback_still_shows_what_was_already_rejected():
+    """#28: downgrade, never hide -- including when synthesis has failed."""
+    from tri_review import dismissals
+
+    llm = CapturingLLM(raises=RuntimeError("synth exploded"))
+    state = {
+        "results": [_result("m1", "the widget leaks"), _result("m2", "beta")],
+        "dismissals": [
+            dismissals.Dismissal(
+                claim="the widget leaks", reason="checked, it does not", file="w.py"
+            )
+        ],
+    }
+    report = synthesize_node(state, llm_builder=lambda _: llm)["final_report"]
+    assert "Synthesis failed" in report
+    assert "### Previously rejected" in report
+    assert "checked, it does not" in report
+    # Listed after the findings, not merged into them.
+    assert report.index("### Previously rejected") > report.index("beta")
+
+
+def test_the_raw_fallback_is_unchanged_with_no_dismissals():
+    llm = CapturingLLM(raises=RuntimeError("synth exploded"))
+    state = {"results": [_result("m1", "alpha"), _result("m2", "beta")]}
+    report = synthesize_node(state, llm_builder=lambda _: llm)["final_report"]
+    assert "Previously rejected" not in report
+
+
 def test_handles_content_block_list_responses():
     class BlockLLM(CapturingLLM):
         def invoke(self, messages):

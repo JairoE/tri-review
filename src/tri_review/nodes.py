@@ -363,7 +363,7 @@ def _synthesize(
             header
             + f"> Synthesis failed ({type(exc).__name__}: {exc}). "
             "Raw findings from each model follow.\n\n"
-            + _raw_listing(succeeded)
+            + _raw_listing(succeeded, recorded_dismissals)
         ), False
 
 
@@ -468,7 +468,14 @@ def _text_of(response) -> str:
     return str(content)
 
 
-def _raw_listing(succeeded) -> str:
+def _raw_listing(succeeded, recorded_dismissals=()) -> str:
+    """Each model's findings as-is, plus what a human already rejected.
+
+    The dismissals are listed rather than matched to findings: the model that
+    would do the matching is the one that just failed. Listing them keeps the
+    ledger's rule -- downgrade, never hide -- in the one report where the reader
+    has the least other help.
+    """
     lines: list[str] = []
     for result in succeeded:
         lines.append(f"### {result.model} ({len(result.findings)} findings)")
@@ -477,5 +484,14 @@ def _raw_listing(succeeded) -> str:
                 f"- **{finding.severity}/{finding.category}** `{finding.file}:{finding.line}` "
                 f"— {finding.title}\n  {finding.detail}"
             )
+        lines.append("")
+    if recorded_dismissals:
+        lines.append("### Previously rejected")
+        lines.append(
+            "A human reviewed and rejected these claims on this codebase. Any "
+            "finding above that repeats one should be read as Optional unless "
+            "this diff gives new evidence.\n"
+        )
+        lines.extend(d.render() for d in recorded_dismissals)
         lines.append("")
     return "\n".join(lines)
