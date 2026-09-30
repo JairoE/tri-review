@@ -83,6 +83,14 @@ jobs:
         uses: JairoE/tri-review@91d74fc24a4caeb44cc0aa22038a70c1953bb02c  # v1.2.1
         with:
           pr-number: ${{ github.event.pull_request.number }}
+          # Set explicitly rather than left to the defaults: unset, the
+          # synthesizer is the first reviewer, which then judges its own
+          # findings (#29). This one is not on the panel.
+          synthesizer: gpt-6.1-sol@medium
+          reviewers: |
+            gpt-6-sol@high
+            gpt-5.6-sol@high
+            gpt-6-terra
           # Two reviews per PR; the tri-review:again label forces one more.
           max-reviews: 2
           force: ${{ github.event.action == 'labeled' }}
