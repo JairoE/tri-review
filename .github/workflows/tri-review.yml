@@ -80,7 +80,7 @@ jobs:
       # after merging changes CI should review with; until then, merged work
       # does not reach CI at all (it sat at v1.0.0 through three merges once).
       - name: Run tri-review on this PR
-        uses: JairoE/tri-review@e0754f6b2182edfd696ae8735fd31c0af42b19f4  # v1.2.0
+        uses: JairoE/tri-review@91d74fc24a4caeb44cc0aa22038a70c1953bb02c  # v1.2.1
         with:
           pr-number: ${{ github.event.pull_request.number }}
           # Two reviews per PR; the tri-review:again label forces one more.
