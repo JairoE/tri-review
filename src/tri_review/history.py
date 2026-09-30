@@ -108,7 +108,11 @@ def ledger_digest(text: str | None) -> str:
         return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
     if not entries:
         return ""
-    canonical = json.dumps([asdict(d) for d in entries], sort_keys=True)
+    # Sorted, because the order of entries in the file carries no meaning and
+    # moving one should not cost a re-synthesis.
+    canonical = json.dumps(
+        sorted(json.dumps(asdict(d), sort_keys=True) for d in entries)
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

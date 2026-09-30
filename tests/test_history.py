@@ -289,3 +289,10 @@ def test_the_ledger_digest_survives_the_roundtrip(tmp_path):
     history.save(_record(ledger_digest=digest), tmp_path)
     loaded = history.load("octocat/Hello-World", "42", tmp_path)
     assert loaded is not None and loaded.ledger_digest == digest
+
+
+def test_reordering_the_ledger_does_not_change_it():
+    a = '[[dismissed]]\nclaim = "a"\nreason = "x"\n'
+    b = '[[dismissed]]\nclaim = "b"\nreason = "y"\n'
+    assert history.ledger_digest(a + b) == history.ledger_digest(b + a)
+

@@ -49,7 +49,9 @@ def fetch_context_node(state: ReviewState) -> dict:
 
     # Same trusted source in both modes: the PR's base commit. See
     # dismissals.trusted_ledger for why the working tree is never consulted.
-    ledger = dismissals.trusted_ledger(repo, meta)
+    ledger = state.get("ledger")
+    if ledger is None:
+        ledger = dismissals.trusted_ledger(repo, meta)
 
     ctx = context.build_context(diff, reader=reader)
     return {

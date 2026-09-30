@@ -1060,3 +1060,74 @@ def test_a_successful_synthesis_is_still_stored(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert stored is not None and stored.synthesizer == "claude-opus-5@high"
+
+
+def test_a_fresh_run_reads_the_ledger_once(monkeypatch, tmp_path):
+    """The replay gate's read is the one the graph uses; GitHub is asked once.
+
+    Runs the real graph -- only the models and GitHub are stubbed -- so a second
+    read anywhere on the path would be counted.
+    """
+    from tri_review import context, graph, history
+    from tri_review.schema import ReviewOutput
+
+    ledger = '[[dismissed]]\nclaim = "the widget leaks"\nreason = "it does not"\n'
+    reads = []
+
+    def fetch_file_content(repo, path, ref):
+        reads.append((path, ref))
+        return ledger
+
+    class Stub:
+        def with_structured_output(self, _schema, include_raw=False):
+            return self
+
+        def invoke(self, _messages):
+            return {"raw": type("R", (), {"usage_metadata": None})(),
+                    "parsed": ReviewOutput(findings=[]), "parsing_error": None}
+
+    class Synth:
+        seen = ""
+
+        def invoke(self, messages):
+            Synth.seen = "\n".join(m.content for m in messages)
+            return type("Resp", (), {"content": "## Consensus Findings\n\nNone."})()
+
+    def builder(model):
+        return Synth() if model == "claude-opus-5" else Stub()
+
+    real_build = graph.build_review_graph
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph",
+        lambda **k: real_build(**k, llm_builder=builder),
+    )
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "base_sha": "base000", "url": ""},
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_diff",
+        lambda *a, **k: "diff --git a/src/auth.py b/src/auth.py\n+++ b/src/auth.py\n+x\n",
+    )
+    monkeypatch.setattr("tri_review.github.fetch_file_content", fetch_file_content)
+    monkeypatch.setattr(context, "github_reader", lambda *a, **k: (lambda p: None))
+
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42", "--fresh", "--no-triage",
+         "--reviewer", "gpt-5.1", "--reviewer", "gpt-4.1",
+         "--synthesizer", "claude-opus-5"],
+    )
+
+    assert result.exit_code == 0, result.output
+    ledger_reads = [r for r in reads if r[0].endswith("dismissed.toml")]
+    assert ledger_reads == [(".tri-review/dismissed.toml", "base000")]
+    assert "it does not" in Synth.seen  # the one read reached the synthesizer
+    stored = history.load("octocat/Hello-World", "42")
+    assert stored is not None and stored.ledger_digest == history.ledger_digest(ledger)
+

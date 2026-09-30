@@ -500,13 +500,14 @@ def _run(
     # at the SHA itself, so there is nothing to disagree with.
     tree_reason = github.working_tree_reason(head_sha) if repo is None else None
 
-    # The ledger the synthesizer will be shown, read from the same trusted base
-    # the graph reads it from. A dismissal merged since the last run changes
-    # what the report should say, so it has to stop that report replaying.
-    # Only history needs it, and there is no history without an identity.
-    ledger = (
-        history.ledger_digest(dismissals.trusted_ledger(repo, meta)) if identity else ""
-    )
+    # The ledger the synthesizer will be shown, read once from the trusted base
+    # and handed to the graph so it is not read again. A dismissal merged since
+    # the last run changes what the report should say, so it has to stop that
+    # report replaying -- and a stored report has to record which one it saw.
+    # Only history needs it, and there is no history without an identity; with
+    # none, the graph reads it itself.
+    ledger_text = (dismissals.trusted_ledger(repo, meta) or "") if identity else None
+    ledger = history.ledger_digest(ledger_text)
 
     if identity and not fresh and _replay(
         identity, pr_number, head_sha, models, patterns, output, tree_reason,
@@ -536,7 +537,7 @@ def _run(
 
     app = build_review_graph(models=models, use_cache=not fresh, synthesizer=synthesizer)
     report, results, synthesized = _stream_graph(
-        app, pr_number, repo, patterns, len(models), head_sha, diff
+        app, pr_number, repo, patterns, len(models), head_sha, diff, ledger_text
     )
 
     console.print()
@@ -644,6 +645,7 @@ def _stream_graph(
     model_count: int,
     head_sha: str = "",
     diff: str = "",
+    ledger: str | None = None,
 ) -> tuple[str, list, bool]:
     """Drive the graph, reporting each node's outcome as it lands.
 
@@ -676,6 +678,9 @@ def _stream_graph(
             "excludes": excludes,
             "results": [],
         }
+        if ledger is not None:
+            # Already read from the base by the caller; see ReviewState.ledger.
+            initial["ledger"] = ledger
         for chunk in app.stream(initial, stream_mode="updates"):
             for node, update in chunk.items():
                 if node == "fetch_context":

@@ -287,6 +287,31 @@ def test_the_ledger_is_read_at_the_base_ref_not_the_pr_head(monkeypatch):
     assert [d.claim for d in out["dismissals"]] == ["c"]
 
 
+def test_a_ledger_the_caller_already_read_is_not_read_again(monkeypatch):
+    """The CLI reads it for the replay gate; the synthesizer must see that copy."""
+    from tri_review import context, dismissals, github
+
+    monkeypatch.setattr(github, "fetch_diff", lambda *a, **k: "diff --git a/x b/x\n+++ b/x\n")
+    monkeypatch.setattr(
+        github, "fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "head" * 10, "base_sha": "base" * 10},
+    )
+    monkeypatch.setattr(context, "github_reader", lambda *a, **k: (lambda p: None))
+    calls = []
+    monkeypatch.setattr(dismissals, "trusted_ledger", lambda *a: calls.append(a) or "")
+
+    out = graph_mod.fetch_context_node(
+        {"pr_number": "1", "repo": "o/n",
+         "ledger": '[[dismissed]]\nclaim = "c"\nreason = "r"\n'}
+    )
+    assert calls == []
+    assert [d.claim for d in out["dismissals"]] == ["c"]
+
+    # "" is "read, and there is none" -- still not a reason to ask again.
+    out = graph_mod.fetch_context_node({"pr_number": "1", "repo": "o/n", "ledger": ""})
+    assert calls == [] and out["dismissals"] == []
+
+
 def test_a_pr_without_a_base_ref_simply_has_no_ledger(monkeypatch):
     """Missing base ref means no dismissals, never a fall back to head."""
     from tri_review import context, github
