@@ -13,7 +13,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from . import config, context, gating, github, history, triage
+from . import config, context, dismissals, gating, github, history, triage
 from .errors import NothingToReview, PRNotFoundError, TriReviewError
 
 console = Console()
@@ -500,9 +500,17 @@ def _run(
     # at the SHA itself, so there is nothing to disagree with.
     tree_reason = github.working_tree_reason(head_sha) if repo is None else None
 
+    # The ledger the synthesizer will be shown, read from the same trusted base
+    # the graph reads it from. A dismissal merged since the last run changes
+    # what the report should say, so it has to stop that report replaying.
+    # Only history needs it, and there is no history without an identity.
+    ledger = (
+        history.ledger_digest(dismissals.trusted_ledger(repo, meta)) if identity else ""
+    )
+
     if identity and not fresh and _replay(
         identity, pr_number, head_sha, models, patterns, output, tree_reason,
-        synthesizer,
+        synthesizer, ledger,
     ):
         return
 
@@ -558,6 +566,7 @@ def _run(
                 head_sha=head_sha,
                 models=list(models),
                 synthesizer=synthesizer,
+                ledger_digest=ledger,
                 excludes=list(patterns),
                 report=report,
                 results=results,
@@ -581,13 +590,16 @@ def _replay(
     output: Path | None,
     tree_reason: str | None = None,
     synthesizer: str | None = None,
+    ledger_digest: str | None = None,
 ) -> bool:
     """Print the stored review if it still answers the question. True if it did."""
     record = history.load(identity, str(pr_number))
     if record is None:
         return False
 
-    reason = history.stale_reason(record, head_sha, models, patterns, synthesizer)
+    reason = history.stale_reason(
+        record, head_sha, models, patterns, synthesizer, ledger_digest
+    )
     if reason is not None:
         console.print(f"[dim]Stored review is out of date ({reason}). Reviewing.[/dim]")
         return False

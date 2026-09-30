@@ -917,6 +917,65 @@ def test_a_different_synthesizer_does_not_replay_the_stored_report(monkeypatch, 
     assert "synthesizer changed" in result.output
 
 
+def test_a_new_dismissal_does_not_replay_the_stored_report(monkeypatch, tmp_path):
+    """#27: a dismissal merged since the last run changes what the report says."""
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "base_sha": "base000", "url": ""},
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_file_content",
+        lambda repo, path, ref: '[[dismissed]]\nclaim = "x"\nreason = "y"\n',
+    )
+    _seed_history(tmp_path, monkeypatch)  # stored with no ledger
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: (_ for _ in ()).throw(_ReachedTheModels())
+    )
+
+    result = CliRunner().invoke(main, ["--repo", "octocat/Hello-World", "--pr", "42"])
+
+    assert isinstance(result.exception, _ReachedTheModels)
+    assert "dismissal ledger changed" in result.output
+
+
+def test_a_stored_review_records_the_ledger_it_was_written_against(monkeypatch, tmp_path):
+    from tri_review import history
+
+    ledger = '[[dismissed]]\nclaim = "x"\nreason = "y"\n'
+    reads = []
+
+    def fetch(repo, path, ref):
+        reads.append(ref)
+        return ledger
+
+    monkeypatch.setattr("tri_review.github.fetch_file_content", fetch)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "base_sha": "base000", "url": ""},
+    )
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr("tri_review.graph.build_review_graph", lambda **k: _FakeApp(True))
+
+    result = CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42",
+         "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5"],
+    )
+
+    assert result.exit_code == 0, result.output
+    stored = history.load("octocat/Hello-World", "42")
+    assert stored is not None and stored.ledger_digest == history.ledger_digest(ledger)
+    assert reads == ["base000"]  # the base, never the PR's own copy
+
+
 def test_a_different_default_effort_does_not_replay_the_stored_report(monkeypatch, tmp_path):
     monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
     monkeypatch.setattr(

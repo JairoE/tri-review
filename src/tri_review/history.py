@@ -13,11 +13,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, dismissals
 from .schema import ReviewResult
 
 SCHEMA_VERSION = 1
@@ -42,6 +42,11 @@ class RunRecord:
     # old record is re-reviewed once rather than replayed under a synthesizer
     # nobody can vouch for.
     synthesizer: str = ""
+    # `ledger_digest` of the dismissal ledger the synthesizer was shown. A new
+    # dismissal changes what the report should say, so it is as load-bearing as
+    # the synthesizer. Empty means "no ledger", which is also what records
+    # written before this field read as -- they replay until a ledger appears.
+    ledger_digest: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -52,6 +57,7 @@ class RunRecord:
                 "head_sha": self.head_sha,
                 "models": self.models,
                 "synthesizer": self.synthesizer,
+                "ledger_digest": self.ledger_digest,
                 "excludes": self.excludes,
                 "created_at": self.created_at or _now(),
                 "report": self.report,
@@ -76,6 +82,7 @@ class RunRecord:
                 head_sha=str(obj["head_sha"]),
                 models=[str(m) for m in obj.get("models", [])],
                 synthesizer=str(obj.get("synthesizer", "")),
+                ledger_digest=str(obj.get("ledger_digest", "")),
                 excludes=[str(e) for e in obj.get("excludes", [])],
                 report=str(obj.get("report", "")),
                 results=[ReviewResult.model_validate(r) for r in obj.get("results", [])],
@@ -83,6 +90,26 @@ class RunRecord:
             )
         except Exception:  # noqa: BLE001 - any malformed field is just a miss
             return None
+
+
+def ledger_digest(text: str | None) -> str:
+    """A fingerprint of what the dismissal ledger says, "" when it says nothing.
+
+    Taken over the parsed dismissals rather than the raw text, so editing a
+    comment in the file does not cost a re-synthesis, and a ledger that is all
+    comments -- like the template this repo ships -- is "" just like an absent
+    one and like an old record without the field. A ledger that does not parse
+    falls back to its raw text: the record goes stale, and the fresh run is
+    what reports the malformed file.
+    """
+    try:
+        entries = dismissals.parse(text)
+    except dismissals.MalformedDismissals:
+        return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+    if not entries:
+        return ""
+    canonical = json.dumps([asdict(d) for d in entries], sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _now() -> str:
@@ -154,6 +181,7 @@ def stale_reason(
     models: list[str],
     excludes: tuple[str, ...],
     synthesizer: str | None = None,
+    ledger_digest: str | None = None,
 ) -> str | None:
     """Why `record` cannot stand in for the run about to happen, or None if it can.
 
@@ -163,8 +191,10 @@ def stale_reason(
     The panel's specs carry their efforts, so the same model at another effort
     is a different panel too. A different synthesizer wrote a different report
     from the same findings. A different exclude set is a different slice of the
-    PR. Any of them changing makes the stored report an answer to another
-    question. `synthesizer` is None only for callers that do not know it.
+    PR. A different dismissal ledger changes what the synthesizer should say
+    about the same findings. Any of them changing makes the stored report an
+    answer to another question. `synthesizer` and `ledger_digest` are None only
+    for callers that do not know them.
     """
     if not head_sha or record.head_sha != head_sha:
         return f"the PR has moved on ({_short(record.head_sha)} -> {_short(head_sha)})"
@@ -178,6 +208,8 @@ def stale_reason(
             f"the synthesizer changed ({record.synthesizer or 'unknown'} -> "
             f"{synthesizer})"
         )
+    if ledger_digest is not None and record.ledger_digest != ledger_digest:
+        return "the dismissal ledger changed"
     if record.excludes != list(excludes):
         return "the exclude patterns changed"
     if not record.report.strip():

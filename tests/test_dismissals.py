@@ -12,7 +12,7 @@ from tri_review import dismissals
 def test_no_ledger_is_not_an_error():
     """Most repos never dismiss anything; that is the normal case.
 
-    None is also what every failed lookup produces -- see graph._trusted_ledger
+    None is also what every failed lookup produces -- see dismissals.trusted_ledger
     -- so this is the path taken whenever a ledger cannot be trusted, not only
     when none exists.
     """
