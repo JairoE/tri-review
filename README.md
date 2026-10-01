@@ -1,22 +1,18 @@
 # tri-review
 
-Have three different LLMs review your pull request independently, then report what they agree on.
+Three LLMs (OpenAI, Anthropic, Google) review your pull request independently. A synthesizer then reports:
 
-One model hallucinates confidently. Three models rarely hallucinate the *same* thing. `tri-review` sends a PR to OpenAI, Anthropic, and Google in parallel, then has a synthesizer separate corroborated findings from single-model guesses:
+- **Consensus Findings**: flagged by 2 or more models.
+- **Unique Insights**: flagged by one model, marked unverified.
+- **Actionable Next Steps**: the changes worth making, with file and line references.
 
-- **Consensus Findings** — flagged by 2 or more models. High trust.
-- **Unique Insights** — flagged by one model, labeled unverified.
-- **Actionable Next Steps** — the changes worth making, with file and line references.
+## Quickstart
 
-## Quickstart: use tri-review in your own repo
+### GitHub Action (recommended)
 
-You don't need to clone this repo to use `tri-review` on your project. Pick whichever of these fits — they're ordered from least to most setup.
+Reviews every PR in CI and posts the report as a PR comment. Nothing to install locally.
 
-### Option A: GitHub Action (easiest, zero local install)
-
-Reviews every PR automatically. Nothing to install on your machine.
-
-1. In your repo, add `.github/workflows/tri-review.yml`:
+1. Add `.github/workflows/tri-review.yml` to your repo:
 
    ```yaml
    name: tri-review
@@ -27,24 +23,15 @@ Reviews every PR automatically. Nothing to install on your machine.
    permissions:
      contents: read
      pull-requests: write
-     # `pull-requests: write` is enough to post the report comment. Without
-     # `issues: write` too, a superseded report is folded into a collapsed
-     # <details> block instead of GitHub's native "marked as outdated" -- see
-     # "Each run posts its own comment" under GitHub Action, below.
-     issues: write
+     issues: write   # lets the Action mark old reports "outdated"
 
    jobs:
      review:
        runs-on: ubuntu-latest
        steps:
-         # Pin to the PR's actual head commit -- the default pull_request checkout
-         # is a synthetic merge commit, which would pair the diff with the wrong
-         # file contents.
          - uses: actions/checkout@v4
            with:
-             ref: ${{ github.event.pull_request.head.sha }}
-         # @v1 is a mutable tag; pin to a release commit SHA instead if you want
-         # the run to be immune to the tag being retargeted.
+             ref: ${{ github.event.pull_request.head.sha }}   # required: the PR head, not the merge commit
          - uses: JairoE/tri-review@v1
            with:
              openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -52,295 +39,78 @@ Reviews every PR automatically. Nothing to install on your machine.
              google-api-key: ${{ secrets.GOOGLE_API_KEY }}
    ```
 
-2. Add at least two of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` as
-   repository (or organization) secrets under **Settings → Secrets and variables →
-   Actions**.
-3. Open a pull request. `tri-review` runs automatically and posts its report as a
-   PR comment. Every push gets its own comment, and the previous one is marked
-   outdated and collapsed, so the PR keeps the whole review history in order.
+2. Add at least two of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` as secrets under **Settings → Secrets and variables → Actions**.
+3. Open a PR.
 
-No `gh` login, no Python install, no per-developer setup — the workflow does all
-of it inside CI. See [GitHub Action](#github-action) below for the full list of
-inputs (excluding files, capping reviews, etc.), and [Choosing models](#choosing-models) to pick the reviewers and synthesizer.
+All inputs are listed under [GitHub Action](#github-action).
 
-### Option B: CLI, no checkout (one-off reviews)
+### CLI
 
-Good for trying a single PR out before wiring up CI, or for reviewing PRs in repos
-you don't want to check out locally.
-
-1. Install once, anywhere on your machine, as a global command:
-
-   ```bash
-   git clone https://github.com/JairoE/tri-review.git
-   cd tri-review
-   uv tool install .   # puts `tri-review` on PATH; or activate a venv and `pip install -e .`
-   ```
-2. Authenticate `gh` if you haven't already: `gh auth login`.
-3. Export at least two provider API keys in your shell (`OPENAI_API_KEY`,
-   `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`).
-4. From anywhere — no `cd` into the target repo required — run:
-
-   ```bash
-   tri-review --repo your-org/your-repo --pr 123
-   # or paste the PR URL directly:
-   tri-review --url https://github.com/your-org/your-repo/pull/123
-   ```
-
-This fetches the diff and file contents straight from GitHub at the PR's head
-commit, so it works against any repo `gh` can see — public or private, as long as
-you're authenticated.
-
-### Option C: Claude Code skill (review from inside a Claude Code session)
-
-Lets you say "review this PR with tri-review" while working in Claude Code.
-
-1. Install `tri-review` per Option B, steps 1–3 (the skill just runs the CLI).
-2. Copy `.claude/skills/tri-review/` from this repo to `~/.claude/skills/tri-review/`
-   so it's available in every project, not just this one.
-3. In any repo, with the PR's branch checked out, ask Claude Code to review it —
-   e.g. "review this PR with tri-review." Claude runs the CLI and relays the
-   Markdown report back verbatim.
-
-## Requirements
-
-- Python 3.11+
-- The [GitHub CLI](https://cli.github.com) (`gh`), authenticated once with `gh auth login`. There is no `GITHUB_TOKEN` to manage — `tri-review` uses your existing `gh` session.
-- An API key for each provider your panel uses. The default panel spans all three and needs at least two of them to report.
-
-## Install
-
-With [uv](https://docs.astral.sh/uv/), which installs the exact dependency set this
-project was built and tested against:
+Requires Python 3.11+ and the [GitHub CLI](https://cli.github.com) (`gh`), logged in with `gh auth login`.
 
 ```bash
 git clone https://github.com/JairoE/tri-review.git
 cd tri-review
-uv sync
+uv tool install .    # puts `tri-review` on PATH
 ```
 
-Or with pip:
+Export at least two provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`), or put them in a `.env` in the directory you run from (see `.env.example`). Then review any PR `gh` can see, from any directory:
 
 ```bash
-git clone https://github.com/JairoE/tri-review.git
-cd tri-review
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e .
+tri-review --url https://github.com/your-org/your-repo/pull/123
+tri-review --repo your-org/your-repo --pr 123
 ```
 
-`uv.lock` is committed, so `uv sync` reproduces the resolved graph exactly. The pip
-path resolves fresh against the floors in `pyproject.toml`, which are permissive —
-prefer `uv sync` if a provider adapter misbehaves, since a version skew in the
-`langchain-*` packages is the likeliest cause.
+### Claude Code skill
 
-Then create a `.env` in the directory you run from (see `.env.example`):
+1. Install the CLI as shown above.
+2. Copy `.claude/skills/tri-review/` from this repo to `~/.claude/skills/tri-review/`.
+3. In a checkout with the PR's branch checked out, ask Claude Code to "review this PR with tri-review". It runs the CLI and returns the report verbatim.
 
-```
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GOOGLE_API_KEY=...
-```
+## CLI usage
 
-Keys are read from the environment too, so an exported key works just as well.
+### Pointing at a PR
 
-## Usage
+| Command | File contents come from |
+|---|---|
+| `tri-review --url <PR URL>` | GitHub, at the PR's head commit |
+| `tri-review --repo owner/name --pr 123` | GitHub, at the PR's head commit |
+| `tri-review --pr 123` | Your working tree |
+| `tri-review` | Your working tree (reviews the current branch's open PR) |
 
-There are two ways to point `tri-review` at a PR: from inside a checkout, or at a
-repo and PR number (or URL) from anywhere. Both send the models the same two
-things — the PR diff and the full contents of each changed file — the difference
-is only where the file contents come from.
+When you run without `--repo` or `--url`, do it from the repo root **with the PR's branch checked out** (`gh pr checkout 123`). If a different branch is checked out, the models see the right diff next to the wrong file contents.
 
-### From a checkout (cwd mode)
+### Flags
 
-Run from the root of the repository whose PR you want reviewed, **with that PR's
-branch checked out**:
+| Flag | Effect |
+|---|---|
+| `--pr N` | PR number. Omit to use the current branch's PR |
+| `--repo owner/name` | Review a PR without a checkout |
+| `--url URL` | Sets `--repo` and `--pr` from a PR URL |
+| `--dry-run` | Show the resolved panel and what would be sent. No model calls, no keys needed |
+| `--output FILE` | Also save the Markdown report to a file |
+| `--reviewer SPEC` | Add a reviewer (repeatable). See [Choosing models](#choosing-models) |
+| `--synthesizer SPEC` | Model that writes the report |
+| `--effort LEVEL` | Effort for reviewers that don't set their own `@effort` |
+| `--exclude GLOB` | Leave matching files out (repeatable, on top of the defaults) |
+| `--no-default-excludes` | Turn off the built-in exclude set |
+| `--triage` / `--no-triage` | Turn the behaviour-change check on or off (see below) |
+| `--fresh` | Skip the stored report and the reviewer cache and run a new review |
 
-```bash
-gh pr checkout 123       # do this first -- see below
-tri-review --pr 123      # review a specific PR
-tri-review               # review the current branch's open PR
-tri-review --pr 123 --dry-run          # show what would be sent, call nothing
-tri-review --pr 123 --output review.md # also save the raw Markdown
-```
+### Skipping and caching
 
-The checkout matters. The PR diff always comes from GitHub, but in this mode the
-full contents of each changed file are read from **your working tree as it
-currently stands**. Review PR #123 while sitting on `main` and the models get the
-right diff paired with the wrong file bodies — a mismatch that invites exactly the
-confident-but-wrong findings this tool exists to filter out. `gh pr checkout <n>`
-first, and the two agree.
+These checks run before any model is called:
 
-### From anywhere, by repo or URL (no checkout)
-
-```bash
-tri-review --repo octocat/Hello-World --pr 123
-tri-review --url https://github.com/octocat/Hello-World/pull/123
-```
-
-No checkout, no `cd`. File contents are fetched from GitHub itself rather than
-read off disk, at the PR's head commit SHA — the same hazard the checkout rule
-exists to prevent (right diff, wrong file bodies), solved by always reading at
-the ref the diff was actually generated against instead of by requiring your
-working tree to match it. `--url` is shorthand: it just sets `--repo` and `--pr`
-from a pasted GitHub PR URL, so it works with either the plain URL or one with a
-trailing `/files` or query string.
-
-`--dry-run` needs no API keys, which makes it a cheap way to check what context a
-review would actually see before paying for one — including whether the files it
-lists look like the PR's versions. It works in both modes.
-
-Provider keys are read from the process environment, or from a `.env` in the
-directory you run from. In cwd mode that's whichever repo you're reviewing, not
-this one; in repo/url mode it could be anywhere, including `/tmp`. Either way,
-exporting the keys in your shell profile is usually less trouble than keeping a
-`.env` in every directory you might run from.
-
-### What gets skipped
-
-A review costs three model calls against a payload that often runs past 100k
-tokens, so `tri-review` decides whether a PR is worth that **before** it spends
-anything. Two gates run first, both from the changed-file list alone — no diff
-body, no file contents, no provider calls:
-
-**Documentation and generated files are excluded by default.** Markdown, prose
-under `docs/`, lockfiles, snapshots and images hold no program logic worth
-triangulating. Every pattern that can skip a PR outright is anchored to a file
-extension or an exact filename, never to a directory: `docs/conf.py` and
-`docs/scripts/deploy.sh` are code, and are reviewed like any other code. On a
-mixed PR they are simply dropped from the payload, so the token budget goes to
-the code. On a PR that changes *nothing else*, the run stops:
-
-```
-$ tri-review --pr 51
-Nothing to review. All 3 file(s) changed by PR #51 match the exclude patterns,
-so there is no code to triangulate:
-  - README.md
-  - docs/setup.md
-  - CHANGELOG.md
-Re-run with --no-default-excludes to review them anyway.
-```
-
-That exits `0`, not an error — a docs-only PR is a pass, not a failure, and in
-CI it leaves a green check rather than a red one. `--no-default-excludes` turns
-the built-in set off when the prose itself is what you want reviewed;
-`TRI_REVIEW_EXCLUDE` replaces the set with your own. `--exclude` always *adds*
-to whatever is in effect.
-
-Being dropped from the payload and being grounds for skipping the PR are two
-different claims, and the defaults keep them apart. Prose, snapshots and images
-are both — a PR of nothing but those has nothing to triangulate. **Lockfiles are
-only the first.** They are machine-written and not worth tokens alongside real
-code, but a PR that changes *only* a lockfile is exactly the shape of a
-dependency bump, accidental or otherwise, and that is the last thing that should
-pass unreviewed. So a lockfile-only PR is reviewed, and says so:
-
-```
-Every changed file is excluded from the payload, but 2 of them are not grounds
-for skipping a review (dependency or generated files that still record a
-decision). Reviewing uv.lock, package-lock.json.
-```
-
-Patterns *you* name are taken at face value in both roles: `--exclude '**/*.py'`
-on an all-Python PR skips it, because you said so.
-
-Note the gate is strictly path-based. A glob cannot be wrong about whether
-`README.md` is Markdown, which is what makes skipping on it safe to do
-automatically. Guessing that a change to `deploy.sh` is "only a comment" is a
-different problem with a much worse failure mode — silently not reviewing real
-code — so `tri-review` does not do it.
-
-**An unchanged PR replays its last review instead of buying a new one.** Each
-completed run is stored under `~/.cache/tri-review/`, keyed by repository and PR
-number, holding the report and every model's structured findings. Re-run against
-the same head commit and you get that report back instantly, for free:
-
-```
-$ tri-review --pr 51
-No change since the last review of a1b2c3d4 on 2026-09-08T14:02:11+00:00.
-Replaying it — pass --fresh to buy a new one.
-```
-
-In cwd mode there is a fourth condition, because the file bodies come from your
-working tree while the stored review is keyed on the PR's head commit. Replay
-requires `HEAD` to *be* that commit with no uncommitted changes — otherwise
-review a PR from the wrong branch once and the wrong review is cached under the
-right SHA and replayed long after the mistake is fixed. For the same reason a
-run from a mismatched tree is not written to history at all. `--repo` and `--url`
-mode read contents at the SHA itself, so nothing there can disagree.
-
-The stored run is only reused when the head SHA, the model panel, and the
-exclude patterns all still match. Any of them changing makes the old report an
-answer to a different question, so it is discarded and the reason is printed.
-Push a fix and the SHA moves, so the next run is a real one — which is the
-normal loop: review, fix, push, review again.
-
-**Optionally, a model can be asked whether the diff changes behaviour at all.**
-Path globs cannot tell a rewrite of `deploy.sh` from a typo fix in a comment
-above it. `--triage` puts that question to the cheapest configured model before
-the panel runs:
-
-```bash
-tri-review --pr 51 --triage
-```
-
-It is **off by default, and deliberately so**. It is the only gate that costs a
-model call, and the only one that can be wrong — and being wrong here means
-silently not reviewing real code, which is the worst thing this tool can do. So
-the prompt is asymmetric on purpose: anything uncertain, anything truncated, and
-anything that only *looks* like a comment (`# noqa`, `# type: ignore`,
-`// eslint-disable`, `#!/usr/bin/env`, build pragmas, framework annotations)
-answers "review it". A provider error or an unparseable answer reviews too. When
-it does skip, it says out loud that a model decided, and how to override:
-
-```
-Nothing to review. Triage (gemini-3.8-flash) found no behaviour change in PR #51:
-the only change is a docstring.
-This is a model's judgement, not a path rule, so it can be wrong. Re-run with
---no-triage to review anyway.
-```
-
-Turn it on for every run with `TRI_REVIEW_TRIAGE=1`, or in CI with the Action's
-`triage: true` input. `--no-triage` overrides either.
-
-`--dry-run` never runs triage — it would mean a model call, and a dry run is documented as costing nothing and needing no keys.
-
-### What gets reused
-
-Individual reviewer calls are cached on an exact content hash — the model, the
-payload, the reviewer prompt, and the output schema. Not similarity: two diffs
-that are 99% alike can differ in exactly the line that introduces the bug, so
-"close enough" would mean confidently reviewing code that was never read.
-
-The payoff is the partial retry. When a provider flakes, the reviews that *did*
-land are already paid for, and re-running calls only the model that failed. (A
-run missing a reviewer is never replayed wholesale from the stored report —
-that would reprint the degraded panel and never re-call the model that flaked.)
-
-```
-  OK gpt-5.6-terra — 3 findings (cached)
-  OK claude-sonnet-5 — 2 findings (cached)
-  OK gemini-3.8-flash — 3 findings
-```
-
-The key is not scoped by repository, and that is deliberate: the payload holds
-the diff and the full text of every file in it, so two repositories can only
-collide by containing identical code — where the same review is the right answer
-for both. The store lives in your own cache directory, so nothing is shared
-between people.
-
-Failures are never stored, which is what makes that retry a real retry. Editing
-`REVIEW_PROMPT` or adding a field to `Finding` changes the hash and invalidates
-every entry automatically. Entries expire after 14 days
-(`TRI_REVIEW_CACHE_TTL_DAYS`, `0` to disable), and the cache directory is safe to
-delete at any time. `--fresh` bypasses both this and the stored report.
+- **Docs and generated files are excluded.** Markdown, `docs/` prose, lockfiles, snapshots and images are dropped from the payload. If a PR changes only files like that, the run prints `Nothing to review` and exits `0`. Lockfile-only PRs are the exception: they still get reviewed. Use `--no-default-excludes` to review prose, or set `TRI_REVIEW_EXCLUDE` to replace the default set.
+- **An unchanged PR replays its last report.** Reports are stored under `~/.cache/tri-review/`. If the head SHA, the model panel and the exclude patterns all match a stored run, you get that report back without any model calls. When running from a checkout, `HEAD` must also be the PR's head commit, with no uncommitted changes. Use `--fresh` to force a new review.
+- **Only failed reviewers are retried.** Each reviewer call is cached by the exact content it was sent. If one provider fails, re-running calls only that one. Cache entries expire after 14 days (`TRI_REVIEW_CACHE_TTL_DAYS`). You can delete the cache directory at any time.
+- **Triage (optional, off by default).** `--triage` asks the cheapest configured model whether the diff changes behaviour at all, and skips the review if it doesn't. When unsure, it reviews. Enable it for every run with `TRI_REVIEW_TRIAGE=1` or `triage: true` in the Action. `--dry-run` never runs triage.
 
 ## Choosing models
 
-Every run has two roles, and any model can fill either one:
+Every run has **reviewers** (any number) and one **synthesizer**, which may be one of the reviewers. By default the reviewers are the three configured slots (see [Configuration](#configuration)), and the synthesizer is the first reviewer.
 
-- **Reviewers** read the PR independently and report findings. Pick as many as you want.
-- **The synthesizer** reads the reviewers' findings and writes the report. It can be one of the reviewers or a different model.
-
-Each model is named with a spec:
+Name a model with a spec:
 
 ```
 [provider:]model[@effort]
@@ -348,130 +118,50 @@ Each model is named with a spec:
 
 | Part | Required | Example | Meaning |
 |---|---|---|---|
-| `provider:` | Only when the ID doesn't imply it | `openai:` | Routes an ID nothing recognises, such as a fine-tune |
-| `model` | Yes | `gpt-6-sol` | The provider's model ID, exactly as they publish it |
-| `@effort` | No | `@high` | Reasoning effort for this one model |
+| `provider:` | Only when the ID doesn't imply it | `openai:` | `gpt-`, `o1`, `o3`, `o4`, `ft:` → OpenAI; `claude-` → Anthropic; `gemini-3` → Google |
+| `model` | Yes | `gpt-6-sol` | The provider's model ID |
+| `@effort` | No | `@high` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
-With nothing chosen, the panel is the three configured slots and the synthesizer is the first reviewer.
-
-The model IDs in the examples below are illustrative. Check the exact strings against your provider's model list before copying them.
-
-### On the command line
-
-| Flag | Takes | Default |
-|---|---|---|
-| `--reviewer` | one spec, repeat for each reviewer | the three configured slots |
-| `--synthesizer` | one spec | `TRI_REVIEW_SYNTHESIZER`, else the first reviewer |
-| `--effort` | one level, for reviewers without their own `@effort` | nothing sent; each provider's default |
-
-`--model` still works as the older name for `--reviewer`.
-
-**Example 1. Sol synthesizes, two Terra versions review.**
+The model IDs below are examples. Check them against your provider's model list.
 
 ```bash
+# Mixed panel, synthesizer at medium effort, reviewers at high
 tri-review --pr 123 \
-  --synthesizer gpt-6-sol \
-  --reviewer gpt-5.6-terra \
-  --reviewer gpt-5.5-terra
-```
-
-**Example 2. Astra synthesizes, GPT 6 Sol and GPT 5.6 Sol review.**
-
-```bash
-tri-review --pr 123 \
-  --synthesizer gpt-astra \
-  --reviewer gpt-6-sol \
-  --reviewer gpt-5.6-sol
-```
-
-**Example 3. Astra synthesizes at medium effort, both Sol reviewers run at high.**
-
-```bash
-tri-review --pr 123 \
-  --synthesizer gpt-astra@medium \
+  --synthesizer gpt-6-astra@medium \
   --reviewer gpt-6-sol@high \
-  --reviewer gpt-5.6-sol@high
+  --reviewer claude-opus-5@high \
+  --reviewer gemini-3.8-flash
+
+# Same effort for every reviewer that doesn't set its own (--effort never applies to the synthesizer)
+tri-review --pr 123 --effort high --reviewer gpt-6-sol --reviewer claude-sonnet-5
 ```
 
-The third example can also set the reviewers' effort once. `--effort` never applies to the synthesizer, which keeps its own suffix:
-
-```bash
-tri-review --pr 123 --effort high \
-  --synthesizer gpt-astra@medium \
-  --reviewer gpt-6-sol --reviewer gpt-5.6-sol
-```
-
-Add `--dry-run` to any of these to see the resolved panel and synthesizer without calling a model.
-
-### In the GitHub Action
-
-| Input | Takes | Default |
-|---|---|---|
-| `reviewers` | specs separated by spaces or newlines | the three configured slots |
-| `synthesizer` | one spec | the first reviewer |
-| `effort` | one level, for reviewers without their own `@effort` | nothing sent; each provider's default |
-
-`models` still works as the older name for `reviewers`. These inputs arrive in the first release after v1.1.0, so pin to that release or a later commit on `main` to use them.
-
-The same three setups as Action steps:
-
-**Example 1. Sol synthesizes, two Terra versions review.**
+In the Action, `reviewers` takes the same specs separated by spaces or newlines:
 
 ```yaml
 - uses: JairoE/tri-review@v1
   with:
-    synthesizer: gpt-6-sol
-    reviewers: gpt-5.6-terra gpt-5.5-terra
-    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-```
-
-**Example 2. Astra synthesizes, GPT 6 Sol and GPT 5.6 Sol review.**
-
-```yaml
-- uses: JairoE/tri-review@v1
-  with:
-    synthesizer: gpt-astra
-    reviewers: gpt-6-sol gpt-5.6-sol
-    openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-```
-
-**Example 3. Astra synthesizes at medium effort, both Sol reviewers run at high.**
-
-```yaml
-- uses: JairoE/tri-review@v1
-  with:
-    synthesizer: gpt-astra@medium
+    synthesizer: gpt-6-astra@medium
     reviewers: |
       gpt-6-sol@high
-      gpt-5.6-sol@high
+      claude-opus-5@high
     openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Each example only needs the key for the providers it uses. To let a PR label switch between setups for one run, see [Choosing the panel per PR](#choosing-the-panel-per-pr).
+Notes:
 
-### How specs behave
-
-**The provider** is inferred from the ID's prefix: `gpt-`, `o1`, `o3`, `o4` and `ft:` are OpenAI, `claude-` is Anthropic, and `gemini-3` is Google. So an OpenAI fine-tune such as `ft:gpt-4o-mini:acme::abc123` works as written. Name the provider explicitly to route any other ID nothing recognises, such as `openai:my-model`. A prefix the ID already implies is dropped, so `openai:gpt-5.1` and `gpt-5.1` are the same reviewer.
-
-**The effort** is passed under each provider's own name for it: `reasoning_effort` for OpenAI, `effort` for Anthropic, `thinking_level` for Gemini. The accepted levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Which of those a given model honours is the provider's call, and a level it rejects fails that one reviewer with the provider's own error. With no suffix and no `--effort`, nothing is sent. Gemini is the exception and runs at `high` unless told otherwise, for the reason under [Configuration](#configuration).
-
-**The same model at two efforts is two reviewers**, so `--reviewer gpt-5.1@high --reviewer gpt-5.1@low` compares a model against itself. The same spec twice is collapsed into one.
-
-**One reviewer is allowed.** The CLI warns before the run and the report opens by saying nothing was corroborated. A larger panel that degrades to one review still exits `4`, because it was meant to triangulate and could not.
-
-**Every report names its panel.** Its first line lists each reviewer and the synthesizer with their efforts, so a reader can see which models "2 of 3 agreed" refers to.
-
-**Typos cost nothing.** Every bad spec is rejected before the PR is fetched, all of them in one error.
-
-**Mixing providers is the point.** All three examples above use one provider, which works, but understand what you are buying. The premise of this tool is that *independent* models rarely hallucinate the same thing. Two checkpoints of one family share training data and failure modes, so they agree on each other's mistakes. A single-provider run still reports, but its report opens with a banner saying its consensus is weak evidence. Cross-provider is the real product.
+- You need a key only for the providers your panel and synthesizer use.
+- Mix providers. A panel that uses only one provider still works, but its report opens with a banner saying its consensus is weak evidence.
+- The same model at two effort levels counts as two reviewers. Duplicate specs are merged into one.
+- A single reviewer is allowed, and the report says nothing was corroborated.
+- A bare `gemini-` ID that isn't Gemini 3 (for example `gemini-flash-latest`) needs a `google:` prefix. Gemini runs at `high` effort unless the spec says otherwise, because lower levels often return empty reviews.
+- Invalid specs are reported before anything is fetched.
+- `--model` / `models` are older names for `--reviewer` / `reviewers`.
 
 ## Dismissing a finding
 
-A reviewer that re-raises a point you have already settled is worse than noisy:
-the second time it appears it carries the same "2 of 3 models agreed" weight as
-the first, so you either re-derive the refutation or take it on faith.
-
-Record the judgement in `.tri-review/dismissed.toml` and it stops coming back:
+To stop a settled finding from coming back, add it to `.tri-review/dismissed.toml` in your repo:
 
 ```toml
 [[dismissed]]
@@ -481,85 +171,160 @@ reason = "checked -- backoff is capped at 5 attempts in _retry(), see the test"
 date = "2026-01-14"               # optional
 ```
 
-`claim` and `reason` are both required. The file is version-controlled on
-purpose: a dismissal is a durable judgement about your codebase, so it belongs
-in review next to the code it excuses.
+- `claim` and `reason` are required.
+- The file is read from the PR's **base** branch, so a dismissal applies once it has been merged, not from inside the PR that adds it.
+- Dismissed findings are not hidden. The report labels them as previously dismissed and shows your reason. Matching is by meaning, not exact wording.
+- A finding comes back if the diff contains new evidence your recorded reason doesn't cover.
 
-The ledger is read from the PR's **base** commit, never from the PR itself and
-never from your working tree — so a change cannot add an entry that excuses its
-own findings. **A new dismissal takes effect once it is merged to the base
-branch**, not while it is still only in the PR that adds it.
+## GitHub Action
 
-If the base version cannot be read for any reason, the run proceeds with no
-dismissals. That errs toward showing you more, never less.
+The [Quickstart](#github-action-recommended) workflow is the minimal setup. This repo's own [`.github/workflows/tri-review.yml`](.github/workflows/tri-review.yml) is a working example.
 
-Two things it deliberately does not do:
+Each run posts a new comment and marks the earlier ones as outdated. If the token can't hide comments (no `issues: write`), older reports are folded into a collapsed `<details>` block instead. Nothing is deleted. Set `comment-mode: update` to keep a single comment and edit it in place.
 
-- **It never hides a finding.** The three reviewers never see this file, so they
-  stay independent and still report whatever they find. Only the synthesizer
-  sees it, and it is told to say the finding was previously rejected and show
-  your reason, rather than drop it. A wrong match is visible, not silent.
-- **It is not an exact match.** Claims are matched by meaning, not by a hash of
-  the wording, because wording drifts between runs. That is more forgiving and
-  less precise -- which is the right trade when the worst case is a downgrade
-  rather than a disappearance.
+A PR with nothing to review gets a short "Nothing to review" comment, and the check passes.
 
-New evidence overrides it: if a diff gives grounds the recorded reason did not
-account for, the finding comes back with that difference called out.
+### Inputs
+
+| Input | Default | Purpose |
+|---|---|---|
+| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | One per provider your models use. The default panel needs at least two |
+| `reviewers` | the three configured slots | Model specs, separated by spaces or newlines |
+| `synthesizer` | the first reviewer | Model spec that writes the report |
+| `effort` | none | Effort for reviewers without their own `@effort` |
+| `exclude` | none | Newline-separated globs, added to the default exclude set |
+| `triage` | `false` | Skip the review if a cheap model finds no behaviour change |
+| `max-reviews` | no cap | Maximum reports per PR. See [Capping reviews](#capping-reviews-per-pr) |
+| `force` | `false` | `'true'` ignores `max-reviews` for this run |
+| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` fails the check or only posts a warning |
+| `post-comment` | `true` | Post a PR comment at all |
+| `comment-mode` | `append` | `append`: a new comment per run. `update`: edit one comment in place |
+| `pr-number` | autodetected | Which PR to review |
+| `github-token` | `${{ github.token }}` | Used for `gh` and for posting comments |
+| `models` | none | Older name for `reviewers` |
+
+### Outputs
+
+| Output | Value |
+|---|---|
+| `report-path` | Absolute path of the report under `$RUNNER_TEMP/tri-review/`. Empty if no report was produced |
+| `exit-code` | The CLI's exit code |
+| `skipped` | `'true'` if no review was produced |
+| `skip-reason` | `path` (every file excluded), `empty-diff`, `triage` (a model found no behaviour change), or `cap` (`max-reviews` reached) |
+
+### Choosing the panel per PR
+
+Use a label to pick a heavier panel for one run. With the setup below, every push gets the default panel, and adding the `tri-review:deep` label triggers one run with the heavier panel:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  review:
+    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:deep'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: JairoE/tri-review@v1
+        with:
+          reviewers: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high' || '' }}
+          synthesizer: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-6-astra@medium' || '' }}
+          force: ${{ github.event.action == 'labeled' }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+```
+
+An empty input (`''`) means "use the default".
+
+### Capping reviews per PR
+
+`max-reviews` limits how many reports a PR can get. With the setup below, adding the `tri-review:again` label buys one more review and then removes the label:
+
+```yaml
+name: tri-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:again'
+    concurrency:
+      group: tri-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: JairoE/tri-review@v1
+        with:
+          max-reviews: 2
+          force: ${{ github.event.action == 'labeled' }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+      - if: always() && github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again" || true
+```
+
+- Only runs that produce a report count toward the cap. Skips and failures don't.
+- Once the cap is reached, later runs post a short note saying the commit was not reviewed, and the check passes.
+- Keep the job-level `concurrency` group with `cancel-in-progress: false`. Without the group, two quick pushes can both slip under the cap. With cancellation on, a cancelled review is still billed but doesn't count. During a burst of pushes, GitHub runs the current review and the latest push, and skips the ones in between.
+- The cap only counts comments posted by the token's own login. Use `github.token` or a personal access token, not a GitHub App token.
+- With `post-comment: false`, the cap never triggers.
+- If the PR's comments can't be read, the run goes ahead with a warning.
 
 ## Configuration
 
-Every value is an environment variable override; defaults are in `src/tri_review/config.py`.
+Environment variables. Defaults are in [`src/tri_review/config.py`](src/tri_review/config.py).
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `TRI_REVIEW_MODEL_A` | `gpt-5.6-terra` | First reviewer |
 | `TRI_REVIEW_MODEL_B` | `claude-sonnet-5` | Second reviewer |
 | `TRI_REVIEW_MODEL_C` | `gemini-3.8-flash` | Third reviewer |
-| `TRI_REVIEW_SYNTHESIZER` | the first reviewer | Model spec that writes the report from the reviews |
-| `TRI_REVIEW_EFFORT` | unset | Effort for reviewers whose spec has no `@effort`; unset sends nothing |
-| `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Max estimated tokens for diff + file context |
-| `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds (the Google reviewer uses 300 unless this is set) |
-| `TRI_REVIEW_EXCLUDE` | see `DEFAULT_EXCLUDES` | Comma- or newline-separated globs that replace the built-in skip set |
-| `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where per-PR review history is stored |
-| `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long a cached reviewer call stays usable; `0` never expires |
-| `TRI_REVIEW_TRIAGE` | unset | Set to `1` to run the behaviour-change gate on every run |
-| `TRI_REVIEW_TRIAGE_MODEL` | same as model C | Model asked whether the diff changes behaviour |
+| `TRI_REVIEW_SYNTHESIZER` | the first reviewer | Model that writes the report |
+| `TRI_REVIEW_EFFORT` | unset | Effort for reviewers without their own `@effort` |
+| `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Maximum estimated tokens for diff + file contents |
+| `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds (Google defaults to 300 unless this is set) |
+| `TRI_REVIEW_EXCLUDE` | built-in set | Comma- or newline-separated globs that replace the default exclude set |
+| `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where stored reports live |
+| `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long cached reviewer calls last. `0` = never expire |
+| `TRI_REVIEW_TRIAGE` | unset | `1` turns on triage for every run |
+| `TRI_REVIEW_TRIAGE_MODEL` | model C | Model used for triage |
 
-Every model variable takes a full spec (`[provider:]model[@effort]`, see
-[Choosing models](#choosing-models)), so you can point any slot at any
-supported provider — including three models from the same provider if you only
-have one key, with the caveat described above.
+Model variables accept full specs. Command-line flags override the matching variables.
 
-The Google reviewer runs at `thinking_level="high"` unless its spec says otherwise.
-Without it Gemini was measured returning an empty review on 9 of 10 runs of a diff
-with known bugs, and at `low` or `medium` on every run. Only Gemini 3 accepts
-`thinking_level`, so a bare ID is inferred as Google only when it starts with
-`gemini-3`. An older family or an alias like `gemini-flash-latest` needs an explicit
-`google:` prefix. Both choices are allowed, and both print a warning before the run
-because the failure they risk is an empty review that reads as a clean pass.
+## Behaviour and exit codes
 
-`--reviewer` takes precedence over `TRI_REVIEW_MODEL_A/B/C`, `--synthesizer` over
-`TRI_REVIEW_SYNTHESIZER`, and `--effort` over `TRI_REVIEW_EFFORT`: use the env vars
-for your standing default panel, and the flags for a one-off.
+- If one provider fails, the other reviewers still produce a report, and the failure is noted at the top.
+- If the payload exceeds the token budget, the contents of the largest files are dropped (their diff hunks are kept), and a warning names them.
+- Diff paths that point outside the repository (`../`, or a symlink added by the PR) are refused.
 
-## How it behaves
-
-- **A PR with nothing to review is a success, not an error.** If every changed file is documentation, a lockfile, or generated output, the run stops at exit `0` before any model is called and names what it skipped. Exiting non-zero there would fail a CI check on a docs-only pull request, which is backwards.
-- **A retry after a flake only re-calls what failed.** Reviews are cached on an exact content hash, so when a provider drops out and the run exits `4`, re-running reuses the reviews already paid for and buys just the missing one.
-- **A model that fails does not sink the run.** If one provider is down, rate-limited, or missing a key, the other two still produce a report and the failure is noted at the top.
-- **Fewer reviews than the panel promised is an error.** A panel of two or more needs two reviews back, so a triangulation that degrades to one model's opinion exits non-zero rather than pretending it triangulated anything. A panel of one, chosen deliberately, needs its one review and is reported as uncorroborated.
-- **Large PRs degrade rather than fail.** If the diff plus changed-file contents exceed the token budget, the largest files' contents are dropped (their diff hunks are kept) and the dropped files are named in a warning. If the diff *alone* busts the budget, that is called out too — no file contents can be included and the providers may reject the payload.
-- **Consensus between same-family models is labeled as weak.** If every reviewer that reported came from one provider, the report opens with a banner saying so rather than presenting their agreement as corroboration.
-- **The diff is untrusted input.** Paths in it are written by whoever opened the PR, so a diff header pointing outside the repository — via `../` or a symlink the PR adds — is refused and named in the run output instead of being read and shipped to the model providers.
-
-Exit codes: `0` success — including a PR that held nothing worth reviewing, `2` environment problem (no `gh`, not authenticated, not a repo, or a bad flag), `3` no such PR, `4` too few reviews for the panel, `130` interrupted.
+| Code | Meaning |
+|---|---|
+| `0` | Success, including "Nothing to review" |
+| `2` | Environment problem: no `gh`, not authenticated, not a repo, bad flag |
+| `3` | PR not found |
+| `4` | Too few reviews for the panel (a panel of 2+ needs 2 reviews back) |
+| `130` | Interrupted |
 
 ## Sample output
 
-Against a diff introducing an MD5 password hash, an off-by-one, and a SQL injection.
-This run used three OpenAI models, so it opens with the single-provider banner —
-a cross-provider panel would not print it:
+A diff that adds an MD5 password hash, an off-by-one error, and a SQL injection, reviewed by three OpenAI models (hence the single-provider banner):
 
 ```markdown
 > **All 3 reviewers are `openai` models.** Models from one provider share training
@@ -588,244 +353,9 @@ a cross-provider panel would not print it:
 None. All models reported the same underlying issues.
 ```
 
-## GitHub Action
-
-Drop `tri-review` into CI so it reviews every PR automatically, no local install
-required. This repo's own `.github/workflows/tri-review.yml` is a working example —
-it reviews `tri-review`'s own PRs.
-
-```yaml
-name: tri-review
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      # Pin to the PR's actual head commit -- the default pull_request checkout
-      # is a synthetic merge commit, which would pair the diff with the wrong
-      # file contents.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      # @v1 is a mutable tag; pin to a release commit SHA instead if you want
-      # the run to be immune to the tag being retargeted.
-      - uses: JairoE/tri-review@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-```
-
-The runner's own checkout already has the PR branch, so this runs the CLI's normal
-cwd mode — the same local-checkout path described above, no `--repo`/`--url`
-needed. Each run posts its own comment (matched by a hidden marker) and marks
-the previous ones outdated, so the PR records what every commit was told rather
-than overwriting it. Reviews are a record of what was checked and when; a single
-comment edited in place loses which findings were raised against which commit,
-and whether a finding was answered or silently disappeared on the next push.
-
-GitHub has no "resolve" for ordinary PR comments — resolvable threads exist only
-for comments anchored to a line of the diff, and a whole-PR report is not
-anchored to a line. The native equivalent is what the comment menu's **Hide**
-does, and that is what the Action calls: the superseded report collapses behind
-*"This comment was marked as outdated"*, still open-able, still in the timeline.
-
-Hiding a comment needs more permission than posting one. If the workflow's token
-cannot do it, the Action falls back to editing the old report into a collapsed
-`<details>` block with a line saying which commit superseded it — the same idea
-with the permission it is already known to have. Nothing is ever deleted. Set
-`comment-mode: update` to go back to a single comment edited in place, which is
-quieter on a long-running PR at the cost of that history.
-
-A PR the gates skip posts a short "Nothing to review" comment and passes, rather than failing the check. Alongside `report-path` and `exit-code`, the action exposes `skipped` (`'true'` when no review was produced) and `skip-reason` (`path`, `empty-diff`, `triage`, or `cap`). The distinction matters, and each reason gets its own comment text: `path` means every changed file matched an exclude glob, `empty-diff` means the diff itself came back empty and is not a claim about what kind of files the PR touches, `triage` means one cheap call was spent reaching a verdict that can be wrong, and `cap` means the PR had already used up `max-reviews` (below). `path`, `empty-diff` and `cap` made no provider call at all.
-
-`report-path` is the absolute path of the report the run wrote, under `$RUNNER_TEMP/tri-review/`, and is empty whenever no report was produced. Before v1.1.0 it was `report.md` in the workspace; it moved out because the workspace is your checkout, and a `report.md` your repo commits at its root would have been posted as the review on any run that skipped or failed. A later step that read `report.md` directly should read `${{ steps.<id>.outputs.report-path }}` instead.
-
-| Input | Default | Purpose |
-|---|---|---|
-| `pr-number` | autodetected | Which PR to review; usually left unset |
-| `reviewers` | the three configured slots | Whitespace-separated model specs, same rules as `--reviewer` |
-| `models` | none | Older name for `reviewers`; `reviewers` wins when both are set |
-| `synthesizer` | the first reviewer | Model spec that writes the report, same as `--synthesizer` |
-| `effort` | none | Effort for reviewers without their own `@effort`, same as `--effort` |
-| `exclude` | none | Newline-separated glob patterns, same as `--exclude`. Adds to the built-in skip set |
-| `triage` | `false` | Ask the cheapest model whether the diff changes behaviour, and skip the review if it plainly does not |
-| `fail-on-insufficient-reviews` | `true` | Whether exit code `4` (too few reviews for the panel) fails the check or just posts a warning |
-| `max-reviews` | none (no cap) | Most reports to produce on one PR; later runs skip with `skip-reason: cap`. See [Capping reviews per PR](#capping-reviews-per-pr) |
-| `force` | `false` | `'true'` ignores `max-reviews` for this run, e.g. `${{ github.event.action == 'labeled' }}` |
-| `post-comment` | `true` | Whether to post a PR comment at all |
-| `comment-mode` | `append` | `append` posts a comment per run and marks earlier ones outdated; `update` edits one comment in place |
-| `github-token` | `${{ github.token }}` | Used for both `gh auth` and posting the comment |
-| `openai-api-key` / `anthropic-api-key` / `google-api-key` | none | One for each provider your panel and synthesizer use. The default panel needs at least two |
-
-### Choosing the panel per PR
-
-The model inputs are ordinary expressions, so a label can switch the panel for one
-run. This workflow reviews every push with the defaults, and a `tri-review:deep`
-label buys one run with a heavier panel:
-
-```yaml
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-
-jobs:
-  review:
-    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:deep'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - uses: JairoE/tri-review@v1
-        with:
-          reviewers: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high' || '' }}
-          synthesizer: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-astra@medium' || '' }}
-          # A label run is an explicit request, so let it past max-reviews.
-          force: ${{ github.event.action == 'labeled' }}
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-```
-
-An empty input means the default, so the non-label branch of each expression is
-`''`. Only people who can label the PR can apply the override, and the PR's own
-content never chooses its panel.
-
-### Capping reviews per PR
-
-Every review costs three model calls, and a PR that takes ten pushes pays for
-ten. `max-reviews` caps that:
-
-```yaml
-name: tri-review
-on:
-  pull_request:
-    # `labeled` is what lets someone ask for one more review once the cap is hit.
-    types: [opened, synchronize, reopened, labeled]
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-
-jobs:
-  review:
-    # Any label starts a `labeled` run; only this one should.
-    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:again'
-    # One review per PR at a time -- see "Concurrency" below. On the job, not
-    # the workflow: a job skipped by the `if` above never joins the group, so
-    # an unrelated label cannot displace a review.
-    concurrency:
-      group: tri-review-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - uses: JairoE/tri-review@v1
-        with:
-          max-reviews: 2
-          # Adding the label is the explicit request for one more review.
-          force: ${{ github.event.action == 'labeled' }}
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-      # Take the label back off, so adding it again is the next request. `|| true`
-      # because a re-run of this job, or someone removing it by hand, leaves no
-      # label to delete, and that must not turn a finished review red.
-      - if: always() && github.event.action == 'labeled'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again" || true
-```
-
-Once the PR already has `max-reviews` reports, the next run skips before it
-installs anything or calls any model, reports `skip-reason: cap`, and passes.
-`force: true` ignores the cap for that run.
-
-**What counts is a run that produced a report.** "Nothing to review" skips do
-not use up the cap, not even `triage` skips (one cheap call, not a review), and
-neither do runs that failed before producing a report, or the cap notes below.
-Each comment the Action posts records a running count of reports in a hidden
-header line, and the cap reads the highest one back. A tally rather than a
-count of comments, because `comment-mode: update` edits one comment forever.
-Reports posted before v1.1.0 carry no tally and are counted one each; skip and
-failure comments from then are recognised by their headline and not counted.
-In `append` mode a PR that was open across the upgrade keeps an accurate count.
-In `update` mode an older version left one edited comment however many reviews
-it held, so such a PR restarts from 1 (or 0, if that comment was last a skip).
-
-**A capped run posts a short note** saying the cap was reached and that this
-commit was not reviewed, so a push never looks reviewed when it was not. The
-note does not hide the last real report -- that report still stands for the
-commit it names -- and consecutive capped pushes edit the one note rather than
-adding one each. The next forced review posts normally and marks both outdated.
-In `comment-mode: update` this means a capped PR briefly shows two comments,
-the report and the note; the next forced review is written into the note and
-marks the old report outdated, leaving one again.
-
-Which events start the workflow, which label forces a run, who may add it and
-removing it afterwards all stay in your workflow: an Action cannot choose its
-own triggers, and a label name is one repo's policy. The Action only counts and
-decides.
-
-**Concurrency.** The Action does not lock across runs, so two pushes in quick
-succession can both count below the cap before either posts. The job-level
-`concurrency` group above prevents that by running one review per PR at a
-time. Leave `cancel-in-progress` at `false` when you use a cap: a review is paid
-for as soon as its models are called but counted only once its comment is
-posted, so cancelling a running review spends the money and loses the count.
-It would also let a push cancel a review someone forced with the label. With
-`false`, a running review always finishes. GitHub keeps only the *newest*
-waiting run per group, so a burst of pushes reviews the one that was running
-and the latest one, and skips the ones in between. That is the cheapest
-outcome, but those in-between commits get no comment at all. The same applies
-to a forced run that is still *waiting*: a push behind it replaces it, and the
-label stays on the PR -- remove and re-add it to ask again.
-
-**When the cap cannot count, it says so rather than guessing.** If the Action
-cannot list the PR's comments (a transient API error, a token that cannot read
-them), it fails open: that run is reviewed and carries a warning. The cap
-counts comments this Action posted, so with `post-comment: false` it can never
-be reached, and the run warns about that too. It also counts only comments
-posted by the token's own login. A GitHub App installation token cannot report
-its login, so reports it posted are not matched and the count reads zero. The
-run warns when it sees tri-review comments from another bot and none from
-itself. Use the default `github.token` or a personal access token with
-`max-reviews`.
-
-## Claude Code skill
-
-`.claude/skills/tri-review/` ships a skill that runs the CLI from inside a Claude
-Code session — say "review this PR with tri-review" while sitting in a checkout
-with an open PR. It's a thin wrapper: it runs the same `tri-review` command a
-person would, and relays the Markdown report back verbatim rather than
-re-summarizing it. Copy the same file to `~/.claude/skills/tri-review/` to make it
-available in every session on your machine, regardless of which repo you're in.
-
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
+uv sync --extra dev      # or: pip install -e ".[dev]"
+uv run pytest            # offline; all provider calls are stubbed
 ```
-
-The suite is offline — every provider call is stubbed, so it runs without API keys.
-
-## Architecture
-
-A LangGraph state machine: a context node resolves the PR and assembles the payload,
-one reviewer node per panel member fans out concurrently (wall time is the slowest model, not the
-sum), and a synthesizer fans back in. Reviewers return structured `Finding` objects
-rather than prose, which is what lets the synthesizer match the same issue across
-models by file and line instead of comparing wording.

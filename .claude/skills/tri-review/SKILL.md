@@ -36,7 +36,7 @@ tri-review --pr <N>
 If the user names models, pass each as a spec, `[provider:]model[@effort]`:
 `--reviewer` once per reviewer, `--synthesizer` for the model that writes the
 report, and `--effort` for a default reviewer effort. Any model can fill any
-role, e.g. `--synthesizer gpt-astra@medium --reviewer gpt-6-sol@high
+role, e.g. `--synthesizer gpt-6-astra@medium --reviewer gpt-6-sol@high
 --reviewer gpt-5.6-sol@high`.
 
 If the user seems unsure about cost or scope before committing to a real run,
