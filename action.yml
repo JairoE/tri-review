@@ -22,7 +22,7 @@ inputs:
   synthesizer:
     description: >
       Model spec that writes the report from the reviews, e.g.
-      "gpt-astra@medium". Any model, reviewer or not. Defaults to the first
+      "gpt-6-astra@medium". Any model, reviewer or not. Defaults to the first
       reviewer.
     required: false
   effort:

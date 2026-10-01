@@ -127,7 +127,7 @@ The model IDs below are examples. Check them against your provider's model list.
 ```bash
 # Mixed panel, synthesizer at medium effort, reviewers at high
 tri-review --pr 123 \
-  --synthesizer gpt-astra@medium \
+  --synthesizer gpt-6-astra@medium \
   --reviewer gpt-6-sol@high \
   --reviewer claude-opus-5@high \
   --reviewer gemini-3.8-flash
@@ -141,7 +141,7 @@ In the Action, `reviewers` takes the same specs separated by spaces or newlines:
 ```yaml
 - uses: JairoE/tri-review@v1
   with:
-    synthesizer: gpt-astra@medium
+    synthesizer: gpt-6-astra@medium
     reviewers: |
       gpt-6-sol@high
       claude-opus-5@high
@@ -232,7 +232,7 @@ jobs:
       - uses: JairoE/tri-review@v1
         with:
           reviewers: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high' || '' }}
-          synthesizer: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-astra@medium' || '' }}
+          synthesizer: ${{ github.event.label.name == 'tri-review:deep' && 'gpt-6-astra@medium' || '' }}
           force: ${{ github.event.action == 'labeled' }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
