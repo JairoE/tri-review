@@ -40,7 +40,8 @@ inputs:
     default: 'true'
   triage:
     description: >
-      Ask the cheapest model whether the diff changes behaviour at all, and skip
+      Ask one model (TRI_REVIEW_TRIAGE_MODEL, default model C, so gemini-3.8-flash
+      and google-api-key unless overridden) whether the diff changes behaviour at all, and skip
       the review when it plainly does not. Off by default: it costs a model call
       and, unlike the path-based skip, it can be wrong.
     required: false

@@ -101,10 +101,10 @@ When you run without `--repo` or `--url`, do it from the repo root **with the PR
 
 These checks run before any model is called:
 
-- **Docs and generated files are excluded.** Markdown, `docs/` prose, lockfiles, snapshots and images are dropped from the payload. If a PR changes only files like that, the run prints `Nothing to review` and exits `0`. Lockfile-only PRs are the exception: they still get reviewed. Use `--no-default-excludes` to review prose, or set `TRI_REVIEW_EXCLUDE` to replace the default set.
-- **An unchanged PR replays its last report.** Reports are stored under `~/.cache/tri-review/`. If the head SHA, the model panel and the exclude patterns all match a stored run, you get that report back without any model calls. When running from a checkout, `HEAD` must also be the PR's head commit, with no uncommitted changes. Use `--fresh` to force a new review.
-- **Only failed reviewers are retried.** Each reviewer call is cached by the exact content it was sent. If one provider fails, re-running calls only that one. Cache entries expire after 14 days (`TRI_REVIEW_CACHE_TTL_DAYS`). You can delete the cache directory at any time.
-- **Triage (optional, off by default).** `--triage` asks the cheapest configured model whether the diff changes behaviour at all, and skips the review if it doesn't. When unsure, it reviews. Enable it for every run with `TRI_REVIEW_TRIAGE=1` or `triage: true` in the Action. `--dry-run` never runs triage.
+- **Docs and generated files are excluded.** Markdown/MDX/reST, `LICENSE`, `CHANGELOG`, snapshots, images, PDFs and lockfiles are dropped from the payload. Matching is by extension or filename only, so code under `docs/` is still reviewed. If a PR changes only files like that, the run prints `Nothing to review` and exits `0`. Lockfile-only PRs are the exception: they still get reviewed. Use `--no-default-excludes` to review prose, or set `TRI_REVIEW_EXCLUDE` to replace the default set.
+- **An unchanged PR replays its last report.** Reports are stored in the history directory (`~/.cache/tri-review/` by default). If the head SHA, the model panel and the exclude patterns all match a stored run, you get that report back without any model calls. When running from a checkout, `HEAD` must also be the PR's head commit, with no uncommitted changes. Use `--fresh` to force a new review.
+- **Only failed reviewers are retried.** Each reviewer call is cached by the exact content it was sent. If one provider fails, re-running calls only that one. Cache entries expire after 14 days (`TRI_REVIEW_CACHE_TTL_DAYS`). They live in `reviews/` inside the history directory, which you can delete at any time.
+- **Triage (optional, off by default).** `--triage` asks one model whether the diff changes behaviour at all, and skips the review if it doesn't. That model is `TRI_REVIEW_TRIAGE_MODEL`, defaulting to model C (`gemini-3.8-flash`) whatever `--reviewer` says, so you need its provider's key. When unsure, it reviews. Enable it for every run with `TRI_REVIEW_TRIAGE=1` or `triage: true` in the Action. `--dry-run` never runs triage.
 
 ## Choosing models
 
@@ -193,7 +193,7 @@ A PR with nothing to review gets a short "Nothing to review" comment, and the ch
 | `synthesizer` | the first reviewer | Model spec that writes the report |
 | `effort` | none | Effort for reviewers without their own `@effort` |
 | `exclude` | none | Newline-separated globs, added to the default exclude set |
-| `triage` | `false` | Skip the review if a cheap model finds no behaviour change |
+| `triage` | `false` | Skip the review if a model finds no behaviour change. Uses `gemini-3.8-flash` (needs `google-api-key`) unless `TRI_REVIEW_TRIAGE_MODEL` or `TRI_REVIEW_MODEL_C` is set in the step's `env` |
 | `max-reviews` | no cap | Maximum reports per PR. See [Capping reviews](#capping-reviews-per-pr) |
 | `force` | `false` | `'true'` ignores `max-reviews` for this run |
 | `fail-on-insufficient-reviews` | `true` | Whether exit code `4` fails the check or only posts a warning |
@@ -301,7 +301,7 @@ Environment variables. Defaults are in [`src/tri_review/config.py`](src/tri_revi
 | `TRI_REVIEW_TOKEN_BUDGET` | `100000` | Maximum estimated tokens for diff + file contents |
 | `TRI_REVIEW_TIMEOUT` | `120` | Per-model timeout in seconds (Google defaults to 300 unless this is set) |
 | `TRI_REVIEW_EXCLUDE` | built-in set | Comma- or newline-separated globs that replace the default exclude set |
-| `TRI_REVIEW_HISTORY_DIR` | `~/.cache/tri-review` | Where stored reports live |
+| `TRI_REVIEW_HISTORY_DIR` | `$XDG_CACHE_HOME/tri-review`, else `~/.cache/tri-review` | Where stored reports and cached reviewer calls live |
 | `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long cached reviewer calls last. `0` = never expire |
 | `TRI_REVIEW_TRIAGE` | unset | `1` turns on triage for every run |
 | `TRI_REVIEW_TRIAGE_MODEL` | model C | Model used for triage |
@@ -317,6 +317,7 @@ Model variables accept full specs. Command-line flags override the matching vari
 | Code | Meaning |
 |---|---|
 | `0` | Success, including "Nothing to review" |
+| `1` | Other error |
 | `2` | Environment problem: no `gh`, not authenticated, not a repo, bad flag |
 | `3` | PR not found |
 | `4` | Too few reviews for the panel (a panel of 2+ needs 2 reviews back) |

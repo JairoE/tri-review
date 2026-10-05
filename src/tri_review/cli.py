@@ -123,7 +123,7 @@ console = Console()
     "use_triage",
     default=None,
     help=(
-        "Before reviewing, ask the cheapest model whether the diff changes "
+        "Before reviewing, ask TRI_REVIEW_TRIAGE_MODEL (default: model C) whether the diff changes "
         "behaviour at all, and skip the review if it plainly does not (a "
         "comment-only or formatting-only change). Off unless TRI_REVIEW_TRIAGE "
         "is set: it is the one gate that costs money and can be wrong."

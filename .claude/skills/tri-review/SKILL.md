@@ -16,8 +16,8 @@ to re-review the PR or reformat its output.
 ## Step 1 — preflight
 
 Check the CLI is installed: `which tri-review`. If it isn't, tell the user and
-point at the install command in this repo's README (`uv sync` or
-`pip install -e .`) rather than installing it yourself unprompted.
+point at the install command in this repo's README (`uv tool install .` from a clone,
+which puts `tri-review` on PATH) rather than installing it yourself unprompted.
 
 ## Step 2 — determine the target
 
