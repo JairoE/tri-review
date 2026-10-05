@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
@@ -145,7 +145,7 @@ def main(
     use_triage: bool | None,
 ) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
     try:
         if url:
             repo, pr = _merge_url(url, repo, pr)
