@@ -16,8 +16,8 @@ to re-review the PR or reformat its output.
 ## Step 1 — preflight
 
 Check the CLI is installed: `which tri-review`. If it isn't, tell the user and
-point at the install command in this repo's README (`uv sync` or
-`pip install -e .`) rather than installing it yourself unprompted.
+point at the install command in this repo's README (`uv tool install .` from a clone,
+which puts `tri-review` on PATH) rather than installing it yourself unprompted.
 
 ## Step 2 — determine the target
 
@@ -36,7 +36,7 @@ tri-review --pr <N>
 If the user names models, pass each as a spec, `[provider:]model[@effort]`:
 `--reviewer` once per reviewer, `--synthesizer` for the model that writes the
 report, and `--effort` for a default reviewer effort. Any model can fill any
-role, e.g. `--synthesizer gpt-astra@medium --reviewer gpt-6-sol@high
+role, e.g. `--synthesizer gpt-6-astra@medium --reviewer gpt-6-sol@high
 --reviewer gpt-5.6-sol@high`.
 
 If the user seems unsure about cost or scope before committing to a real run,

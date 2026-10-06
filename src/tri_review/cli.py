@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
@@ -123,7 +123,7 @@ console = Console()
     "use_triage",
     default=None,
     help=(
-        "Before reviewing, ask the cheapest model whether the diff changes "
+        "Before reviewing, ask TRI_REVIEW_TRIAGE_MODEL (default: model C) whether the diff changes "
         "behaviour at all, and skip the review if it plainly does not (a "
         "comment-only or formatting-only change). Off unless TRI_REVIEW_TRIAGE "
         "is set: it is the one gate that costs money and can be wrong."
@@ -145,7 +145,7 @@ def main(
     use_triage: bool | None,
 ) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
     try:
         if url:
             repo, pr = _merge_url(url, repo, pr)

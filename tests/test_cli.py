@@ -1,3 +1,5 @@
+import os
+
 import click
 import pytest
 from click.testing import CliRunner
@@ -72,6 +74,21 @@ def test_help_documents_the_flag():
     assert "--reviewer" in result.output
     assert "--model" in result.output, "the old name still works and is still documented"
     assert "--effort" in result.output
+
+
+def test_a_dotenv_in_the_working_directory_is_loaded(monkeypatch, tmp_path):
+    # Without usecwd, python-dotenv searches up from the installed package's
+    # directory, so a .env next to the user's checkout was never read.
+    (tmp_path / ".env").write_text("TRI_REVIEW_DOTENV_MARKER=from-cwd\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TRI_REVIEW_DOTENV_MARKER", "")
+    monkeypatch.delenv("TRI_REVIEW_DOTENV_MARKER")
+    monkeypatch.setattr("tri_review.cli._run", lambda *args, **kwargs: None)
+
+    result = CliRunner().invoke(main, ["--pr", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert os.environ.get("TRI_REVIEW_DOTENV_MARKER") == "from-cwd"
 
 
 # --- model specs: [provider:]model[@effort] ----------------------------------
