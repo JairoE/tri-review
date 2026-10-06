@@ -45,14 +45,20 @@ Produce a Markdown report with exactly these three sections:
 Issues reported by 2 or more models. Match on the underlying problem, not on
 wording -- the same bug described differently in the same file and region is one
 finding. State each once, with file and line, and note which models found it.
+Give its severity in bold -- **critical**, **major**, or **minor** -- taking
+the highest severity any of the agreeing models reported.
 
 ## Unique Insights
 Issues reported by only one model. Name that model in bold at the very start of
-the bullet, then the "unverified" qualifier, e.g. "**gemini-3.7-flash**
-(unverified by the other reviewers):" -- never write "unverified by the other
-reviewer(s)" without naming the reporting model in that same phrase. A reader
-must be able to tell who found the issue from the bullet itself, without
-needing a separate line below it.
+the bullet, then the "unverified" qualifier, then that model's reported
+severity in bold, e.g. "**gemini-3.7-flash** (unverified by the other
+reviewers): **major** --" -- never write "unverified by the other reviewer(s)"
+without naming the reporting model in that same phrase. A reader must be able
+to tell who found the issue, and how serious its reporter judged it, from the
+bullet itself, without needing a separate line below it.
+
+Every bullet in both sections carries its severity label. Never omit it, even
+when every finding in the section shares the same severity.
 
 ## Actionable Next Steps
 The specific changes worth making, highest value first, with file and line

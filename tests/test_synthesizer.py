@@ -196,6 +196,21 @@ def test_blocking_pending_check_must_name_the_check():
     assert "never present an unobserved claim as a" in prompt
 
 
+def test_every_finding_bullet_must_carry_its_severity():
+    """Severity labels in the report must not depend on the synthesizer's whim.
+
+    The synthesizer always receives each finding's severity, but when the
+    prompt left the label optional, the same synthesizer on the same pinned
+    version labelled every Unique Insight on one run and none on the next.
+    The example matters as much as the rule: models copy it closely.
+    """
+    from tri_review.nodes import SYNTHESIS_PROMPT
+
+    prompt = SYNTHESIS_PROMPT.lower()
+    assert "every bullet in both sections carries its severity label" in prompt
+    assert "(unverified by the other\nreviewers): **major**" in prompt
+
+
 def test_recorded_dismissals_reach_the_synthesizer():
     """A dismissal is useless if it never gets in front of the model."""
     from tri_review import dismissals, nodes
