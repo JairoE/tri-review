@@ -167,6 +167,63 @@ def test_malformed_usage_metadata_shape_does_not_fail_an_otherwise_ok_review():
     assert result.low_confidence_reason is None
 
 
+def test_prompt_cache_usage_is_recorded_on_the_result():
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[_finding()]),
+        usage_metadata={"input_token_details": {"cache_read": 41_000, "cache_creation": 0}},
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm, use_cache=False)
+    assert result.prompt_cache_read_tokens == 41_000
+    assert result.prompt_cache_write_tokens == 0
+
+
+@pytest.mark.parametrize("ttl_key", ["ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"])
+def test_prompt_cache_write_counts_the_per_ttl_keys(ttl_key):
+    """langchain-anthropic zeroes `cache_creation` when the API reports the
+    per-TTL breakdown, so a real write lives only under the ephemeral_* key."""
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[]),
+        usage_metadata={
+            "input_token_details": {"cache_read": 0, "cache_creation": 0, ttl_key: 38_500}
+        },
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm, use_cache=False)
+    assert result.prompt_cache_read_tokens == 0
+    assert result.prompt_cache_write_tokens == 38_500
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        "not-a-dict",
+        {"output_tokens": 10},
+        {"input_token_details": "odd"},
+        {"input_token_details": {"cache_read": "many", "cache_creation": None}},
+    ],
+)
+def test_missing_or_malformed_prompt_cache_usage_is_no_signal(usage):
+    llm = FakeLLM(output=ReviewOutput(findings=[_finding()]), usage_metadata=usage)
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm, use_cache=False)
+    assert result.ok
+    assert result.prompt_cache_read_tokens is None
+    assert result.prompt_cache_write_tokens is None
+
+
+def test_a_local_cache_hit_does_not_replay_prompt_cache_usage():
+    """No request was made on a hit, so the stored numbers describe a past run."""
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[_finding()]),
+        usage_metadata={"input_token_details": {"cache_read": 0, "cache_creation": 38_500}},
+    )
+    first = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    second = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    assert first.prompt_cache_write_tokens == 38_500
+    assert second.cached is True
+    assert second.prompt_cache_read_tokens is None
+    assert second.prompt_cache_write_tokens is None
+
+
 def test_parsing_failure_is_recorded_as_an_error_not_cached_as_empty_findings():
     """include_raw=True lets a parse failure land in `parsing_error` without
     raising -- this must still surface as a real failure, not a silent clean
