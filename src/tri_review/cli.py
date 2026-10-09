@@ -706,6 +706,12 @@ def _print_result(result, via=console) -> None:
         count = len(result.findings)
         noun = "finding" if count == 1 else "findings"
         suffix = " [dim](cached)[/dim]" if getattr(result, "cached", False) else ""
+        cache_read = getattr(result, "prompt_cache_read_tokens", None)
+        cache_write = getattr(result, "prompt_cache_write_tokens", None)
+        if cache_read is not None or cache_write is not None:
+            suffix += (
+                f" [dim](prompt cache: read {cache_read or 0} / wrote {cache_write or 0})[/dim]"
+            )
         low_confidence = getattr(result, "low_confidence_reason", None)
         if not result.findings and low_confidence:
             via.print(

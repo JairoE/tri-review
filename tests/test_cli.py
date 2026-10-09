@@ -248,6 +248,27 @@ def test_provider_errors_survive_the_result_printout(capsys):
     assert "[invalid_request]" in capsys.readouterr().out
 
 
+def test_prompt_cache_usage_is_shown_when_the_provider_reported_it(capsys):
+    from tri_review.cli import _print_result
+    from tri_review.schema import ReviewResult
+
+    _print_result(
+        ReviewResult(model="m1", prompt_cache_read_tokens=41_000, prompt_cache_write_tokens=0)
+    )
+
+    assert "prompt cache: read 41000 / wrote 0" in capsys.readouterr().out
+
+
+def test_prompt_cache_usage_is_omitted_when_nothing_was_reported(capsys):
+    from tri_review.cli import _print_result
+    from tri_review.schema import ReviewResult
+
+    _print_result(ReviewResult(model="m1"))
+    _print_result(ReviewResult(model="m2", cached=True))
+
+    assert "prompt cache" not in capsys.readouterr().out
+
+
 # --- --url reconciliation ---------------------------------------------------
 
 URL = "https://github.com/octocat/Hello-World/pull/10856"
