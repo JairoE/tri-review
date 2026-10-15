@@ -280,7 +280,7 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-      - if: always() && github.event.action == 'labeled'
+      - if: always() && github.event.action == 'labeled' && steps.panel.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           LABEL: ${{ github.event.label.name }}
@@ -293,7 +293,8 @@ jobs:
 - A one-provider panel is for comparing providers. Its agreement means less than a mixed panel's, because models from one provider tend to miss the same things.
 - Set the synthesizer to a model that isn't on the panel when you can. Otherwise it judges findings from its own model. `council-claude` breaks this rule because only `claude-opus-5` and `claude-sonnet-5` are known to work: `claude-sonnet-5-5` returns a 400 error on the tool call tri-review uses.
 - Leave Gemini without an `@effort` suffix. tri-review runs it at `high` by default, and lower levels were measured returning empty reviews.
-- Change the panels to suit your keys and budget. Every label needs a matching entry in both the `if:` list and the `case`. A label in the `if:` list but missing from the `case` fails the run instead of quietly using the default panel.
+- Change the panels to suit your keys and budget. Every label needs a matching entry in both the `if:` list and the `case`. A label in the `if:` list but missing from the `case` fails the run and stays on the PR, instead of quietly using the default panel.
+- If two labels are added while a review is running, GitHub may drop the earlier request and leave its label on. Add it again.
 
 ### Capping reviews per PR
 

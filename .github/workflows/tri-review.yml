@@ -141,6 +141,9 @@ jobs:
         with:
           pr-number: ${{ github.event.pull_request.number }}
           synthesizer: ${{ steps.panel.outputs.synthesizer }}
+          # Space-separated on purpose: the Action word-splits this input on
+          # any whitespace (`for m in $INPUT_MODELS` in action.yml), so one
+          # line or one model per line are the same to it.
           reviewers: ${{ steps.panel.outputs.reviewers }}
           # Two reviews per PR; any of the labels above forces one more.
           max-reviews: 2
@@ -151,9 +154,15 @@ jobs:
 
       # Take the label back off so adding it again is the next request. `|| true`:
       # a re-run of this job, or a hand removal, leaves nothing to delete, and
-      # that must not turn a finished review red.
+      # that must not turn a finished review red. Kept when "Pick the panel"
+      # failed: a label with no panel stays on the PR as the visible sign that
+      # the `if` list and the `case` have drifted.
+      #
+      # Known gap: GitHub keeps one pending run per concurrency group, so two
+      # labels added while a review runs can drop the earlier request before
+      # this step ever runs for it, leaving its label on. Add it again.
       - name: Remove the trigger label
-        if: always() && github.event.action == 'labeled'
+        if: always() && github.event.action == 'labeled' && steps.panel.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           LABEL: ${{ github.event.label.name }}
