@@ -2,8 +2,9 @@ name: tri-review
 
 on:
   pull_request:
-    # `labeled` is how a PR at the review cap asks for one more: add the
-    # tri-review:again label (see max-reviews / force below).
+    # `labeled` is how a PR asks for one more review past the cap: add
+    # tri-review:again for the usual panel, or a tri-review:council-* /
+    # tri-review:deep label for a different one (see "Pick the panel" below).
     types: [opened, synchronize, reopened, labeled]
 
 permissions:
@@ -18,8 +19,11 @@ permissions:
 
 jobs:
   review:
-    # Any label starts a `labeled` run; only this one should review.
-    if: github.event.action != 'labeled' || github.event.label.name == 'tri-review:again'
+    # Any label starts a `labeled` run; only these should review. Keep this
+    # list in step with the `case` in "Pick the panel".
+    if: >-
+      github.event.action != 'labeled' ||
+      contains(fromJSON('["tri-review:again", "tri-review:council-gpt", "tri-review:council-claude", "tri-review:council-cross", "tri-review:deep"]'), github.event.label.name)
     # One review per PR at a time. On the job rather than the workflow, so a
     # run whose job is skipped by the `if` above (an unrelated label) never
     # joins the group and cannot displace a real review. Not
@@ -79,23 +83,72 @@ jobs:
       # exists only on a PR branch; that is PR-authored code again. Bump this
       # after merging changes CI should review with; until then, merged work
       # does not reach CI at all (it sat at v1.0.0 through three merges once).
+      # Which models review this run, chosen by the label that triggered it.
+      # Pushes and tri-review:again get the default panel.
+      # The label name goes in through env, never spliced into the script.
+      #
+      # Default: two OpenAI reviewers and one Anthropic, so agreement can cross
+      # a provider boundary. The synthesizer is set explicitly and is not on
+      # the panel: unset, it is the first reviewer, which then judges its own
+      # findings (#29). claude-sonnet-5, not 5.5: v1.2.1 gets a 400 from
+      # sonnet-5-5 (it rejects the forced tool call tri-review uses), and on a
+      # measured PR sonnet-5 was also the reviewer that found the most (#35).
+      #
+      # The council-gpt and council-claude panels are one provider each, for
+      # comparing providers. Their agreement is weaker evidence than a mixed
+      # panel's, since models from one provider tend to miss the same things.
+      - name: Pick the panel
+        id: panel
+        env:
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          # The `if` compares labels ignoring case, as Actions expressions do;
+          # match the same way so a capitalised label is not admitted there
+          # and then rejected here.
+          case "$(printf '%s' "$LABEL" | tr '[:upper:]' '[:lower:]')" in
+            tri-review:council-gpt)
+              reviewers="gpt-6-sol@high gpt-5.6-sol@high gpt-6-astra@medium"
+              synthesizer="gpt-6.1-sol@medium" ;;
+            tri-review:council-claude)
+              # Only opus-5 and sonnet-5 are known to work here (see above),
+              # so the synthesizer is a reviewer at lower effort and does
+              # judge findings its own model made.
+              reviewers="claude-opus-5@high claude-sonnet-5@high"
+              synthesizer="claude-opus-5@medium" ;;
+            tri-review:council-cross)
+              # One reviewer per provider. Gemini gets no @effort suffix:
+              # unsuffixed it runs at high, and lower levels were measured
+              # returning empty reviews (providers.caveat_for).
+              reviewers="gpt-6-sol@high claude-opus-5@high gemini-3.8-flash"
+              synthesizer="gpt-6.1-sol@medium" ;;
+            tri-review:deep)
+              reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high"
+              synthesizer="gpt-6-astra@medium" ;;
+            "" | tri-review:again)
+              reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-sonnet-5"
+              synthesizer="gpt-6.1-sol@medium" ;;
+            *)
+              # Admitted by the job's `if` but missing here: the two lists
+              # have drifted. Fail rather than bill the default panel.
+              echo "::error::No panel for label $LABEL; add it to this case"
+              exit 1 ;;
+          esac
+          echo "Panel: $reviewers (report by $synthesizer)"
+          {
+            echo "reviewers=$reviewers"
+            echo "synthesizer=$synthesizer"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run tri-review on this PR
         uses: JairoE/tri-review@91d74fc24a4caeb44cc0aa22038a70c1953bb02c  # v1.2.1
         with:
           pr-number: ${{ github.event.pull_request.number }}
-          # Set explicitly rather than left to the defaults: unset, the
-          # synthesizer is the first reviewer, which then judges its own
-          # findings (#29). This one is not on the panel.
-          synthesizer: gpt-6.1-sol@medium
-          # Two OpenAI reviewers and one Anthropic, so agreement can cross a
-          # provider boundary. claude-sonnet-5, not 5.5: v1.2.1 gets a 400 from
-          # sonnet-5-5 (it rejects the forced tool call tri-review uses), and on
-          # a measured PR sonnet-5 was also the reviewer that found the most (#35).
-          reviewers: |
-            gpt-6-sol@high
-            gpt-5.6-sol@high
-            claude-sonnet-5
-          # Two reviews per PR; the tri-review:again label forces one more.
+          synthesizer: ${{ steps.panel.outputs.synthesizer }}
+          # Space-separated on purpose: the Action word-splits this input on
+          # any whitespace (`for m in $INPUT_MODELS` in action.yml), so one
+          # line or one model per line are the same to it.
+          reviewers: ${{ steps.panel.outputs.reviewers }}
+          # Two reviews per PR; any of the labels above forces one more.
           max-reviews: 2
           force: ${{ github.event.action == 'labeled' }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -104,9 +157,16 @@ jobs:
 
       # Take the label back off so adding it again is the next request. `|| true`:
       # a re-run of this job, or a hand removal, leaves nothing to delete, and
-      # that must not turn a finished review red.
-      - name: Remove tri-review:again label
-        if: always() && github.event.action == 'labeled'
+      # that must not turn a finished review red. Kept when "Pick the panel"
+      # failed: a label with no panel stays on the PR as the visible sign that
+      # the `if` list and the `case` have drifted.
+      #
+      # Known gap: GitHub keeps one pending run per concurrency group, so two
+      # labels added while a review runs can drop the earlier request before
+      # this step ever runs for it, leaving its label on. Add it again.
+      - name: Remove the trigger label
+        if: always() && github.event.action == 'labeled' && steps.panel.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/tri-review:again" || true
+          LABEL: ${{ github.event.label.name }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/$LABEL" || true
