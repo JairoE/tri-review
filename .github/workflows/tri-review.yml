@@ -84,7 +84,7 @@ jobs:
       # after merging changes CI should review with; until then, merged work
       # does not reach CI at all (it sat at v1.0.0 through three merges once).
       # Which models review this run, chosen by the label that triggered it.
-      # Pushes, tri-review:again and anything unmatched get the default panel.
+      # Pushes and tri-review:again get the default panel.
       # The label name goes in through env, never spliced into the script.
       #
       # Default: two OpenAI reviewers and one Anthropic, so agreement can cross
@@ -121,9 +121,14 @@ jobs:
             tri-review:deep)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high"
               synthesizer="gpt-6-astra@medium" ;;
-            *)
+            "" | tri-review:again)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-sonnet-5"
               synthesizer="gpt-6.1-sol@medium" ;;
+            *)
+              # Admitted by the job's `if` but missing here: the two lists
+              # have drifted. Fail rather than bill the default panel.
+              echo "::error::No panel for label $LABEL; add it to this case"
+              exit 1 ;;
           esac
           echo "Panel: $reviewers (report by $synthesizer)"
           {

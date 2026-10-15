@@ -263,8 +263,11 @@ jobs:
             tri-review:deep)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high"
               synthesizer="gpt-6-astra@medium" ;;
-            *)
+            "" | tri-review:again)
               reviewers="" synthesizer="" ;;  # empty means the default
+            *)
+              echo "::error::No panel for label $LABEL"
+              exit 1 ;;
           esac
           echo "reviewers=$reviewers" >> "$GITHUB_OUTPUT"
           echo "synthesizer=$synthesizer" >> "$GITHUB_OUTPUT"
@@ -290,7 +293,7 @@ jobs:
 - A one-provider panel is for comparing providers. Its agreement means less than a mixed panel's, because models from one provider tend to miss the same things.
 - Set the synthesizer to a model that isn't on the panel when you can. Otherwise it judges findings from its own model. `council-claude` breaks this rule because only `claude-opus-5` and `claude-sonnet-5` are known to work: `claude-sonnet-5-5` returns a 400 error on the tool call tri-review uses.
 - Leave Gemini without an `@effort` suffix. tri-review runs it at `high` by default, and lower levels were measured returning empty reviews.
-- Change the panels to suit your keys and budget. Every label needs a matching entry in both the `if:` list and the `case`.
+- Change the panels to suit your keys and budget. Every label needs a matching entry in both the `if:` list and the `case`. A label in the `if:` list but missing from the `case` fails the run instead of quietly using the default panel.
 
 ### Capping reviews per PR
 
