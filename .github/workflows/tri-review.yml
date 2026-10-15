@@ -102,7 +102,10 @@ jobs:
         env:
           LABEL: ${{ github.event.label.name }}
         run: |
-          case "$LABEL" in
+          # The `if` compares labels ignoring case, as Actions expressions do;
+          # match the same way so a capitalised label is not admitted there
+          # and then rejected here.
+          case "$(printf '%s' "$LABEL" | tr '[:upper:]' '[:lower:]')" in
             tri-review:council-gpt)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high gpt-6-astra@medium"
               synthesizer="gpt-6.1-sol@medium" ;;

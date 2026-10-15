@@ -250,7 +250,7 @@ jobs:
         env:
           LABEL: ${{ github.event.label.name }}
         run: |
-          case "$LABEL" in
+          case "$(printf '%s' "$LABEL" | tr '[:upper:]' '[:lower:]')" in
             tri-review:council-gpt)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high gpt-6-astra@medium"
               synthesizer="gpt-6.1-sol@medium" ;;
