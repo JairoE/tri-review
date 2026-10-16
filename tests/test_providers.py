@@ -458,6 +458,61 @@ def test_anthropic_without_effort_is_the_call_it_always_was(monkeypatch):
     assert payload.get("output_config") is None
 
 
+def test_anthropic_sends_a_top_level_cache_breakpoint_by_default(monkeypatch):
+    """Automatic caching: the API puts the breakpoint on the last block, the
+    payload, so a retried or re-run review reads the whole request from cache."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("TRI_REVIEW_PROMPT_CACHE", raising=False)
+    payload = build_llm("claude-sonnet-5")._get_request_payload(_messages())
+    assert payload["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_cache_breakpoint_carries_a_one_hour_ttl_when_asked(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", "1h")
+    payload = build_llm("claude-sonnet-5")._get_request_payload(_messages())
+    assert payload["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_anthropic_prompt_cache_off_sends_no_cache_control(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", "0")
+    payload = build_llm("claude-sonnet-5")._get_request_payload(_messages())
+    assert "cache_control" not in payload
+
+
+def test_anthropic_cache_breakpoint_leaves_effort_and_thinking_alone(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("TRI_REVIEW_PROMPT_CACHE", raising=False)
+    payload = build_llm("claude-opus-5@high")._get_request_payload(_messages())
+    assert payload["cache_control"] == {"type": "ephemeral"}
+    assert payload["output_config"] == {"effort": "high"}
+    assert payload["thinking"]["type"] == "adaptive"
+
+
+@pytest.mark.parametrize(
+    "spec, client, key",
+    [
+        ("gpt-5.1", "langchain_openai.ChatOpenAI", "OPENAI_API_KEY"),
+        ("gemini-3.8-flash", "langchain_google_genai.ChatGoogleGenerativeAI", "GOOGLE_API_KEY"),
+    ],
+)
+def test_other_providers_never_receive_cache_control(monkeypatch, spec, client, key):
+    """cache_control is an Anthropic field; it stays in that branch."""
+    monkeypatch.setenv(key, "k")
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", "1h")
+    monkeypatch.setattr(client, _CapturingClient)
+    build_llm(spec)
+    assert "cache_control" not in repr(_CapturingClient.last_kwargs)
+
+
+def test_unknown_prompt_cache_value_fails_the_build(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", "forever")
+    with pytest.raises(ValueError, match="TRI_REVIEW_PROMPT_CACHE"):
+        build_llm("claude-sonnet-5")
+
+
 @pytest.mark.parametrize("spec, level", [("gemini-3.8-flash@low", "LOW"), ("gemini-3.8-flash", "HIGH")])
 def test_google_sends_thinking_level_on_the_wire(monkeypatch, spec, level):
     """Answers the review's doubt: `reasoning_effort` and `thinking_level` are

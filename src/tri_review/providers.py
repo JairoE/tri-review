@@ -269,12 +269,38 @@ def build_llm(spec: str | ModelSpec):
         # malformed ANTHROPIC_API_KEY secret (see _cleaned_api_key above),
         # not flakiness -- retries can't fix a deterministic bad header, so
         # this alone was never the real fix, just a reasonable one to keep.
+        #
+        # Prompt caching: one top-level automatic breakpoint, which the API
+        # places on the last cacheable block -- the PR payload -- so tools +
+        # system + payload are cached as a single entry. That whole request is
+        # what repeats: an SDK retry (the max_retries above, and the timeout)
+        # re-sends it verbatim, as do same-SHA CI re-runs and `--fresh`.
+        #
+        # Do not "fix" this by caching the system prompt instead. Tool schema
+        # plus REVIEW_PROMPT is ~460 tokens, under the minimum cacheable prefix
+        # (1024 on claude-sonnet-5, 512 on Opus 5 / Sonnet 5.5 / Opus 5.5), so
+        # a breakpoint there silently caches nothing.
+        #
+        # The trade: a write costs 1.25x input (5m TTL) or 2x (1h), a read
+        # 0.1x. At 5m it pays off once more than ~28% of requests repeat
+        # inside the window (1.25N + 0.1R < N + R); a request never repeated
+        # costs 25% more input. Prefixes under the minimum are not cached and
+        # not charged the premium, so a tiny PR cannot lose.
+        # TRI_REVIEW_PROMPT_CACHE=0 turns it off.
+        cache_ttl = config.prompt_cache_ttl()
+        cache_control = None
+        if cache_ttl is not None:
+            # 5m is the API's default TTL, so it is left implicit on the wire.
+            cache_control = {"type": "ephemeral"}
+            if cache_ttl != "5m":
+                cache_control["ttl"] = cache_ttl
         return ChatAnthropic(
             model=model_name,
             timeout=timeout,
             max_retries=2,
             max_tokens=8000 if effort is None else 32_000,
             **({"effort": effort} if effort is not None else {}),
+            **({"model_kwargs": {"cache_control": cache_control}} if cache_control else {}),
             **_cleaned_api_key("ANTHROPIC_API_KEY"),
         )
     if provider == "google":

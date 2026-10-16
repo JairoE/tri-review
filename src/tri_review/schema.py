@@ -117,6 +117,12 @@ class ReviewResult(BaseModel):
     # Findings this model returned that did not match the schema and were set
     # aside, one line each (see ReviewOutput._set_aside_malformed).
     malformed_findings: list[str] = Field(default_factory=list)
+    # Provider-side prompt cache usage for this call, where the provider
+    # reports it (Anthropic does). None means no signal, not zero. The only
+    # ground truth that caching is working: a miss still succeeds, it just
+    # costs more.
+    prompt_cache_read_tokens: int | None = None
+    prompt_cache_write_tokens: int | None = None
 
     @property
     def ok(self) -> bool:

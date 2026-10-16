@@ -342,6 +342,8 @@ jobs:
 - With `post-comment: false`, the cap never triggers.
 - If the PR's comments can't be read, the run goes ahead with a warning.
 
+**Anthropic prompt caching** is separate from the local cache above. The local cache replays a finished review for free. Prompt caching makes re-sending the same bytes to Anthropic cheaper, for example an SDK retry after a timeout, a CI re-run on the same head SHA, or `--fresh`. Each Anthropic request is marked cacheable, which costs 25% more input the first time and 90% less on a repeat within 5 minutes. A prompt under the model's minimum cacheable size (1024 tokens on `claude-sonnet-5`) is not cached and not charged extra. Each Anthropic reviewer line shows `(prompt cache: read N / wrote M)` so you can see whether it hit. Set `TRI_REVIEW_PROMPT_CACHE=1h` to keep entries for an hour (writes cost 2x), or `0` to turn caching off. In the Action, set it under the step's `env:`.
+
 ## Configuration
 
 Environment variables. Defaults are in [`src/tri_review/config.py`](src/tri_review/config.py).
@@ -358,6 +360,7 @@ Environment variables. Defaults are in [`src/tri_review/config.py`](src/tri_revi
 | `TRI_REVIEW_EXCLUDE` | built-in set | Comma- or newline-separated globs that replace the default exclude set |
 | `TRI_REVIEW_HISTORY_DIR` | `$XDG_CACHE_HOME/tri-review`, else `~/.cache/tri-review` | Where stored reports and cached reviewer calls live |
 | `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long cached reviewer calls last. `0` = never expire |
+| `TRI_REVIEW_PROMPT_CACHE` | `5m` | Anthropic prompt cache TTL: `5m`, `1h`, or `0`/`off` to disable |
 | `TRI_REVIEW_TRIAGE` | unset | `1` turns on triage for every run |
 | `TRI_REVIEW_TRIAGE_MODEL` | model C | Model used for triage |
 

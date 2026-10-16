@@ -163,6 +163,26 @@ def google_timeout() -> int:
     return 300
 
 
+def prompt_cache_ttl() -> str | None:
+    """TTL for Anthropic prompt caching, or None to send no cache_control.
+
+    Default on at 5m: the repeats this pays for are SDK retries seconds apart
+    and same-SHA re-runs inside a few minutes. `1h` suits workflows that
+    re-run the same commit within the hour, at a 2x write instead of 1.25x.
+    See providers.build_llm for what gets cached and why.
+    """
+    raw = (os.environ.get("TRI_REVIEW_PROMPT_CACHE") or "").strip().lower()
+    if raw in ("", "5m"):
+        return "5m"
+    if raw == "1h":
+        return "1h"
+    if raw in ("0", "off", "false"):
+        return None
+    raise ValueError(
+        f"TRI_REVIEW_PROMPT_CACHE must be one of 5m, 1h, 0, off, false; got {raw!r}"
+    )
+
+
 def estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 

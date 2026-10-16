@@ -31,6 +31,29 @@ def test_non_integer_env_raises(monkeypatch):
         config.model_timeout()
 
 
+def test_prompt_cache_defaults_to_five_minutes(monkeypatch):
+    monkeypatch.delenv("TRI_REVIEW_PROMPT_CACHE", raising=False)
+    assert config.prompt_cache_ttl() == "5m"
+
+
+@pytest.mark.parametrize(
+    "raw, ttl",
+    [("", "5m"), ("  ", "5m"), ("5m", "5m"), ("1h", "1h"), ("1H", "1h"),
+     ("0", None), ("off", None), ("false", None), (" OFF ", None)],
+)
+def test_prompt_cache_env(monkeypatch, raw, ttl):
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", raw)
+    assert config.prompt_cache_ttl() == ttl
+
+
+@pytest.mark.parametrize("raw", ["on", "true", "10m", "60"])
+def test_prompt_cache_rejects_unknown_values(monkeypatch, raw):
+    """`true` is refused rather than read as on: it would not say which TTL."""
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", raw)
+    with pytest.raises(ValueError, match="5m, 1h, 0, off, false"):
+        config.prompt_cache_ttl()
+
+
 def test_estimate_tokens():
     assert config.estimate_tokens("a" * 400) == 100
 

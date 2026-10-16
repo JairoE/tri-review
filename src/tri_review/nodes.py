@@ -137,6 +137,9 @@ def review_with(
         hit = cache.load(key)
         if hit is not None:
             hit.cached = True
+            # No request was made, so the stored run's prompt cache usage
+            # says nothing about this one.
+            hit.prompt_cache_read_tokens = hit.prompt_cache_write_tokens = None
             return hit
 
     try:
@@ -164,11 +167,14 @@ def review_with(
                 error=_all_malformed_error(malformed),
                 malformed_findings=malformed,
             )
+        cache_read, cache_write = _prompt_cache_usage(raw_result["raw"])
         result = ReviewResult(
             model=model_name,
             findings=findings,
             malformed_findings=malformed,
             low_confidence_reason=_low_confidence_reason(raw_result["raw"], findings),
+            prompt_cache_read_tokens=cache_read,
+            prompt_cache_write_tokens=cache_write,
         )
     except Exception as exc:  # noqa: BLE001 - one flaky provider must not abort the run
         # Deliberately not cached. Storing a failure would make the retry this
@@ -244,6 +250,30 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
             "inconclusive rather than as a verified clean pass"
         )
     return None
+
+
+# Where langchain-anthropic puts cache writes. When the API reports the per-TTL
+# breakdown it zeroes the generic `cache_creation` key and moves the count to
+# the ephemeral_* keys, so reading `cache_creation` alone shows a write as 0.
+_CACHE_WRITE_KEYS = ("cache_creation", "ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+
+
+def _prompt_cache_usage(raw_message) -> tuple[int | None, int | None]:
+    """(cache read, cache write) input tokens, or None for whichever wasn't reported.
+
+    Read as defensively as `_low_confidence_reason`: an absent or unexpected
+    shape is no signal, never a failure.
+    """
+    usage = getattr(raw_message, "usage_metadata", None)
+    details = usage.get("input_token_details") if isinstance(usage, dict) else None
+    if not isinstance(details, dict):
+        return None, None
+    read = details.get("cache_read")
+    writes = [details[k] for k in _CACHE_WRITE_KEYS if isinstance(details.get(k), int)]
+    return (
+        read if isinstance(read, int) else None,
+        sum(writes) if writes else None,
+    )
 
 
 def _all_malformed_error(malformed: list[str]) -> str:
