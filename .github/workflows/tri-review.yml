@@ -140,7 +140,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Run tri-review on this PR
-        uses: JairoE/tri-review@91d74fc24a4caeb44cc0aa22038a70c1953bb02c  # v1.2.1
+        uses: JairoE/tri-review@d863f336e7a82d130640e6cc83448fabf0dfafb3  # main after #40 (prompt caching)
         with:
           pr-number: ${{ github.event.pull_request.number }}
           synthesizer: ${{ steps.panel.outputs.synthesizer }}
