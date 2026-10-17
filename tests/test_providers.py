@@ -4,6 +4,7 @@ from tri_review.providers import (
     EFFORT_LEVELS,
     ModelSpec,
     _cleaned_api_key,
+    _openai_has_cache_options,
     build_llm,
     caveat_for,
     provider_of,
@@ -504,6 +505,52 @@ def test_other_providers_never_receive_cache_control(monkeypatch, spec, client, 
     monkeypatch.setattr(client, _CapturingClient)
     build_llm(spec)
     assert "cache_control" not in repr(_CapturingClient.last_kwargs)
+
+
+def test_openai_caches_by_default_without_being_told_to(monkeypatch):
+    """GPT-5.6+ caches implicitly; on by default means nothing on the wire."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("TRI_REVIEW_PROMPT_CACHE", raising=False)
+    payload = build_llm("gpt-5.6-terra")._get_request_payload(_messages())
+    assert "prompt_cache_options" not in payload
+
+
+def test_openai_prompt_cache_off_sends_explicit_mode_on_gpt_5_6(monkeypatch):
+    """Explicit mode with no breakpoints is how GPT-5.6+ caching is turned off."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", "0")
+    payload = build_llm("gpt-5.6-terra@high")._get_request_payload(_messages())
+    assert payload["prompt_cache_options"] == {"mode": "explicit"}
+    assert payload["reasoning_effort"] == "high"
+
+
+@pytest.mark.parametrize("spec", ["gpt-5.5", "o3", "ft:gpt-4o-mini:org::id"])
+def test_openai_prompt_cache_off_sends_nothing_before_gpt_5_6(monkeypatch, spec):
+    """Older models reject prompt_cache_options with a 400 and charge no write
+    premium, so turning the cache off leaves them alone."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("TRI_REVIEW_PROMPT_CACHE", "0")
+    payload = build_llm(spec)._get_request_payload(_messages())
+    assert "prompt_cache_options" not in payload
+
+
+@pytest.mark.parametrize(
+    "model, supported",
+    [
+        ("gpt-5.6-luna", True),
+        ("gpt-6", True),
+        ("gpt-6.1-sol", True),
+        ("gpt-5.10", True),
+        ("ft:gpt-5.6-terra:x::y", True),
+        ("gpt-5.5", False),
+        ("gpt-5", False),
+        ("gpt-4.1", False),
+        ("o4-mini", False),
+        ("my-finetune", False),
+    ],
+)
+def test_openai_cache_options_are_gated_on_gpt_5_6(model, supported):
+    assert _openai_has_cache_options(model) is supported
 
 
 def test_unknown_prompt_cache_value_fails_the_build(monkeypatch):

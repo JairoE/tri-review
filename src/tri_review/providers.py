@@ -14,6 +14,7 @@ without importing the review machinery.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from . import config
@@ -210,6 +211,22 @@ def _cleaned_api_key(*env_vars: str) -> dict[str, str]:
     return {"api_key": ""} if blank else {}
 
 
+_OPENAI_VERSION = re.compile(r"^(?:ft:)?gpt-(\d+)(?:\.(\d+))?")
+
+
+def _openai_has_cache_options(model_name: str) -> bool:
+    """Whether this OpenAI model accepts `prompt_cache_options` (GPT-5.6+).
+
+    Read from the ID, fine-tunes included. Anything that does not parse as a
+    versioned GPT (o3, o4-mini, an unprefixed fine-tune name) is treated as
+    not supporting it, so it is sent nothing and keeps OpenAI's default.
+    """
+    match = _OPENAI_VERSION.match(model_name)
+    if match is None:
+        return False
+    return (int(match.group(1)), int(match.group(2) or 0)) >= (5, 6)
+
+
 def build_llm(spec: str | ModelSpec):
     """Construct a chat model from its spec, choosing the client by provider.
 
@@ -239,11 +256,30 @@ def build_llm(spec: str | ModelSpec):
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
+        # Prompt caching is on by default here; nothing is sent to enable it.
+        # On GPT-5.6+ the default is one implicit breakpoint on the latest
+        # message -- the PR payload, the same placement chosen by hand for
+        # Anthropic -- held for 30m. Do not add an explicit breakpoint on the
+        # system prompt: at ~460 tokens it is under the 1024-token minimum.
+        #
+        # The trade matches Anthropic's: from GPT-5.6 a write costs 1.25x
+        # input and a read 0.1x, so it pays off once more than ~28% of
+        # requests repeat inside the window. TRI_REVIEW_PROMPT_CACHE=0 turns
+        # it off with explicit mode and no breakpoints -- measured live as no
+        # read and no write on either of two identical calls. 5m/1h are
+        # Anthropic TTLs with no OpenAI equivalent, so they send nothing.
+        #
+        # Models before 5.6 get nothing at all: they charge no write premium,
+        # so there is nothing to save, and they reject prompt_cache_options
+        # outright (gpt-5.5 answered 400 invalid_parameter), which would fail
+        # the reviewer.
+        cache_off = config.prompt_cache_ttl() is None and _openai_has_cache_options(model_name)
         return ChatOpenAI(
             model=model_name,
             timeout=timeout,
             max_retries=1,
             **({"reasoning_effort": effort} if effort is not None else {}),
+            **({"prompt_cache_options": {"mode": "explicit"}} if cache_off else {}),
             **_cleaned_api_key("OPENAI_API_KEY"),
         )
     if provider == "anthropic":

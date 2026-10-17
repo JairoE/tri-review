@@ -164,12 +164,14 @@ def google_timeout() -> int:
 
 
 def prompt_cache_ttl() -> str | None:
-    """TTL for Anthropic prompt caching, or None to send no cache_control.
+    """TTL for Anthropic prompt caching, or None to turn prompt caching off.
 
     Default on at 5m: the repeats this pays for are SDK retries seconds apart
     and same-SHA re-runs inside a few minutes. `1h` suits workflows that
     re-run the same commit within the hour, at a 2x write instead of 1.25x.
-    See providers.build_llm for what gets cached and why.
+    The TTL is Anthropic's alone; None also turns off GPT-5.6+'s automatic
+    caching, the one other cache here that charges for writes. See
+    providers.build_llm for what gets cached and why.
     """
     raw = (os.environ.get("TRI_REVIEW_PROMPT_CACHE") or "").strip().lower()
     if raw in ("", "5m"):
