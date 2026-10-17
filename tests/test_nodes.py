@@ -193,6 +193,28 @@ def test_prompt_cache_write_counts_the_per_ttl_keys(ttl_key):
 
 
 @pytest.mark.parametrize(
+    "details, read, write",
+    [
+        # langchain-openai, default tier: cached_tokens / cache_write_tokens.
+        ({"audio": 0, "cache_read": 4_037, "cache_creation": 0}, 4_037, 0),
+        # Priority/flex tier: both keys prefixed, plus a per-tier input count.
+        ({"priority_cache_read": 0, "priority_cache_creation": 49_227, "priority": 51_000}, 0, 49_227),
+        ({"flex_cache_read": 12_000, "flex": 30_000}, 12_000, None),
+        # langchain-google-genai: reads only, never a write key.
+        ({"cache_read": 0}, 0, None),
+    ],
+)
+def test_prompt_cache_usage_reads_every_providers_keys(details, read, write):
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[_finding()]),
+        usage_metadata={"input_token_details": details},
+    )
+    result = review_with("fake-model", "payload", llm_builder=lambda _: llm, use_cache=False)
+    assert result.prompt_cache_read_tokens == read
+    assert result.prompt_cache_write_tokens == write
+
+
+@pytest.mark.parametrize(
     "usage",
     [
         None,
