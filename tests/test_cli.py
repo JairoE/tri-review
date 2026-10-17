@@ -259,6 +259,17 @@ def test_prompt_cache_usage_is_shown_when_the_provider_reported_it(capsys):
     assert "prompt cache: read 41000 / wrote 0" in capsys.readouterr().out
 
 
+def test_a_provider_that_reports_no_writes_is_not_shown_writing_zero(capsys):
+    from tri_review.cli import _print_result
+    from tri_review.schema import ReviewResult
+
+    _print_result(ReviewResult(model="gemini", prompt_cache_read_tokens=0))
+
+    out = capsys.readouterr().out
+    assert "prompt cache: read 0)" in out
+    assert "wrote" not in out
+
+
 def test_prompt_cache_usage_is_omitted_when_nothing_was_reported(capsys):
     from tri_review.cli import _print_result
     from tri_review.schema import ReviewResult

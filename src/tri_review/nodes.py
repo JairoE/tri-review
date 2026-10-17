@@ -252,9 +252,14 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
     return None
 
 
-# Where langchain-anthropic puts cache writes. When the API reports the per-TTL
-# breakdown it zeroes the generic `cache_creation` key and moves the count to
-# the ephemeral_* keys, so reading `cache_creation` alone shows a write as 0.
+# Where cache writes are reported. langchain-anthropic zeroes the generic
+# `cache_creation` key when the API reports the per-TTL breakdown and moves the
+# count to the ephemeral_* keys, so reading `cache_creation` alone shows a
+# write as 0. langchain-openai prefixes both keys with the service tier on
+# priority and flex (`priority_cache_read`), which a project's default tier can
+# select without tri-review asking for it -- hence the suffix match below.
+# langchain-google-genai reports reads only; Gemini's implicit cache has no
+# write to report.
 _CACHE_WRITE_KEYS = ("cache_creation", "ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
 
 
@@ -268,10 +273,11 @@ def _prompt_cache_usage(raw_message) -> tuple[int | None, int | None]:
     details = usage.get("input_token_details") if isinstance(usage, dict) else None
     if not isinstance(details, dict):
         return None, None
-    read = details.get("cache_read")
-    writes = [details[k] for k in _CACHE_WRITE_KEYS if isinstance(details.get(k), int)]
+    counts = [(k, v) for k, v in details.items() if isinstance(k, str) and isinstance(v, int)]
+    reads = [v for k, v in counts if k == "cache_read" or k.endswith("_cache_read")]
+    writes = [v for k, v in counts if k in _CACHE_WRITE_KEYS or k.endswith("_cache_creation")]
     return (
-        read if isinstance(read, int) else None,
+        sum(reads) if reads else None,
         sum(writes) if writes else None,
     )
 

@@ -709,9 +709,10 @@ def _print_result(result, via=console) -> None:
         cache_read = getattr(result, "prompt_cache_read_tokens", None)
         cache_write = getattr(result, "prompt_cache_write_tokens", None)
         if cache_read is not None or cache_write is not None:
-            suffix += (
-                f" [dim](prompt cache: read {cache_read or 0} / wrote {cache_write or 0})[/dim]"
-            )
+            # A provider that reports no writes (Gemini, GPT before 5.6) has
+            # none to report, so "wrote 0" would claim something it never said.
+            wrote = f" / wrote {cache_write}" if cache_write is not None else ""
+            suffix += f" [dim](prompt cache: read {cache_read or 0}{wrote})[/dim]"
         low_confidence = getattr(result, "low_confidence_reason", None)
         if not result.findings and low_confidence:
             via.print(
