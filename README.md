@@ -342,7 +342,13 @@ jobs:
 - With `post-comment: false`, the cap never triggers.
 - If the PR's comments can't be read, the run goes ahead with a warning.
 
-**Anthropic prompt caching** is separate from the local cache above. The local cache replays a finished review for free. Prompt caching makes re-sending the same bytes to Anthropic cheaper, for example an SDK retry after a timeout, a CI re-run on the same head SHA, or `--fresh`. Each Anthropic request is marked cacheable, which costs 25% more input the first time and 90% less on a repeat within 5 minutes. A prompt under the model's minimum cacheable size (1024 tokens on `claude-sonnet-5`) is not cached and not charged extra. Each Anthropic reviewer line shows `(prompt cache: read N / wrote M)` so you can see whether it hit. Set `TRI_REVIEW_PROMPT_CACHE=1h` to keep entries for an hour (writes cost 2x), or `0` to turn caching off. In the Action, set it under the step's `env:`.
+**Provider prompt caching** is separate from the local cache above. The local cache replays a finished review for free. Prompt caching makes re-sending the same bytes to a provider cheaper, for example an SDK retry after a timeout, a CI re-run on the same head SHA, or `--fresh`. Each provider handles it differently:
+
+- **Anthropic:** tri-review marks each request cacheable. The first send costs more input and a repeat within 5 minutes costs much less. A prompt under the model's minimum cacheable size is not cached and not charged extra. `TRI_REVIEW_PROMPT_CACHE=1h` keeps entries for an hour, at a higher write price.
+- **OpenAI GPT-5.6 and later:** cached automatically, with no setting from tri-review. Writes cost more than plain input and entries last 30 minutes.
+- **OpenAI before GPT-5.6, and Gemini:** cached automatically with no write premium. There is nothing to turn off.
+
+Each reviewer line shows `(prompt cache: read N / wrote M)`, or just `read N` for providers that report no writes, so you can see whether it hit. Set `TRI_REVIEW_PROMPT_CACHE=0` to turn caching off on Anthropic and GPT-5.6+. In the Action, set it under the step's `env:`. For current prices see [Anthropic](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching), [OpenAI](https://platform.openai.com/docs/guides/prompt-caching) and [Gemini](https://ai.google.dev/gemini-api/docs/caching).
 
 ## Configuration
 
@@ -360,7 +366,7 @@ Environment variables. Defaults are in [`src/tri_review/config.py`](src/tri_revi
 | `TRI_REVIEW_EXCLUDE` | built-in set | Comma- or newline-separated globs that replace the default exclude set |
 | `TRI_REVIEW_HISTORY_DIR` | `$XDG_CACHE_HOME/tri-review`, else `~/.cache/tri-review` | Where stored reports and cached reviewer calls live |
 | `TRI_REVIEW_CACHE_TTL_DAYS` | `14` | How long cached reviewer calls last. `0` = never expire |
-| `TRI_REVIEW_PROMPT_CACHE` | `5m` | Anthropic prompt cache TTL: `5m`, `1h`, or `0`/`off` to disable |
+| `TRI_REVIEW_PROMPT_CACHE` | `5m` | Prompt cache: Anthropic TTL `5m`/`1h`; `0`/`off` disables caching on Anthropic and GPT-5.6+ |
 | `TRI_REVIEW_TRIAGE` | unset | `1` turns on triage for every run |
 | `TRI_REVIEW_TRIAGE_MODEL` | model C | Model used for triage |
 
