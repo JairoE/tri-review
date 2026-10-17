@@ -4,9 +4,9 @@
 
 Rework how tri-review finds and reports issues so every finding is short, specific, and fixable:
 
-1. **Sharper findings.** Reviewers are asked to look for the bugs that matter and to give, for each one, the **problem**, the **trigger** that makes it fail, and the **fix**, in a few sentences each. A benchmark of known bugs measures recall before and after the change.
+1. **Sharper findings.** Reviewers are asked to look for the bugs that matter and to give, for each one, the **problem**, the **trigger** that makes it fail, and the **fix**, in a few sentences each. Reviewers also see the code that **uses** what the PR changes (callers and other references found with `git grep`), so they can catch breakage outside the diff. A benchmark of known bugs measures recall before and after, and phase 1 ships only if it finds at least two more of them.
 2. **Code highlights.** Each finding names the line range its fix starts at, checked against the PR head. Where a reviewer proposed exact replacement code, the report shows it as a diff.
-3. **Apply on GitHub.** In phase 1, findings with a checked, exact fix are posted as inline review comments containing GitHub ```` ```suggestion ```` blocks, so the PR author can click **Commit suggestion**. In phase 2, a maintainer can comment `/tri-review apply F2 F5` and tri-review commits those fixes to the PR branch, including fixes on lines GitHub can't attach a suggestion to.
+3. **Apply on GitHub.** In phase 1, findings with a checked, exact fix are posted as inline review comments containing GitHub ```` ```suggestion ```` blocks, so the PR author can click **Commit suggestion**. In phase 2, a maintainer can comment `/tri-review apply F2 F5` and tri-review commits those fixes to the PR branch, including fixes on lines GitHub can't attach a suggestion to. A finding with no exact fix gets one written by a model. tri-review replies with that diff as a proposal, and commits it only after a maintainer replies `/tri-review confirm F5`.
 
 ## Problem and User Value
 
@@ -14,6 +14,7 @@ Today:
 
 - **Findings are uneven.** `REVIEW_PROMPT` asks for "bugs, security, logic and performance", and `Finding.detail` takes free text. Some findings are precise. Others are vague ("may cause issues"), have no stated trigger, and can't be checked without re-reading the diff.
 - **Line numbers are guesses.** The payload sends file contents without line numbers, so a reviewer has to work out a line from the diff's hunk headers. Nothing checks the `line` it returns, and wrong lines reach the report.
+- **Reviewers can't see what the change breaks elsewhere.** The payload holds the diff and the files it touches, nothing else. A renamed function, a new exception, or a changed return value breaks its callers, and those callers are usually in files the PR doesn't touch.
 - **The report is free-form prose.** The synthesizer writes the whole Markdown report itself. Consensus, severity, and the Blocking rules are enforced only by the prompt (`SYNTHESIS_PROMPT`), and nothing in the report is machine-readable. That is why there is no reliable way to point at a line or apply a fix.
 - **Fixing is all manual.** A reader has to copy a fix out of prose, find the line, and edit the file by hand.
 
@@ -22,27 +23,30 @@ Value: a reviewer reads less, trusts the lines, and applies most fixes with one 
 ## Goals
 
 - G1. Every reported finding states the problem, the trigger, and the fix, each in 1–3 sentences.
-- G2. Recall of known, seeded bugs on the benchmark does not regress, and the release notes report the before/after numbers.
+- G2. Benchmark recall of seeded bugs goes **up**: the panel finds at least 2 more cases than the baseline (R10.6), consensus recall does not drop, and findings per case at most double. The release notes report the before/after numbers.
 - G3. Every finding that has a location shows a file and a 1-indexed line range on the PR head. The report says whether that range was checked against the code.
 - G4. Consensus, severity, and tag invariants are computed in code from the reviewers' structured findings the synthesizer cites. Which findings describe the same bug stays the synthesizer's judgment, bounded by the same-file rule in R4.4.
 - G5. A finding with a checked, exact fix inside the diff can be applied from the GitHub UI with one click.
 - G6. (Phase 2) A maintainer can apply one or more checked fixes by ID from a PR comment, without checking the branch out.
+- G7. (Phase 2) Every finding tied to a file can be fixed from a comment. Findings without an exact fix get a model-written one, and a maintainer must confirm its exact diff before it's committed.
 
 ## Non-goals
 
-- Fixes written by a model at apply time. Phase 2 applies only the `replacement_code` that a reviewer produced and the report showed. A finding without one is refused with a reason.
+- Committing a model-written fix that no human has confirmed. A model-written fix is always proposed first, as an exact diff (R12.6).
 - One finding whose fix spans several files. A finding has one file and one contiguous line range.
 - Running tests, linters, or any PR code before or after applying a fix.
 - Applying fixes to PRs from forks (the token can't push there). Suggestions still work on forks wherever the Action can post comments.
 - Approving or requesting changes. Inline reviews are always posted with event `COMMENT`.
 - Changes to the web app (`web/`).
-- Multi-pass or agentic reviewing (for example, a second "verify each finding" call per reviewer). That's a candidate follow-up if the benchmark shows a precision problem.
+- Multi-pass or agentic reviewing (for example, a second "verify each finding" call per reviewer). Related-code context (R11) is the phase 1 recall lever because it adds no model calls. A second pass is the next candidate if R10.6 isn't met.
+- Related code in `--repo` mode without a local checkout. It needs `git grep` over the head commit (R11.1).
+- Semantic (type-aware) call-graph analysis. R11 matches names, so it can include false hits and miss dynamic calls.
 
 ## Users and Primary Flows
 
 **PR author (Action user).** Pushes a commit, then reads the tri-review report comment. Each finding has an ID (`F1`, `F2`, …), a tag, a location link, and Problem/Trigger/Fix. Consensus findings with a checked fix also show up as inline comments on the changed lines, and the author clicks **Commit suggestion**.
 
-**Maintainer (phase 2).** Reads the report and comments `/tri-review apply F1 F3` on the PR. tri-review reacts 👀, commits both fixes to the PR branch in one commit, and replies with the commit link and a per-ID result.
+**Maintainer (phase 2).** Reads the report and comments `/tri-review apply F1 F3` on the PR. F1 has an exact fix and F3 doesn't. tri-review reacts 👀, commits F1, and replies with the commit link plus a proposed diff for F3 that a model wrote. The maintainer reads the diff and replies `/tri-review confirm F3`, and tri-review commits it.
 
 **CLI user.** Runs `tri-review --repo o/n --pr 12` and gets the same per-finding report in the terminal. `--findings-json out.json` writes the machine-readable findings. `--suggest consensus` posts the inline suggestions from the CLI.
 
@@ -99,7 +103,7 @@ R2.6 Prompt caching (#40) is unaffected in design. The automatic breakpoint stil
 
 R3.1 After each reviewer returns, and for cached results too, every finding gets an **anchor**: `status` (`verified` \| `relocated` \| `unverified`), the final `line`/`end_line`, and `in_diff` (bool). The anchor is not part of the schema reviewers are shown (`SkipJsonSchema`, as with `ReviewOutput.malformed`).
 
-R3.2 The **source text** for `file` is its full contents from the review context when present. Otherwise, when the file was dropped for budget, it's the new-side lines in its diff hunks, which are known by line number.
+R3.2 The **source text** for `file` is its full contents from the review context when present. Otherwise, when the file was dropped for budget, it's the new-side lines in its diff hunks, which are known by line number. For a file that appears only as related code (R11), it's the snippet lines.
 
 R3.3 Comparing two pieces of code means comparing them line by line, after CRLF→LF and stripping trailing whitespace from each line.
 
@@ -252,13 +256,13 @@ R8.2 A replayed report writes `--findings-json` from the stored findings, and po
 
 ### R9. Apply command (phase 2)
 
-R9.1 New console script `tri-review-apply`, with no model calls and no provider keys:
+R9.1 New console script `tri-review-apply`. `apply` calls a model only to write fixes for findings that lack one (R12), and needs that model's provider key only then. `confirm` never calls a model.
 
 ```
 tri-review-apply --repo owner/name --pr N --comment-id ID --actor LOGIN --body-file FILE
 ```
 
-R9.2 **Grammar.** The first line of the comment, trimmed and matched case-insensitively, is `/tri-review apply` followed by one or more IDs (`F` plus digits), separated by spaces or commas. Anything else gets a reply explaining the usage, and nothing is applied.
+R9.2 **Grammar.** The first line of the comment, trimmed and matched case-insensitively, is `/tri-review apply` or `/tri-review confirm`, followed by one or more IDs (`F` plus digits), separated by spaces or commas. Anything else gets a reply explaining the usage, and nothing is applied.
 
 R9.3 **Authorization.** `gh api repos/{repo}/collaborators/{actor}/permission` must return `admin`, `maintain`, or `write`. Otherwise tri-review replies with a refusal and applies nothing.
 
@@ -270,13 +274,13 @@ R9.5 **Findings source.** Take the newest PR comment that:
 - starts with the report marker (`<!-- tri-review-report -->`), and
 - is a **report**, not a cap note (`<!-- tri-review-cap -->`), a "Nothing to review" skip, or a "failed to produce a report" comment. These kinds are told apart the same way `count_reviews` in `scripts/pr_comment.sh` does.
 
-Its **last line** must be `<!-- tri-review-findings:v1 <base64 JSON> -->`. If that newest report has no block (it was left out for size, or it has no applicable findings), reply saying so. Never fall back to an older report. The JSON holds `head_sha` and, for every applicable finding: `id`, `title`, `file`, `line`, `end_line`, `original_code`, `replacement_code`. The Action appends this line after all model-written text. Model-written text can't contain a raw `<!--` (R5.4).
+Its **last line** must be `<!-- tri-review-findings:v1 <base64 JSON> -->`. If that newest report has no block (it was left out for size, or it has no applicable findings), reply saying so. Never fall back to an older report. The JSON holds `head_sha` and, for every finding that names a file: `id`, `title`, `problem`, `trigger`, `fix`, `file`, `line`, `end_line`, `original_code`, `replacement_code`, and `applicable`. The prose fields are there because the fixer (R12.3) needs them for findings without an exact fix. The Action appends this line after all model-written text. Model-written text can't contain a raw `<!--` (R5.4).
 
 R9.6 **Per-ID checks**, against the file at the PR's current head:
 
 - The ID must be in the block. Otherwise: "F9 is not in the latest report".
-- It must be applicable. Otherwise: "F3 has no exact fix to apply".
-- Its `original_code` must still be found, using R3.4 steps 2–4 against the current file. Otherwise: "the code F2 changes has moved or changed since the review".
+- If it is applicable and its `original_code` is still found (R3.4 steps 2–4 against the current file), it's applied as an exact fix.
+- Otherwise (no exact fix, an unverified range, or code that moved or changed since the review), it goes to the fixer (R12) and is proposed rather than committed.
 - Two requested ranges in the same file must not overlap. If they do, the later ID is refused.
 - A file under `.github/workflows/` is refused: "F4 edits a workflow file, which the workflow token can't push". GitHub rejects such pushes without the `workflows` permission, and granting it is out of scope.
 - A file `fetch_file_content` can't read (binary, over 1 MB, or missing at head) is refused: "F6's file can't be read at the PR head".
@@ -297,6 +301,7 @@ R9.10 **Shipping.** Delivered as a second composite action at `apply/action.yml`
 - Trigger: `issue_comment: [created]`.
 - `if`: the issue is a PR and the comment starts with `/tri-review apply`.
 - Permissions: `contents: write`, `pull-requests: write`, `issues: write`.
+- Inputs: `github-token`, `fixer` (model spec, optional), and `openai-api-key` / `anthropic-api-key` / `google-api-key`. Without a key for the fixer's provider, IDs that need a fixer are refused: "no fixer model is configured for F3".
 - `concurrency` group per PR.
 
 ### R10. Benchmark
@@ -316,7 +321,84 @@ R10.4 Output is a Markdown table with:
 - Median words per finding.
 - The share of findings whose anchor is `verified` or `relocated`.
 
-R10.5 The baseline is run on the commit before the prompt change (R2) and committed as `bench/results/baseline.md`. The prompt-change PR commits `bench/results/after-prompt.md`.
+R10.5 The baseline is run on the commit before the prompt change (R2), with `--repeat 2` and related context off (it doesn't exist yet), and committed as `bench/results/baseline.md`. The prompt-change PR commits `bench/results/after-prompt.md`.
+
+R10.6 **Ship target.** Each case runs twice per reviewer (`--repeat 2`), and recall is the mean over the repeats, because one run per case is too noisy for a 10–12 case set. Phase 1 ships only if `after-prompt.md`, with related context on, shows all of:
+
+- panel recall at least **2 cases** above the baseline,
+- consensus recall not below the baseline, and
+- median findings per case no more than **2×** the baseline. More findings bought with noise isn't better recall.
+
+If the target is missed, iterate on the prompt (R2.4) and related context (R11), and record each attempt in `bench/results/`. Don't ship until it's met.
+
+R10.7 **Ablation.** `after-prompt.md` reports every metric with related context off and on, so the effect of R11 is visible separately from the prompt and payload changes.
+
+### R11. Related code context (phase 1)
+
+R11.1 **Availability.** On by default when the process runs inside a git repository that has the PR head commit (`git cat-file -e <head_sha>^{commit}` succeeds). That covers the Action, whose checkout is at the head, and local cwd runs. Elsewhere, for example `--repo` mode outside a checkout, it's skipped, and the run says "related context: unavailable (no local copy of <short sha>)". `--no-related-context`, `TRI_REVIEW_RELATED_CONTEXT=0`, or the Action input `related-context: false` turns it off.
+
+R11.2 **Symbols.** Names are collected from the diff in order, without duplicates:
+
+- Names **defined** on added or removed lines, matched by these patterns: `def NAME`, `class NAME`, `function NAME`, `func NAME` (including `func (r T) NAME`), `fn NAME`, and `(const|let|var) NAME = (async )?(function|\()`. Removed definitions count: callers of a renamed or deleted function are exactly what breaks.
+- The enclosing function named in each hunk header's section text (`@@ … @@ def NAME(`), when that text matches the same patterns.
+- Dropped: names shorter than 4 characters, names starting with `test_` or `Test`, and the stoplist `main`, `init`, `__init__`, `setup`, `run`, `get`, `set`, `update`, `render`, `handle`, `call`, `apply`, `create`.
+- At most 20 symbols.
+
+R11.3 **Search.** For each symbol, run `git grep -n -w -F -e <name> <head_sha> --` as an argv list, never through a shell. `-e` means a name can't be read as an option. Hits are dropped if they are:
+
+- in a file the diff touches (that file is already in the payload),
+- in a path matching the run's exclude patterns (`gating.matches_any`), or
+- in a path that fails `github.is_repo_relative`.
+
+Keep at most 3 hits per symbol, in path order, and 30 snippets in total.
+
+R11.4 **Snippets.** Each hit gives lines hit−10 to hit+10 of that file at the head commit, clipped to the file. Overlapping windows in one file are merged. Each snippet is rendered after the changed files' contents as ``## Related code: `<path>` lines a–b (uses `<name>`)``, numbered as in R2.1.
+
+R11.5 **Budget.** Snippets are added last, in symbol order, while the payload stays inside the token budget and snippets stay within **15%** of it. A changed file is never dropped to make room for a snippet. Snippets left out are counted, and the context note says "N related snippets omitted to fit the budget".
+
+R11.6 **Reporting.** `ReviewContext` gains `related` (the snippets). `ContextSummary` gains `related_snippets`, `related_omitted`, and `related_status` (`included`, `none found`, `off`, or `unavailable`). `--dry-run` and the run's context line print them.
+
+R11.7 **Prompt.** `REVIEW_PROMPT` says that related code shows where the changed names are used. Reviewers check that each use still holds under the change: arguments, return values, raised errors, and removed or renamed names. They report a breakage at the use site, with that file and line.
+
+R11.8 **Anchoring and fixing.** Snippet lines are source text for their file (R3.2), so a finding at a call site can be `verified` or `relocated`. It is never `in_diff`, so it can't be a suggestion, but it can be applied in phase 2.
+
+R11.9 **Cache.** Snippets are part of the payload, so the reviewer cache key and the Anthropic prompt-cache entry change whenever the snippets do. Nothing else needs to change.
+
+### R12. Model-written fixes (phase 2)
+
+R12.1 **When.** `/tri-review apply` sends an ID to the **fixer** when R9.6 routes it there and the finding names a file. The R9.6 refusals still apply first: unknown ID, overlapping range, workflow file, unreadable file. A finding with no file is refused: "F7 isn't tied to a file".
+
+R12.2 **Model.** Set by `--fixer SPEC`, the apply action's `fixer` input, or `TRI_REVIEW_FIXER`. The default is `TRI_REVIEW_SYNTHESIZER`, else the first configured reviewer slot (`config.model_a()`). One command makes at most **5** fixer calls. Any further ID needing one is refused: "at most 5 fixes per command can be written by a model".
+
+R12.3 **Input.** The fixer gets the finding (title, problem, trigger, fix, file, and line range if any) and that file's full contents at the current PR head, numbered as in R2.1. It sees no other file, no other finding, and no dismissal ledger. A file whose numbered contents exceed half the token budget is refused: "F3's file is too large for a model-written fix".
+
+R12.4 **Output.** Structured `FixOutput` holding either:
+
+- `line`, `end_line`, `original_code`, `replacement_code`, and `explanation` (1–2 sentences), for one contiguous range in that file, or
+- `cannot_fix` (the reason), which is relayed in the reply.
+
+R12.5 **Checks.** The proposal is dropped, and the reply says "couldn't produce a checked fix for F3: <reason>", unless all of these hold:
+
+- `original_code` is `verified` at `line`..`end_line` in the current file. Only R3.4 step 2 counts: the fixer saw numbered lines, so no relocation.
+- `replacement_code` differs from `original_code` after R3.3 normalization.
+- The larger of the original and replacement line counts is at most 60.
+
+A provider error is reported the same way. The command still exits `0`.
+
+R12.6 **Proposals, not commits.** A model-written fix is never committed by the command that produced it. tri-review replies with:
+
+- the ID, the location link, the fixer model, the escaped explanation (R5.4), and the diff, followed by "Reply `/tri-review confirm F3` to commit this fix."
+- A last line `<!-- tri-review-proposal:v1 <base64 JSON> -->` holding `id`, `head_sha` (the PR head the fix was written against), `file`, `line`, `end_line`, `original_code`, `replacement_code`, and `model`.
+
+R12.7 **Mixed commands.** One `/tri-review apply` can commit exact fixes (R9.7) and propose model fixes in the same reply.
+
+R12.8 **Confirm.** `/tri-review confirm F3` does all of the following:
+
+- Runs the R9.3 authorization and R9.4 fork checks. The confirmer doesn't have to be the requester.
+- Finds the newest proposal for F3 in a reply by the posting identity, posted after the latest report (R9.5). If there isn't one, it replies "no proposal for F3; run `/tri-review apply F3` first".
+- Requires the proposal's `head_sha` to equal the PR's current head. Otherwise it replies "the PR changed since this fix was proposed; run `/tri-review apply F3` again". An exact fix may be relocated, but a proposal may not, because the maintainer approved this diff at these lines.
+- Requires `original_code` to still be verified at the same lines.
+- Commits per R9.7, with `Requested-by: @<confirmer>` and a `Proposed-by: <model>` trailer, and replies as in R9.8. Confirm never calls a model, and it can't be skipped. There is no flag that commits a model fix directly.
 
 ## UX and Content
 
@@ -333,7 +415,8 @@ R10.5 The baseline is run on the commit before the prompt change (R2) and commit
   - `GET collaborators/{u}/permission`
   - `GET issues/{n}/comments`, `POST issues/{n}/comments`, `POST issues/comments/{id}/reactions`
   - `GET contents/{path}?ref=`, `GET git/trees/{sha}?recursive=1`, `POST git/blobs`, `POST git/trees`, `POST git/commits`, `PATCH git/refs/heads/{branch}`, `GET pulls/{n}`
-- **New CLI flags**: `--findings-json FILE`, `--suggest MODE`, `--max-suggestions N`. **New Action inputs**: `inline-suggestions`, `max-suggestions`. **New Action output**: `findings-path`.
+- **Fixer schema** `FixOutput`: R12.4. **Proposal block**: R12.6, version 1.
+- **New CLI flags**: `--findings-json FILE`, `--suggest MODE`, `--max-suggestions N`, `--no-related-context`; `tri-review-apply --fixer SPEC`. **New Action inputs**: `inline-suggestions`, `max-suggestions`, `related-context`; apply action `fixer` and the provider keys. **New Action output**: `findings-path`. **New env**: `TRI_REVIEW_RELATED_CONTEXT`, `TRI_REVIEW_FIXER`.
 
 ## Rules and Edge Cases
 
@@ -350,6 +433,9 @@ R10.5 The baseline is run on the commit before the prompt change (R2) and commit
   - Apply needs a human with write access to name the IDs.
   - Apply never runs code.
   - Model text can't forge the hidden block (R5.4, R9.5).
+  - The fixer also reads PR-author text, namely the file at head. Its output is never committed without a confirm by someone with write access, who has seen the exact diff. The edit is one range in one file, at most 60 lines, never in `.github/workflows/`, and must match the head the proposal was written against.
+- **Related code is name-based** (R11.2): a common name can pull in unrelated snippets, and dynamic calls are missed. The caps (20 symbols, 3 hits each, 30 snippets, 15% of budget) bound the cost of false hits.
+- **Shallow checkouts**: `actions/checkout` fetches one commit by default. `git grep <head_sha>` only needs that commit, so related context works without `fetch-depth: 0`.
 - **Comment size**: GitHub bodies are limited to 65,536 characters. If the report plus the hidden block would exceed 65,000, the block is left out and the report says fixes can't be applied by command for this report. An inline comment over the limit is skipped and noted.
 
 ## Acceptance Criteria
@@ -361,7 +447,7 @@ R10.5 The baseline is run on the commit before the prompt change (R2) and commit
    - a severity higher or lower than its sources,
    - Blocking for a minor or single-model finding, or one with a blank trigger or falsifier,
    - a reviewer finding missing from the report.
-4. **Benchmark.** `bench/results/after-prompt.md` panel recall ≥ `baseline.md` panel recall, on the same panel and cases.
+4. **Benchmark.** `bench/results/after-prompt.md` meets the R10.6 ship target against `baseline.md` (same panel, cases, and repeats), and reports the R10.7 ablation.
 5. **Suggestions.** With a stub `gh`:
    - `--suggest consensus` sends one review whose comments are exactly the suggestable consensus findings, with correct `line`/`start_line`/`side`.
    - A second identical run sends nothing.
@@ -372,27 +458,39 @@ R10.5 The baseline is run on the commit before the prompt change (R2) and commit
    - An unauthorized actor, a fork PR, an unknown ID, a non-applicable ID, moved code, overlapping ranges, and a moved branch each produce the specified reply and no commit.
    - A valid `/tri-review apply F1 F2` produces one commit whose tree changes only those ranges.
 8. **Replay.** A replayed v2 record writes the same findings JSON as the original run. A v1 record triggers a fresh review.
-9. **Injection.** A finding whose `problem` contains `<!-- tri-review-findings:v1 … -->` renders escaped, and `tri-review-apply` ignores it.
+9. **Injection.** A finding whose `problem` contains `<!-- tri-review-findings:v1 … -->` renders escaped, and `tri-review-apply` ignores it. The same holds for a proposal `explanation` containing `<!-- tri-review-proposal:v1 … -->`.
+10. **Related context.** Unit tests cover symbol extraction for each R11.2 pattern (including removed definitions and hunk-header names), the stoplist, and the caps. Search tests check that a symbol starting with `-` is passed after `-e`, and that hits in changed or excluded files are dropped. Window merging and the 15% budget rule are tested, and so is an `unavailable` status when the head commit is missing. A test also shows that a finding at a snippet line anchors as `verified` with `in_diff` false.
+11. **Model fixes.** With a stub `gh` and a stub fixer:
+    - An ID with no exact fix produces a proposal reply with the R12.6 block and no commit.
+    - A proposal failing each R12.5 check is dropped with its reason.
+    - The 5-call cap holds.
+    - `/tri-review confirm` commits the proposal with the trailers. It refuses when there's no proposal, when the head moved, when the code changed, and for an unauthorized actor.
+    - A mixed command commits the exact fix and proposes the other.
+    - Confirm makes no model call.
 
 ## Observability and Privacy
 
 - The CLI prints how many findings were suggestable and applicable, how many suggestions were posted or skipped (deduped, capped, failed), and how many reviewer findings were appended because the synthesizer didn't cite them.
 - The Action exposes `findings-path`.
+- The context line reports related context: status, snippets included, and snippets omitted.
+- Apply replies name the fixer model on every proposal and in the `Proposed-by` trailer of every commit it confirms.
 - No new data leaves the runner: the findings come from the same model calls, and GitHub receives what the report already contains.
 
 ## Rollout or Migration
 
-- **Phase 1 → v1.3.0**: R1–R8 and R10.
+- **Phase 1 → v1.3.0**: R1–R8, R10, and R11. Related context is on by default, so payloads grow by up to 15% of the budget. The release notes show `related-context: false`.
   - Report format changes: IDs, Problem/Trigger/Fix, diff blocks, a compact "Actionable Next Steps". Anyone parsing `report.md` should switch to `--findings-json`.
   - Existing Action users who move with the `v1` tag start getting inline suggestions on consensus findings (default `consensus`). Release notes say so and show `inline-suggestions: none`.
   - Local caches miss once (schema fingerprint and history version change).
-- **Phase 2 → v1.4.0**: R9. Opt-in: it does nothing until a repository adds the `issue_comment` workflow.
+- **Phase 2 → v1.4.0**: R9 and R12. Opt-in: it does nothing until a repository adds the `issue_comment` workflow. Model-written fixes also need a provider key passed to the apply action.
 - This repo's own `.github/workflows/tri-review.yml` pins a SHA on main (currently `d863f33`, main after #40). Bump it after each phase merges, as #41 did, so CI reviews with the new format. Until then, this repo's CI keeps posting the old report.
 - `issue_comment` workflows always run from the default branch, so the phase 2 apply workflow can't be tried on a PR before it's on main. Its live check happens after merge.
 
 ## Open Questions
 
 1. **Default `inline-suggestions` for the Action.** `consensus` (proposed) or `none`, so existing users opt in?
-2. **Benchmark gate.** Is "no regression in panel recall" (AC 4) enough to ship, or should there be a target, such as +2 cases on a 10–12 case set?
-3. **Benchmark cases.** Proposed: 10–12 `fix:` commits that touch only `src/`, from `f3e4466`, `b4ca20b`, `c7b174b`, `a1433ca`, `4eb106b`, `253062b`, `220ab41`, `8707639`, `dfd7488`, `41ffe16`, `8190358`, and `63603d1`. Only cases whose reverse diff under `src/` is non-empty are kept. Add cases from other repositories?
-4. **Bulk apply.** Should phase 2 accept `/tri-review apply blocking` as well as explicit IDs? It's left out for now so that a human names every change.
+2. **Benchmark cases.** Proposed: 10–12 `fix:` commits that touch only `src/`, from `f3e4466`, `b4ca20b`, `c7b174b`, `a1433ca`, `4eb106b`, `253062b`, `220ab41`, `8707639`, `dfd7488`, `41ffe16`, `8190358`, and `63603d1`. Only cases whose reverse diff under `src/` is non-empty are kept. Add cases from other repositories?
+3. **Bulk apply.** Should phase 2 accept `/tri-review apply blocking` as well as explicit IDs? It's left out for now so that a human names every change.
+4. **Fixer default.** The synthesizer's model (proposed), or a dedicated default?
+
+Resolved: the benchmark gate is now a ship target (R10.6), and model-written fixes are in scope behind a confirm step (R12).
