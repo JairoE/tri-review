@@ -1,6 +1,6 @@
 # Implementation Plan: `tri-review` CLI
 
-Source spec: `prd.md`. Task checklist for build tooling: `tasks/todo.md`.
+Source spec: `PRD.md`. Task checklist for build tooling: `tasks/todo.md`.
 
 ## Overview
 
