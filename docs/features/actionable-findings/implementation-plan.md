@@ -134,6 +134,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 1: Line-numbered file context (R1)
 
+**Status:** done.
+
 **Implement:** Sonnet @ medium / Opus @ medium · **Review:** Opus @ medium / Sonnet @ high
 
 - **Files:** modify `src/tri_review/context.py`, `src/tri_review/nodes.py` (`REVIEW_PROMPT`); test `tests/test_context.py`.

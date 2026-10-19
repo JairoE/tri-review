@@ -1,7 +1,7 @@
 import pytest
 
 from tri_review import context as context_mod
-from tri_review.context import build_context, github_reader, parse_changed_files
+from tri_review.context import ReviewContext, build_context, github_reader, parse_changed_files
 from tri_review.schema import ContextSummary
 
 MODIFIED = """diff --git a/src/app.py b/src/app.py
@@ -304,3 +304,74 @@ def test_parse_changed_files_decodes_quoted_paths_and_keeps_trailing_spaces():
         "diff --git a/keep.py  b/keep.py \n--- /dev/null\n+++ b/keep.py \t\n@@ -0,0 +1 @@\n+x\n"
     )
     assert parse_changed_files(diff) == ["docs/café.py", "keep.py "]
+
+
+# --- line-numbered file context ---------------------------------------------
+
+
+def test_file_contents_are_line_numbered():
+    body = "\n".join(f"line{n}" for n in range(1, 13)) + "\n"
+    ctx = ReviewContext(diff=MODIFIED, files={"src/app.py": body})
+
+    rendered = ctx.render()
+
+    assert " 1 | line1\n" in rendered
+    assert " 9 | line9\n" in rendered
+    assert "12 | line12\n" in rendered
+    assert "13 |" not in rendered
+
+
+def test_diff_block_is_not_numbered():
+    ctx = ReviewContext(diff=MODIFIED, files={"src/app.py": "a\nb\n"})
+
+    assert ctx.render().startswith(f"## Pull request diff\n\n```diff\n{MODIFIED}\n```")
+
+
+def test_estimated_tokens_counts_the_numbering():
+    body = "\n".join("x" for _ in range(200))
+    numbered = ReviewContext(diff="", files={"f.py": body})
+    raw_cost = context_mod.config.estimate_tokens(
+        f"## Pull request diff\n\n```diff\n\n```\n\n## Current contents of `f.py`\n\n```\n{body}\n```"
+    )
+
+    assert numbered.estimated_tokens > raw_cost
+
+
+def test_review_prompt_explains_line_number_prefixes():
+    from tri_review.nodes import REVIEW_PROMPT
+
+    assert "line number" in REVIEW_PROMPT
+    assert "replacement" in REVIEW_PROMPT
+    assert "never" in REVIEW_PROMPT.lower()
+
+
+def test_numbering_follows_lf_lines_not_unicode_separators():
+    body = "a\fb\nc d\ne\n"
+    ctx = ReviewContext(diff="", files={"f.py": body})
+
+    rendered = ctx.render()
+
+    assert "1 | a\fb\n" in rendered
+    assert "2 | c d\n" in rendered
+    assert "3 | e\n" in rendered
+    assert "4 |" not in rendered
+
+
+def test_numbering_an_empty_file_adds_no_lines():
+    assert context_mod._numbered("") == ""
+
+
+def test_budget_orders_files_by_numbered_cost(tmp_path):
+    # 100 one-char lines cost far more once numbered than a 250-char one-liner.
+    (tmp_path / "many.py").write_text("x\n" * 100)
+    (tmp_path / "one.py").write_text("y" * 250)
+    diff = _diff_touching("many.py") + _diff_touching("one.py")
+    est = context_mod.config.estimate_tokens
+    many, one = est(context_mod._numbered("x\n" * 100)), est(context_mod._numbered("y" * 250))
+    assert one < many
+    budget = est(diff) + many  # fits either file alone, never both
+
+    ctx = build_context(diff, root=tmp_path, budget=budget)
+
+    assert list(ctx.files) == ["one.py"]
+    assert ctx.dropped == ["many.py"]

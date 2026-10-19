@@ -21,6 +21,11 @@ You are given the PR diff and, where available, the full current contents of the
 files it touches. Review the change, not the whole file: only report issues the
 diff introduces or leaves unaddressed in the code it touches.
 
+Each line of a file's current contents is prefixed with its line number and
+` | ` (for example ` 42 | return token`); padding varies with the file's length. The prefix is a line number, not code.
+Use these numbers for `line`, `fix_start_line` and `fix_end_line`, and never
+include the prefix in a `replacement`.
+
 Report every real issue you find with its file and line. Be specific and
 concrete. An empty findings list is a strong claim that the change is
 correct -- only make it if you have actually checked each changed hunk and
