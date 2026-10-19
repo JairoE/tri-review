@@ -86,32 +86,37 @@ class Finding(BaseModel):
         floats are coerced first, so the rules apply to the values pydantic
         will hold.
         """
-        if not isinstance(data, dict):
-            return data
-        data = dict(data)
-        trigger = data.get("trigger")
-        data["trigger"] = trigger.strip() if isinstance(trigger, str) else ""
+        return _normalize_trigger_and_fix(data)
 
-        raw_start, raw_end = data.get("fix_start_line"), data.get("fix_end_line")
-        start, end = _as_line(raw_start), _as_line(raw_end)
-        # A coordinate that is present but not a whole number ("L42", 42.5,
-        # True) cannot be located, so it costs the fix, not the finding.
-        unparseable = (raw_start is not None and start is None) or (
-            raw_end is not None and end is None
-        )
-        if start is not None and end is None and raw_end is None:
-            end = start
-        unlocatable = (
-            unparseable
-            or (start is not None and start < 1)
-            or (start is not None and end is not None and end < start)
-            or (start is None and data.get("replacement") is not None)
-        )
-        if unlocatable:
-            data["fix_start_line"] = data["fix_end_line"] = data["replacement"] = None
-        else:
-            data["fix_start_line"], data["fix_end_line"] = start, end
+
+def _normalize_trigger_and_fix(data):
+    """R2's trigger and fix-range rules, shared by Finding and ReportFinding."""
+    if not isinstance(data, dict):
         return data
+    data = dict(data)
+    trigger = data.get("trigger")
+    data["trigger"] = trigger.strip() if isinstance(trigger, str) else ""
+
+    raw_start, raw_end = data.get("fix_start_line"), data.get("fix_end_line")
+    start, end = _as_line(raw_start), _as_line(raw_end)
+    # A coordinate that is present but not a whole number ("L42", 42.5,
+    # True) cannot be located, so it costs the fix, not the finding.
+    unparseable = (raw_start is not None and start is None) or (
+        raw_end is not None and end is None
+    )
+    if start is not None and end is None and raw_end is None:
+        end = start
+    unlocatable = (
+        unparseable
+        or (start is not None and start < 1)
+        or (start is not None and end is not None and end < start)
+        or (start is None and data.get("replacement") is not None)
+    )
+    if unlocatable:
+        data["fix_start_line"] = data["fix_end_line"] = data["replacement"] = None
+    else:
+        data["fix_start_line"], data["fix_end_line"] = start, end
+    return data
 
 
 def _as_line(value) -> int | None:
@@ -187,6 +192,117 @@ def _describe_malformed(index: int, item, exc: ValidationError) -> str:
     label = f"findings[{index}]" + (f" ({file})" if isinstance(file, str) and file else "")
     more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
     return f"{label}: {where}: {first['msg']}{more}"
+
+
+Action = Literal["blocking", "blocking_pending_check", "optional"]
+
+
+class ReportFinding(BaseModel):
+    """One finding of the synthesized report, as the synthesizer returns it (R3).
+
+    The model's claims here -- who reported it, and its tag -- are inputs, not
+    facts: `report.normalize` re-derives consensus and enforces the tag rules.
+    """
+
+    reported_by: list[str] = Field(
+        description="Model specs, exactly as given in the input, that reported this issue."
+    )
+    severity: Severity = Field(description="Highest severity among the reporters.")
+    category: Category = Field(description="bug, security, performance, or logic.")
+    file: str = Field(description="Repository-relative path the finding applies to.")
+    line: int | None = Field(default=None, description="1-indexed line number, or null.")
+    title: str = Field(description="One-line statement of the problem.")
+    problem: str = Field(description="What is wrong and its consequence, in at most two sentences.")
+    # Required in the model-facing schema; `_normalize_trigger_and_fix` keeps
+    # a finding that omits it anyway, with "".
+    trigger: str = Field(
+        description=(
+            "One sentence: the input, state or sequence that makes the problem happen. "
+            'Empty string if no reporter stated one.'
+        )
+    )
+    fix: str | None = Field(default=None, description="One sentence saying what to change, or null.")
+    fix_start_line: int | None = Field(
+        default=None,
+        description="First line a reporter's fix replaces. Taken from a reporter; never invented.",
+    )
+    fix_end_line: int | None = Field(
+        default=None,
+        description="Last line that fix replaces, inclusive. Defaults to fix_start_line.",
+    )
+    replacement: str | None = Field(
+        default=None,
+        description=(
+            "A reporter's exact replacement code for fix_start_line..fix_end_line. "
+            "Taken from a reporter; never invented. Null when there is none."
+        ),
+    )
+    action: Action = Field(description="blocking, blocking_pending_check, or optional.")
+    check: str | None = Field(
+        default=None,
+        description=(
+            "Required for blocking_pending_check: the call, command or page that settles it."
+        ),
+    )
+    falsified_by: str | None = Field(
+        default=None,
+        description="Required for both blocking tags: what would show the finding is wrong.",
+    )
+    previously_rejected: str | None = Field(
+        default=None,
+        description="The recorded dismissal reason, when the finding matches one.",
+    )
+    new_evidence: str | None = Field(
+        default=None,
+        description="What in this diff the recorded dismissal did not account for.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fix(cls, data):
+        """The same trigger and fix-range rules as `Finding` (R2)."""
+        return _normalize_trigger_and_fix(data)
+
+
+class SynthesisOutput(BaseModel):
+    """What the synthesizer model is asked to return (R3)."""
+
+    findings: list[ReportFinding] = Field(
+        default_factory=list,
+        description="One entry per distinct issue across all reviews.",
+    )
+    # As on ReviewOutput: filled by the validator, hidden from the model.
+    malformed: SkipJsonSchema[list[str]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _set_aside_malformed(cls, data):
+        """Validate findings one at a time, so one bad entry costs only itself."""
+        if not isinstance(data, dict) or not isinstance(data.get("findings"), list):
+            return data
+        kept: list[ReportFinding] = []
+        malformed: list[str] = []
+        for index, item in enumerate(data["findings"]):
+            try:
+                kept.append(ReportFinding.model_validate(item))
+            except ValidationError as exc:
+                malformed.append(_describe_malformed(index, item, exc))
+        return {**data, "findings": kept, "malformed": malformed}
+
+
+FindingKind = Literal["consensus", "unique", "synthesizer"]
+
+
+class NormalizedFinding(ReportFinding):
+    """A ReportFinding after `report.normalize`: reporters filtered, tag enforced, numbered."""
+
+    id: str
+    kind: FindingKind
+    # Why the action was lowered to optional, e.g. "only one model reported this".
+    downgrade_reason: str | None = None
+    # Why no inline suggestion is posted (R7); set with `applyable` later.
+    inline_reason: str | None = None
+    applyable: bool = False
 
 
 class ReviewResult(BaseModel):
