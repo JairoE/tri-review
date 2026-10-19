@@ -53,13 +53,19 @@ From the feature PRD, verbatim:
 Each task lists two **Implement** options and two **Review** options, as
 `model @ effort`. The first option is the default. The second is the
 alternative when the first is unavailable (spend limit) or when the task
-turns out sharper or blunter than expected. The calibration comes from the
-global routing table:
+turns out sharper or blunter than expected.
 
-- novel or hard-constraint work goes to Fable;
+**No session, subagent or workflow stage runs on Fable.** Where the work calls
+for Fable, Opus runs at a higher effort instead: Fable @ high becomes
+Opus @ xhigh, and Fable @ ultracode becomes Opus @ max. Pass the model and
+effort explicitly when starting a session; never let one inherit a default.
+
+The rest of the calibration:
+
+- novel or hard-constraint work goes to Opus @ xhigh or max;
 - well-specified mechanical work goes to a Sonnet subagent;
 - review of a finished diff goes to Opus;
-- docs never go to max-effort Fable.
+- docs stay at low or medium effort.
 
 "Review" means one single-pass review of that task's commit (the
 `code-review` skill at the given effort). The single pre-merge review for the
@@ -70,13 +76,13 @@ whole branch is separate (see the end of this plan).
 | 0 | Spec docs | Opus @ medium / Sonnet @ medium | Opus @ medium / Sonnet @ high |
 | 1 | Line-numbered context | Sonnet @ medium / Opus @ medium | Opus @ medium / Sonnet @ high |
 | 2 | Finding schema fields | Sonnet @ high / Opus @ medium | Opus @ high / Sonnet @ high |
-| 3 | ReportFinding + normalization | Opus @ high / Fable @ high | Opus @ high / Opus @ xhigh |
-| 4 | Diff hunks + applyability | Opus @ high / Fable @ high | Opus @ high / Opus @ xhigh |
+| 3 | ReportFinding + normalization | Opus @ high / Opus @ xhigh | Opus @ high / Opus @ xhigh |
+| 4 | Diff hunks + applyability | Opus @ high / Opus @ xhigh | Opus @ high / Opus @ xhigh |
 | 5 | Deterministic renderer | Sonnet @ high / Opus @ medium | Opus @ medium / Sonnet @ high |
-| 6 | Structured synthesis call | Fable @ ultracode / Opus @ xhigh | Opus @ high / Fable @ high |
+| 6 | Structured synthesis call | Opus @ max / Opus @ xhigh | Opus @ high / Opus @ xhigh |
 | 7 | Review payload builder | Opus @ medium / Sonnet @ high | Opus @ high / Sonnet @ high |
 | 8 | CLI flag + history v2 + replay | Opus @ medium / Sonnet @ high | Opus @ high / Opus @ medium |
-| 9 | Action posting script | Opus @ high / Fable @ high | Opus @ xhigh / Fable @ high |
+| 9 | Action posting script | Opus @ high / Opus @ xhigh | Opus @ xhigh / Opus @ max |
 | 10 | README + skill docs | Sonnet @ medium / Opus @ low | Sonnet @ medium / Opus @ low |
 
 ## File Structure
@@ -168,7 +174,7 @@ else fails. Green means the whole suite passes:
 
 ## Task 3: ReportFinding and normalization (R3 schema, R4, R5)
 
-**Implement:** Opus @ high / Fable @ high · **Review:** Opus @ high / Opus @ xhigh
+**Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 - **Files:** modify `src/tri_review/schema.py`; create `src/tri_review/report.py`, `tests/test_report.py`.
 - **Consumes:** `Severity`, `Category`, `SEVERITY_ORDER`, `ReviewOutput._set_aside_malformed` pattern.
@@ -198,7 +204,7 @@ else fails. Green means the whole suite passes:
 
 ## Task 4: Diff hunks and applyability (R7)
 
-**Implement:** Opus @ high / Fable @ high · **Review:** Opus @ high / Opus @ xhigh
+**Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 - **Files:** create `src/tri_review/suggestions.py`, `tests/test_suggestions.py`.
 - **Consumes:** unified diff text, as in `ReviewState["diff"]`; the path rules of `context.parse_changed_files` (renames use the post-image path; `+++ /dev/null` means deleted).
@@ -265,9 +271,9 @@ else fails. Green means the whole suite passes:
 
 ## Task 6: Structured synthesis call (R3 call, R11 fallback)
 
-**Implement:** Fable @ ultracode / Opus @ xhigh · **Review:** Opus @ high / Fable @ high
+**Implement:** Opus @ max / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
-The default is Fable because this task is novel design on the
+The default is Opus @ max because this task is novel design on the
 hard-constraint surface. It must keep constraints 2, 4, 5 and 6, and preserve
 every header note and the fallback's no-store behaviour.
 
@@ -353,7 +359,7 @@ every header note and the fallback's no-store behaviour.
 
 ## Task 9: Action posting (R9)
 
-**Implement:** Opus @ high / Fable @ high · **Review:** Opus @ xhigh / Fable @ high
+**Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ xhigh / Opus @ max
 
 This task mutates GitHub state and handles token scopes. Review it as
 security-sensitive: the comment-marker spoofing guard in `pr_comment.sh`
