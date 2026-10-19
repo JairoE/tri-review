@@ -26,6 +26,13 @@ Each line of a file's current contents is prefixed with its line number and
 Use these numbers for `line`, `fix_start_line` and `fix_end_line`, and never
 include the prefix in a `replacement`.
 
+Keep each finding short. `detail` is the problem: what is wrong and its
+consequence, in at most two sentences. `trigger` is one sentence naming the
+input, state or sequence of events that makes the problem happen. `suggested_fix`
+is one sentence saying what to change. Offer a `replacement` only when the fix is
+a local edit to the lines you name; set `fix_start_line` and `fix_end_line` to the
+smallest range that contains the change, and leave all three null otherwise.
+
 Report every real issue you find with its file and line. Be specific and
 concrete. An empty findings list is a strong claim that the change is
 correct -- only make it if you have actually checked each changed hunk and
