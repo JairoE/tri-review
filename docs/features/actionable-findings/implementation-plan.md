@@ -154,6 +154,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 2: Finding schema fields (R2)
 
+**Status:** done.
+
 **Implement:** Sonnet @ high / Opus @ medium · **Review:** Opus @ high / Sonnet @ high
 
 - **Files:** modify `src/tri_review/schema.py`, `src/tri_review/nodes.py` (`REVIEW_PROMPT`); create `tests/test_schema.py`.

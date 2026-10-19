@@ -21,8 +21,39 @@ class Finding(BaseModel):
     severity: Severity = Field(description="critical, major, or minor.")
     category: Category = Field(description="bug, security, performance, or logic.")
     title: str = Field(description="One-line statement of the problem.")
-    detail: str = Field(description="What is wrong and why it matters.")
-    suggested_fix: str | None = Field(default=None, description="Concrete change to make, or null.")
+    detail: str = Field(
+        description="The problem: what is wrong and its consequence, in at most two sentences."
+    )
+    # No default: the model is shown this as required. A reviewer that omits it
+    # anyway is caught by `_normalize_fix`, which keeps the finding with "".
+    trigger: str = Field(
+        description=(
+            "One sentence: the input, state or sequence of events that makes the problem happen."
+        )
+    )
+    suggested_fix: str | None = Field(
+        default=None,
+        description="The fix: one sentence saying what to change, or null.",
+    )
+    fix_start_line: int | None = Field(
+        default=None,
+        description=(
+            "First line the fix replaces, 1-indexed, in the PR head's version of `file`. "
+            "Null when the fix is not a local code change."
+        ),
+    )
+    fix_end_line: int | None = Field(
+        default=None,
+        description="Last line the fix replaces, inclusive. Defaults to fix_start_line.",
+    )
+    replacement: str | None = Field(
+        default=None,
+        description=(
+            "Exact code that replaces fix_start_line..fix_end_line, with its indentation and "
+            "no line-number prefixes. An empty string deletes those lines. Null when the fix "
+            "is not a local code change."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -41,6 +72,38 @@ class Finding(BaseModel):
         if not isinstance(detail, str) or not detail.strip():
             return data
         return {**data, "title": _headline(detail)}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fix(cls, data):
+        """Keep the finding when its trigger or fix fields are unusable.
+
+        A missing or blank `trigger` becomes "". `fix_end_line` defaults to the
+        start line. A fix that cannot be located (start below 1, end before
+        start, or a replacement with no start line) loses all three fix fields
+        rather than the whole finding, which is still a valid report.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        trigger = data.get("trigger")
+        data["trigger"] = trigger.strip() if isinstance(trigger, str) else ""
+
+        start, end = data.get("fix_start_line"), data.get("fix_end_line")
+        if start is not None and end is None and _is_int(start):
+            end = data["fix_end_line"] = start
+        unlocatable = (
+            (_is_int(start) and start < 1)
+            or (_is_int(start) and _is_int(end) and end < start)
+            or (start is None and data.get("replacement") is not None)
+        )
+        if unlocatable:
+            data["fix_start_line"] = data["fix_end_line"] = data["replacement"] = None
+        return data
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 _TITLE_LIMIT = 100
