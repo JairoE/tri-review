@@ -178,6 +178,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 3: ReportFinding and normalization (R3 schema, R4, R5)
 
+**Status:** done.
+
 **Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 - **Files:** modify `src/tri_review/schema.py`; create `src/tri_review/report.py`, `tests/test_report.py`.
