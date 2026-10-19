@@ -26,6 +26,10 @@ TOO_LONG = f"range longer than {MAX_SUGGESTION_LINES} lines"
 PREVIOUSLY_REJECTED = "previously rejected"
 NO_REPORTER = "no reviewer reported it"
 
+# What a hunk body line can start with; "" is a blank context line some tools
+# strip, and "\\" is the "No newline at end of file" marker.
+_BODY_PREFIXES = ("", " ", "+", "-", "\\")
+
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -53,8 +57,13 @@ def parse_hunks(diff: str) -> dict[str, FileHunks]:
     old_left = new_left = 0
 
     for line in diff.splitlines():
+        if (old_left > 0 or new_left > 0) and line[:1] not in _BODY_PREFIXES:
+            # The hunk ended before its counted lines did (a truncated or
+            # miscounted diff): drop it and read this line as a header, so the
+            # next file or hunk is not swallowed as content.
+            pending, old_left, new_left = None, 0, 0
         if old_left > 0 or new_left > 0:
-            # Inside a hunk body: every line is content, whatever it looks like.
+            # Inside a hunk body: every prefixed line is content.
             if line.startswith("\\"):
                 continue  # "\ No newline at end of file"
             if line.startswith("-"):
@@ -77,6 +86,9 @@ def parse_hunks(diff: str) -> dict[str, FileHunks]:
         elif line.startswith("+++ "):
             target = gating.diff_path(line[4:], "b/")
             if target == "/dev/null":
+                if not old_path:  # malformed: a deletion with no `--- a/path`
+                    current = None
+                    continue
                 current = files.setdefault(old_path, FileHunks())
                 current.deleted = True
             else:

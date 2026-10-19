@@ -128,6 +128,32 @@ def test_truncated_diff_still_parses_complete_hunks():
     assert parse_hunks(diff)["a.py"].ranges == [(1, 2)]
 
 
+def test_incomplete_hunk_does_not_swallow_the_next_file():
+    diff = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+        "@@ -20,10 +20,10 @@\n x\n"  # cut off mid-hunk
+        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n"
+        "@@ -1,2 +1,2 @@\n-a\n+b\n c\n"
+    )
+    hunks = parse_hunks(diff)
+    assert hunks["a.py"].ranges == []
+    assert hunks["b.py"].ranges == [(1, 2)]
+
+
+def test_incomplete_hunk_does_not_swallow_the_next_hunk():
+    diff = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+        "@@ -1,5 +1,5 @@\n x\n"  # miscounted: ends after one line
+        "@@ -30,2 +30,2 @@\n-a\n+b\n c\n"
+    )
+    assert parse_hunks(diff)["a.py"].ranges == [(30, 31)]
+
+
+def test_deletion_without_old_path_is_not_keyed_by_empty_string():
+    diff = "diff --git a/a.py b/a.py\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-a\n"
+    assert "" not in parse_hunks(diff)
+
+
 def test_empty_diff_has_no_files():
     assert parse_hunks("") == {}
 
