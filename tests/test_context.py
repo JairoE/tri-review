@@ -343,3 +343,35 @@ def test_review_prompt_explains_line_number_prefixes():
     assert "line number" in REVIEW_PROMPT
     assert "replacement" in REVIEW_PROMPT
     assert "never" in REVIEW_PROMPT.lower()
+
+
+def test_numbering_follows_lf_lines_not_unicode_separators():
+    body = "a\fb\nc d\ne\n"
+    ctx = ReviewContext(diff="", files={"f.py": body})
+
+    rendered = ctx.render()
+
+    assert "1 | a\fb\n" in rendered
+    assert "2 | c d\n" in rendered
+    assert "3 | e\n" in rendered
+    assert "4 |" not in rendered
+
+
+def test_numbering_an_empty_file_adds_no_lines():
+    assert context_mod._numbered("") == ""
+
+
+def test_budget_orders_files_by_numbered_cost(tmp_path):
+    # 100 one-char lines cost far more once numbered than a 250-char one-liner.
+    (tmp_path / "many.py").write_text("x\n" * 100)
+    (tmp_path / "one.py").write_text("y" * 250)
+    diff = _diff_touching("many.py") + _diff_touching("one.py")
+    est = context_mod.config.estimate_tokens
+    many, one = est(context_mod._numbered("x\n" * 100)), est(context_mod._numbered("y" * 250))
+    assert one < many
+    budget = est(diff) + many  # fits either file alone, never both
+
+    ctx = build_context(diff, root=tmp_path, budget=budget)
+
+    assert list(ctx.files) == ["one.py"]
+    assert ctx.dropped == ["many.py"]

@@ -22,7 +22,7 @@ files it touches. Review the change, not the whole file: only report issues the
 diff introduces or leaves unaddressed in the code it touches.
 
 Each line of a file's current contents is prefixed with its line number and
-` | ` (for example ` 42 | return token`). The prefix is a line number, not code.
+` | ` (for example ` 42 | return token`); padding varies with the file's length. The prefix is a line number, not code.
 Use these numbers for `line`, `fix_start_line` and `fix_end_line`, and never
 include the prefix in a `replacement`.
 

@@ -26,7 +26,11 @@ class PathOutsideRepo(Exception):
 
 def _numbered(content: str) -> str:
     """Prefix each line with its 1-indexed number, right-aligned to the file's line count."""
-    lines = content.splitlines()
+    # Split on "\n" only: splitlines() also breaks on \f, \v, U+2028 and friends,
+    # which git does not count as line ends, so the numbers would drift from the PR's.
+    lines = content.split("\n")
+    if lines[-1] == "":
+        lines.pop()
     width = len(str(len(lines)))
     return "\n".join(f"{n:>{width}} | {line}" for n, line in enumerate(lines, 1))
 
@@ -194,7 +198,7 @@ def build_context(
         else:
             candidates.append((rel, content))
 
-    for rel, content in sorted(candidates, key=lambda item: len(item[1])):
+    for rel, content in sorted(candidates, key=lambda item: len(_numbered(item[1]))):
         cost = config.estimate_tokens(_numbered(content))
         if cost <= remaining:
             ctx.files[rel] = content
