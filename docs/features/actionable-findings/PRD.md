@@ -222,11 +222,15 @@ A finding gets an inline suggestion only if all hold:
 2. `file` is in the diff and not deleted (`+++ /dev/null`).
 3. `fix_start_line..fix_end_line` lies within the new-side line range of one
    single hunk of that file's diff (context and added lines both count).
-4. The range is at most **40** lines.
-5. `replacement` contains no line starting with three or more backticks
-   (it would close the suggestion fence; see Q4).
-6. The finding is not `previously_rejected` without `new_evidence` (Q1).
-7. The finding has at least one reporter (Q3).
+4. The range is at most **40** lines (Q2).
+5. The finding is not `previously_rejected` without `new_evidence` (Q1).
+6. The finding has at least one reporter (Q3).
+
+A replacement that contains code fences is still applyable (Q4). Every fence
+tri-review wraps around a `replacement`, both the report's code block (R6) and
+the ```` ```suggestion ```` block (R8), is one backtick longer than the longest
+run of backticks that starts any line of the replacement, and never shorter
+than three.
 
 Each failed condition has a fixed reason string used in R6, e.g.
 "lines outside the diff", "range spans more than one hunk",
@@ -257,7 +261,8 @@ tri-review writes the exact body for
 - Single-line fixes omit `start_line` and `start_side`.
 - The comment body is the R6 finding block, minus the location line and the
   fenced code block, plus a ```` ```suggestion ```` block holding
-  `replacement` verbatim (an empty block for a deletion). A Unique finding's
+  `replacement` verbatim (an empty block for a deletion), fenced per R7's
+  fence rule. A Unique finding's
   body starts with "**Unverified:** only `<model>` reported this."
 - The fingerprint is the first 16 hex characters of SHA-256 over
   `path`, `fix_start_line`, `fix_end_line`, `replacement`, `title`, joined
@@ -353,7 +358,7 @@ tri-review writes the exact body for
 | Finding with `line=None` and no fix range | Location is `file` only; no suggestion. |
 | Fix range in a deleted file | Not applyable: "file deleted in this PR". |
 | Fix range spanning two hunks | Not applyable: "range spans more than one hunk". |
-| Replacement containing a ```` ``` ```` line | Not applyable: "replacement contains a code fence". |
+| Replacement containing a ```` ``` ```` line | Applyable; the suggestion and report fences grow to four or more backticks (R7). |
 | `replacement == ""` | Applyable deletion; suggestion block is empty. |
 | Synthesizer names a model not on the panel | Dropped from `reported_by` (R4.1). |
 | Panel of one | Every finding is Unique; suggestions allowed, all labelled unverified. |
@@ -373,13 +378,16 @@ tri-review writes the exact body for
 - **AC3** `test_report.py`: each R4 downgrade rule, invented reporters, R5
   ordering and IDs, and the R6 block, including link vs. plain location.
 - **AC4** `test_suggestions.py`: each R7 condition passes and fails with its
-  reason string; payload shape and fingerprint stability match R8.
+  reason string; payload shape and fingerprint stability match R8; a
+  replacement containing ```` ``` ```` gets a longer suggestion fence.
 - **AC5** `test_pr_review.py` (stub `gh`): posts once; a second run with the
   same payload posts nothing; a 422 falls back to per-comment posts; a 403
   warns and exits 0.
 - **AC6** Live, on this repository: a throwaway PR with a planted bug gets a
   report whose finding cites the exact line, and an inline suggestion that
-  **Commit suggestion** applies cleanly with the intended change.
+  **Commit suggestion** applies cleanly with the intended change. The same PR
+  carries one suggestion whose replacement contains ```` ``` ````, which also
+  applies cleanly.
 - **AC7** The full `uv run pytest -q` suite is green after every task.
 
 ## Observability and Privacy
@@ -402,13 +410,14 @@ tri-review writes the exact body for
 
 ## Open Questions
 
-Each has a default the plan builds; changing it is a one-line rule change.
+None open. Resolved on 2026-10-19:
 
 - **Q1.** Do previously rejected findings get inline suggestions?
-  **Default: no** (R7.6), unless the synthesizer cites new evidence.
-- **Q2.** Is 40 lines the right cap for one suggestion? **Default: 40.**
+  **No** (R7.5), unless the synthesizer cites new evidence.
+- **Q2.** Maximum lines per suggestion: **40** (R7.4).
 - **Q3.** Do synthesizer suggestions with no reporter go inline?
-  **Default: no** (R7.7).
-- **Q4.** Does GitHub honour a four-backtick ```` ````suggestion ```` fence, so
-  replacements containing ```` ``` ```` could be applyable? Settled by one
-  live post on a throwaway PR. **Default until checked:** not applyable (R7.5).
+  **No** (R7.6).
+- **Q4.** Does GitHub honour a fence longer than three backticks for a
+  ```` ```suggestion ```` block? **Yes.** Replacements containing
+  ```` ``` ```` are applyable, with a lengthened fence (R7 fence rule). AC6
+  confirms it live.

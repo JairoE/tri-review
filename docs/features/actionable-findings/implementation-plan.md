@@ -211,7 +211,6 @@ else fails. Green means the whole suite passes:
     - `"lines outside the diff"`
     - `"range spans more than one hunk"`
     - `"range longer than 40 lines"`
-    - `"replacement contains a code fence"`
     - `"previously rejected"`
     - `"no reviewer reported it"`
   - `MAX_SUGGESTION_LINES = 40`
@@ -238,6 +237,8 @@ else fails. Green means the whole suite passes:
   - `render_block(f, link_repo: str, head_sha: str, *, with_id: bool = True) -> str`
   - `render_report(findings, link_repo, head_sha) -> str`: the three sections plus Next Steps, without the header notes.
   - `language_for(path) -> str`
+  - `fence_for(text: str) -> str`: backticks one longer than the longest
+    backtick run that starts a line of `text`, minimum three (R7 fence rule)
 - **Red:**
   - `test_block_has_problem_trigger_fix_lines`
   - `test_empty_trigger_renders_not_stated`
@@ -252,6 +253,9 @@ else fails. Green means the whole suite passes:
   - `test_next_steps_one_bullet_per_fix_with_falsifier_or_check`
   - `test_empty_sections_say_so_in_one_line`
   - `test_code_fence_language_from_extension`
+  - `test_fence_for_is_three_backticks_for_plain_code`
+  - `test_fence_for_outgrows_backticks_in_replacement`
+  - `test_report_code_block_uses_a_longer_fence_when_needed`
   - updated `test_render.py` cases expect the block format
 
   Expected red: an `AttributeError` for `render_block`, or old-format assertions failing.
@@ -308,6 +312,8 @@ every header note and the fallback's no-store behaviour.
   - `test_comment_body_starts_with_fingerprint_marker`
   - `test_suggestion_block_holds_replacement_verbatim`
   - `test_deletion_is_an_empty_suggestion_block`
+  - `test_suggestion_fence_outgrows_backticks_in_replacement`: a replacement
+    containing a ```` ``` ```` line is wrapped in ```` ````suggestion ````.
   - `test_unique_comment_is_marked_unverified`
   - `test_fingerprint_is_stable_and_changes_with_replacement`
   - `test_no_applyable_findings_returns_none`
@@ -405,7 +411,7 @@ applies here too.
 | R9 Action posting | 9 |
 | R10 History and replay | 8 |
 | R11 Fallback and per-model render | 5, 6 |
-| AC6 live check, Q4 fence check | Pre-merge, below |
+| AC6 live check | Pre-merge, below |
 | Rollout: bump CI pin | Follow-up PR after merge, below |
 
 ## Pre-merge and rollout
@@ -418,11 +424,8 @@ applies here too.
    a planted bug inside a hunk. Run `tri-review --pr <n> --review-output
    review.json`, post it with `REVIEW_FILE=review.json bash
    scripts/pr_review.sh`, apply with **Commit suggestion**, and confirm the
-   resulting diff.
-3. **Q4 fence check**, in the same throwaway PR: post one comment containing a
-   four-backtick ```` ````suggestion ```` fence whose body contains
-   ```` ``` ````. If GitHub renders it as an applyable suggestion, relax R7.5
-   and update the PRD.
-4. **After merge**, as a separate PR: bump the pinned SHA in
+   resulting diff. Include a second planted fix whose replacement contains
+   ```` ``` ```` to confirm the lengthened suggestion fence (Q4) applies too.
+3. **After merge**, as a separate PR: bump the pinned SHA in
    `.github/workflows/tri-review.yml` to the merge commit, per that file's
    rule that only SHAs on `main` may be pinned.
