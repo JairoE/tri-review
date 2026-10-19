@@ -135,6 +135,23 @@ def test_synthesizer_suggestion_is_always_optional():
         assert result.downgrade_reason == "suggested by the synthesizer, not reported by any reviewer"
 
 
+def test_downgrade_reason_precedence_when_several_rules_apply():
+    rejected = "Logout holds the lock already."
+    cases = [
+        (dict(reported_by=[], previously_rejected=rejected), "suggested by the synthesizer"),
+        (dict(reported_by=["gpt-6-sol"], previously_rejected=rejected), "previously rejected"),
+        (
+            dict(reported_by=["gpt-6-sol"], previously_rejected=rejected, new_evidence="New."),
+            "only one model",
+        ),
+        (dict(severity="minor", falsified_by=None), "severity is minor"),
+    ]
+    for overrides, reason in cases:
+        result = only([make(**overrides)])
+        assert result.action == "optional"
+        assert result.downgrade_reason.startswith(reason), overrides
+
+
 def test_optional_is_never_given_a_downgrade_reason():
     result = only([make(reported_by=[], action="optional")])
     assert result.action == "optional"
@@ -198,6 +215,13 @@ def test_report_finding_fix_range_follows_r2_rules():
     assert make(fix_start_line=42, replacement="x").fix_end_line == 42
     inverted = make(fix_start_line=44, fix_end_line=42, replacement="x")
     assert (inverted.fix_start_line, inverted.fix_end_line, inverted.replacement) == (None,) * 3
+
+
+def test_report_finding_without_trigger_is_kept_with_empty_string():
+    data = make().model_dump()
+    del data["trigger"]
+    assert ReportFinding.model_validate(data).trigger == ""
+    assert make(trigger="  Logout mid-refresh.  ").trigger == "Logout mid-refresh."
 
 
 def test_one_malformed_report_finding_costs_only_itself():

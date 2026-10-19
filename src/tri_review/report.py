@@ -60,7 +60,10 @@ def normalize(findings: list[ReportFinding], reported: list[str]) -> list[Normal
 def _downgrade_reason(finding: ReportFinding, kind: str) -> str | None:
     """Why a Blocking tag does not hold (R4 rules 3-6), or None if it does.
 
-    Optional findings are never downgraded, so they never get a reason.
+    Optional findings are never downgraded, so they never get a reason. When
+    several rules apply, the first one below names the reason: synthesizer
+    suggestion, previously rejected, single model, minor, no falsifier, no
+    check. Any of them makes the finding optional, so only the wording changes.
     """
     if finding.action == "optional":
         return None
