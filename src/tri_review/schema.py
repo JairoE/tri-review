@@ -80,8 +80,11 @@ class Finding(BaseModel):
 
         A missing or blank `trigger` becomes "". `fix_end_line` defaults to the
         start line. A fix that cannot be located (start below 1, end before
-        start, or a replacement with no start line) loses all three fix fields
-        rather than the whole finding, which is still a valid report.
+        start, a replacement with no start line, or a coordinate that is not a
+        whole number) loses all three fix fields rather than the whole finding,
+        which is still a valid report. Numeric strings and integer-valued
+        floats are coerced first, so the rules apply to the values pydantic
+        will hold.
         """
         if not isinstance(data, dict):
             return data
@@ -89,21 +92,44 @@ class Finding(BaseModel):
         trigger = data.get("trigger")
         data["trigger"] = trigger.strip() if isinstance(trigger, str) else ""
 
-        start, end = data.get("fix_start_line"), data.get("fix_end_line")
-        if start is not None and end is None and _is_int(start):
-            end = data["fix_end_line"] = start
+        raw_start, raw_end = data.get("fix_start_line"), data.get("fix_end_line")
+        start, end = _as_line(raw_start), _as_line(raw_end)
+        # A coordinate that is present but not a whole number ("L42", 42.5,
+        # True) cannot be located, so it costs the fix, not the finding.
+        unparseable = (raw_start is not None and start is None) or (
+            raw_end is not None and end is None
+        )
+        if start is not None and end is None and raw_end is None:
+            end = start
         unlocatable = (
-            (_is_int(start) and start < 1)
-            or (_is_int(start) and _is_int(end) and end < start)
+            unparseable
+            or (start is not None and start < 1)
+            or (start is not None and end is not None and end < start)
             or (start is None and data.get("replacement") is not None)
         )
         if unlocatable:
             data["fix_start_line"] = data["fix_end_line"] = data["replacement"] = None
+        else:
+            data["fix_start_line"], data["fix_end_line"] = start, end
         return data
 
 
-def _is_int(value) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+def _as_line(value) -> int | None:
+    """`value` as a whole number, or None. Mirrors what pydantic's lax int
+    accepts (numeric strings, integer-valued floats) so R2's range rules run on
+    the values the model will actually hold, except that bool is rejected."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 _TITLE_LIMIT = 100
