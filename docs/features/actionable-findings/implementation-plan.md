@@ -281,6 +281,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 6: Structured synthesis call (R3 call, R11 fallback)
 
+**Status:** done.
+
 **Implement:** Opus @ max / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 The default is Opus @ max because this task is novel design on the
