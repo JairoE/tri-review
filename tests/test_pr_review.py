@@ -61,6 +61,9 @@ if "--paginate" in argv:
     if os.environ.get("STUB_LIST_FAILS") == "1":
         fail(502, "Bad Gateway")
     prior = json.loads(os.environ.get("STUB_PRIOR", "[]"))
+    if os.environ.get("STUB_LIST_STDERR"):
+        # gh can print a notice on stderr and still succeed.
+        print(os.environ["STUB_LIST_STDERR"], file=sys.stderr)
     # Two pages, the way `gh api --paginate` prints them: arrays back to back.
     print(json.dumps(prior))
     print(json.dumps(posted()))
@@ -240,3 +243,54 @@ def test_writes_suggestions_posted_output(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert output.splitlines() == ["suggestions-posted=2"]
+
+
+def test_stderr_on_a_successful_listing_does_not_break_dedup(tmp_path):
+    """A notice gh prints on stderr is not part of the JSON listing."""
+    result, calls, output = _run(
+        tmp_path,
+        STUB_PRIOR=json.dumps([_prior(BOT, FP_A)]),
+        STUB_LIST_STDERR="A new release of gh is available: 2.0.0",
+    )
+
+    assert result.returncode == 0, result.stderr
+    (review,) = _posts(calls, "/reviews")
+    assert [c["path"] for c in review["comments"]] == ["src/b.py"]
+    assert "suggestions-posted=1" in output
+
+
+def test_suggestions_posted_by_another_bot_warn(tmp_path):
+    """A GitHub App token cannot report its own login, so its earlier
+    suggestions are not counted as ours. Say so instead of re-posting quietly;
+    a human's markers are still neither counted nor named."""
+    prior = [
+        {"user": {"login": "my-app[bot]", "type": "Bot"}, "body": f"<!-- tri-review-suggestion:{FP_A} -->\nold"},
+        {"user": {"login": "mallory", "type": "User"}, "body": f"<!-- tri-review-suggestion:{FP_B} -->\nold"},
+    ]
+    result, calls, _ = _run(tmp_path, STUB_PRIOR=json.dumps(prior))
+
+    assert result.returncode == 0, result.stderr
+    (review,) = _posts(calls, "/reviews")
+    assert len(review["comments"]) == 2
+    warnings = [line for line in result.stdout.splitlines() if line.startswith("::warning::")]
+    assert len(warnings) == 1
+    assert "my-app[bot]" in warnings[0] and BOT in warnings[0]
+    assert "mallory" not in warnings[0]
+
+
+def test_no_warning_when_only_our_own_suggestions_are_posted(tmp_path):
+    prior = [{"user": {"login": BOT, "type": "Bot"}, "body": f"<!-- tri-review-suggestion:{FP_A} -->\nold"}]
+    result, _, _ = _run(tmp_path, STUB_PRIOR=json.dumps(prior))
+
+    assert result.returncode == 0, result.stderr
+    assert not [line for line in result.stdout.splitlines() if line.startswith("::warning::")]
+
+
+def test_failed_listing_posts_nothing_and_warns_with_the_error(tmp_path):
+    result, calls, output = _run(tmp_path, STUB_LIST_FAILS="1")
+
+    assert result.returncode == 0, result.stderr
+    assert _posts(calls, "/reviews") == [] and _posts(calls, "/comments") == []
+    (warning,) = [line for line in result.stdout.splitlines() if line.startswith("::warning::")]
+    assert "HTTP 502" in warning
+    assert "suggestions-posted=0" in output

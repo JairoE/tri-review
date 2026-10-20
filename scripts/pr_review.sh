@@ -46,20 +46,45 @@ set_output() {
   return 0
 }
 
+# Every review comment on the PR, as one JSON array.
+#
+# `--paginate` without `--jq` prints the pages as JSON arrays back to back; jq
+# slurps them. Only stdout is JSON: gh can print a notice on stderr and still
+# succeed, so stderr is kept apart and printed only when the call fails.
+list_comments() {
+  local pages err errfile
+  errfile=$(mktemp)
+  if ! pages=$(gh api "repos/$REPO/pulls/$PR_NUMBER/comments" --paginate 2>"$errfile"); then
+    err=$(cat "$errfile")
+    rm -f "$errfile"
+    printf '%s' "${err:-$pages}"
+    return 1
+  fi
+  rm -f "$errfile"
+  printf '%s' "$pages" | jq -c -s '[.[][]]'
+}
+
 # Fingerprints already on the PR, as a JSON array -- from review comments by
 # our own posting identity only. Anyone who can comment on the PR could
 # otherwise write a marker with a fix's fingerprint and suppress that suggestion.
-#
-# `--paginate` without `--jq` prints the pages as JSON arrays back to back; jq
-# slurps them, and the login goes in as a jq variable, not spliced into a filter.
+# The login goes in as a jq variable, not spliced into a filter.
 posted_fingerprints() {
-  local login="$1" pages
-  pages=$(gh api "repos/$REPO/pulls/$PR_NUMBER/comments" --paginate 2>&1) || {
-    printf '%s' "$pages"
-    return 1
-  }
-  printf '%s' "$pages" | jq -c -s --arg login "$login" \
-    "$JQ_FP"' [.[][] | select(.user.login == $login) | fp] | unique'
+  printf '%s' "$2" | jq -c --arg login "$1" \
+    "$JQ_FP"' [.[] | select(.user.login == $login) | fp] | unique'
+}
+
+# Other bot accounts that already posted one of the suggestions we are about to
+# post, comma-separated. A GitHub App token cannot report its own login, so
+# resolve_bot_login falls back to github-actions[bot] and the App's earlier
+# suggestions are not counted as ours (as with review_cap.sh's
+# warn_if_posted_as_someone_else). They are still not counted -- that would
+# widen the guard above -- but the run says why they were posted again.
+# Human accounts are never named: their markers are just noise.
+others_with_our_fingerprints() {
+  printf '%s' "$2" | jq -r --arg login "$1" --argjson ours "$3" \
+    "$JQ_FP"' [.[] | select(.user.type == "Bot" and .user.login != $login)
+      | select([fp] | any(. as $f | $ours | index($f))) | .user.login]
+      | unique | join(",")'
 }
 
 # POST a JSON body read from stdin. Prints gh's output (on failure, the error
@@ -87,7 +112,7 @@ post_one_by_one() {
 }
 
 main() {
-  local login posted remaining count out var
+  local login comments posted remaining count out var ours others
 
   # Checked here rather than left to `set -u`, which would exit non-zero.
   for var in REPO PR_NUMBER REVIEW_FILE; do
@@ -108,8 +133,8 @@ main() {
 
   # Without the listing, a re-run would post every suggestion again; posting
   # nothing is the safer side of that.
-  if ! posted=$(posted_fingerprints "$login"); then
-    warn "Could not list this PR's review comments, so inline suggestions were not posted (to avoid duplicates): $posted"
+  if ! comments=$(list_comments) || ! posted=$(posted_fingerprints "$login" "$comments"); then
+    warn "Could not list this PR's review comments, so inline suggestions were not posted (to avoid duplicates): ${comments:-}"
     set_output 0
     return 0
   fi
@@ -123,6 +148,12 @@ main() {
     echo "All suggestions already posted."
     set_output 0
     return 0
+  fi
+
+  ours=$(printf '%s' "$remaining" | jq -c "$JQ_FP"' [.comments[] | fp]')
+  others=$(others_with_our_fingerprints "$login" "$comments" "$ours" 2>/dev/null)
+  if [ -n "$others" ]; then
+    warn "Some of these inline suggestions were already posted by $others, but this run counts only those posted by $login, so they are posted again. A GitHub App token cannot report its own login; see the README's note on github-token."
   fi
 
   if out=$(printf '%s' "$remaining" | post_json "repos/$REPO/pulls/$PR_NUMBER/reviews"); then
