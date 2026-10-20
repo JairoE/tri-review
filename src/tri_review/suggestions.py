@@ -160,8 +160,10 @@ def _fix_range(f: NormalizedFinding) -> tuple[int, int]:
 def fingerprint(f: NormalizedFinding) -> str:
     """16 hex characters identifying this suggestion across runs.
 
-    Built from what the suggestion changes, not from its ID or wording, so a
-    re-run that renumbers or rephrases the finding is recognised as posted.
+    Built from the R8 fields: path, fix range, replacement and title, not the
+    finding's ID, so a re-run that only renumbers the finding is recognised as
+    posted. The title and replacement are hashed as given, so a re-run that
+    rewords the title (even whitespace only) yields a new fingerprint.
     """
     start, end = _fix_range(f)
     fields = [f.file, str(start), str(end), f.replacement or "", f.title]
