@@ -412,6 +412,8 @@ applies here too.
 
 ## Task 10: README and skill docs
 
+**Status:** done.
+
 **Implement:** Sonnet @ medium / Opus @ low · **Review:** Sonnet @ medium / Opus @ low
 
 - **Files:** modify `README.md` (Sample output, Inputs and Outputs tables, a "Suggested changes" section with the fork-PR caveat, the `--review-output` flag); modify `.claude/skills/tri-review/SKILL.md` (relay F-IDs; when the user asks to apply `Fn`, use its `file:start-end` and code block, and change nothing unasked).
