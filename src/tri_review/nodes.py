@@ -368,6 +368,8 @@ def synthesize_node(
         synthesizer,
         diff=state.get("diff") or "",
         link_repo=state.get("link_repo") or "",
+        # `head_ref` holds the PR head's commit SHA (see ReviewState), which
+        # the report's permalinks pin to.
         head_sha=state.get("head_ref") or "",
     )
     return {"final_report": report, "synthesized": synthesized, "synthesis": synthesis}
@@ -440,11 +442,21 @@ def _synthesize(
             raise ValueError("returned no structured output")
         if output.malformed and not output.findings:
             raise ValueError(_all_malformed_error(output.malformed))
+        # Only a review with findings can have reported an issue. A clean or
+        # low-confidence empty review listed in `reported_by` would otherwise
+        # count toward Consensus, and keep a Blocking tag nobody agreed to.
+        reporters = [r.model for r in succeeded if r.findings]
+        if not output.findings and reporters:
+            # An empty list means the reviews found nothing. When they found
+            # something, it would hide all of it behind "No consensus
+            # findings." and be stored as this commit's answer.
+            reported = sum(len(r.findings) for r in succeeded)
+            raise ValueError(f"returned no findings, though the reviews reported {reported}")
         hunks = parse_hunks(diff)
         offered = _offered_fixes(succeeded)
         findings = [
             _with_applyability(_reporters_fix_only(finding, offered), hunks)
-            for finding in normalize(output.findings, [r.model for r in succeeded])
+            for finding in normalize(output.findings, reporters)
         ]
         report = (
             header

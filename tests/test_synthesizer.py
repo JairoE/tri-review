@@ -15,20 +15,25 @@ class _Raw:
 
 _NO_FINDINGS = SynthesisOutput()
 
+# CapturingLLM's default reply: every finding it was sent; see _each_finding.
+_EACH_FINDING = object()
+
 
 class CapturingLLM:
     """Stands in for the synthesizer model, recording what it is sent.
 
     Asked for structured output, it answers the way
     `with_structured_output(schema, include_raw=True)` does, as
-    `tests/test_nodes.py::FakeLLM` does for reviewers. Invoked bare, it
-    answers in prose like any chat model. That prose must never reach the
-    report: tri-review renders the report itself.
+    `tests/test_nodes.py::FakeLLM` does for reviewers. Unless given an
+    `output`, it lists every finding it was sent, as a synthesizer that drops
+    nothing would: an empty reply to reviews that found issues is a failed
+    synthesis. Invoked bare, it answers in prose like any chat model. That
+    prose must never reach the report: tri-review renders the report itself.
     """
 
     PROSE = "## Consensus Findings\n\nThe md5 hash."
 
-    def __init__(self, output=_NO_FINDINGS, raises=None, parsing_error=None):
+    def __init__(self, output=_EACH_FINDING, raises=None, parsing_error=None):
         self.output = output
         self.raises = raises
         self.parsing_error = parsing_error
@@ -46,7 +51,28 @@ class CapturingLLM:
         self.seen_payload = messages[-1].content
         if self.structured is None:
             return type("Resp", (), {"content": self.PROSE})()
-        return {"raw": _Raw(), "parsed": self.output, "parsing_error": self.parsing_error}
+        output = _each_finding(self.seen_payload) if self.output is _EACH_FINDING else self.output
+        return {"raw": _Raw(), "parsed": output, "parsing_error": self.parsing_error}
+
+
+def _each_finding(payload: str) -> SynthesisOutput:
+    """Each reviewer finding in `payload` once, as an Optional finding of its model alone."""
+    return _synthesis(
+        *(
+            _report_finding(
+                reported_by=[review["model"]],
+                severity=finding["severity"],
+                category=finding["category"],
+                file=finding["file"],
+                line=finding["line"],
+                title=finding["title"],
+                problem=finding["detail"],
+                action="optional",
+            )
+            for review in json.loads(payload)
+            for finding in review["findings"]
+        )
+    )
 
 
 def _report_finding(**overrides) -> dict:
@@ -604,6 +630,59 @@ def test_fallback_returns_empty_synthesis(make_llm):
     assert "Synthesis failed" in out["final_report"]
     assert out["synthesized"] is False
     assert out["synthesis"] == []
+
+
+def test_an_empty_synthesis_of_reviews_that_found_issues_falls_back():
+    """An empty `findings` list says the reviews found nothing. These did not.
+
+    Rendered as it stands, it is a clean synthesized report that hides every
+    reviewer's finding behind "No consensus findings.", and it is stored as
+    this commit's answer, so a re-run replays it instead of retrying. Like a
+    reply with no tool call, it is no synthesis at all.
+    """
+    out = synthesize_node(_agreeing(), llm_builder=lambda _: CapturingLLM(output=_NO_FINDINGS))
+    report = out["final_report"]
+    assert "Synthesis failed (ValueError: returned no findings" in report
+    assert "#### **critical** · security — md5 hashing" in report
+    assert out["synthesized"] is False
+    assert out["synthesis"] == []
+
+
+def test_an_empty_synthesis_of_clean_reviews_is_a_clean_report():
+    state = {"results": [ReviewResult(model="m1"), ReviewResult(model="m2")]}
+    out = synthesize_node(state, llm_builder=lambda _: CapturingLLM(output=_NO_FINDINGS))
+    assert "_No consensus findings._" in out["final_report"]
+    assert out["synthesized"] is True
+    assert out["synthesis"] == []
+
+
+@pytest.mark.parametrize(
+    "silent",
+    [
+        pytest.param(ReviewResult(model="m2"), id="clean-review"),
+        pytest.param(
+            ReviewResult(model="m2", low_confidence_reason="spent its output budget reasoning"),
+            id="low-confidence-empty-review",
+        ),
+    ],
+)
+def test_a_reviewer_that_reported_nothing_does_not_make_consensus(silent):
+    """A review with no findings reported no issue, so it is no issue's reporter.
+
+    Counted, a synthesizer that lists it beside the one model that did report
+    the issue turns a single-model claim into Consensus, and a Blocking tag
+    survives on agreement nobody gave (constraint 6). The low-confidence note
+    already tells the reader such a reviewer is no corroboration.
+    """
+    state = {"results": [_result("m1", "md5 hashing"), silent]}
+    llm = CapturingLLM(output=_synthesis(_report_finding(reported_by=["m1", "m2"])))
+    out = synthesize_node(state, llm_builder=lambda _: llm)
+    (finding,) = out["synthesis"]
+    assert (finding.kind, finding.reported_by, finding.action) == ("unique", ["m1"], "optional")
+    report = out["final_report"]
+    assert "_No consensus findings._" in report
+    assert "_Optional — only one model reported this_" in report
+    assert "- **Optional** F1 · `auth.py:4`" in report
 
 
 _DIFF = (

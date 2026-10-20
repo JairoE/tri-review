@@ -27,7 +27,8 @@ NO_CHECK = "no check named"
 def normalize(findings: list[ReportFinding], reported: list[str]) -> list[NormalizedFinding]:
     """Enforce R4 on each finding, then sort and number them F1..Fn (R5).
 
-    `reported` is the model specs that returned a successful review this run.
+    `reported` is the model specs that returned a successful review with at
+    least one finding this run: a review with none reported nothing.
     """
     panel = set(reported)
     staged: list[NormalizedFinding] = []
