@@ -398,6 +398,9 @@ def render_findings_md(result: ReviewResult) -> str:
             )
         return f"_{result.model} found no issues in this diff._\n" + set_aside
 
+    # Imported here: report.py imports this module for the finding types.
+    from tri_review.report import render_block
+
     ordered = sorted(
         result.findings,
         key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.file, f.line or 0),
@@ -408,11 +411,31 @@ def render_findings_md(result: ReviewResult) -> str:
     parts.append(f"**{count} finding{'' if count == 1 else 's'}**\n")
 
     for finding in ordered:
-        location = finding.file + (f":{finding.line}" if finding.line else "")
-        parts.append(
-            f"### {finding.severity.capitalize()} · {finding.category} — {finding.title}\n\n"
-            f"`{location}`\n\n{finding.detail}"
-            + (f"\n\n**Suggested fix**\n\n{finding.suggested_fix}" if finding.suggested_fix else "")
-        )
+        parts.append(render_block(_as_block(finding), "", "", with_id=False))
 
     return "\n\n".join(parts) + "\n" + set_aside
+
+
+def _as_block(finding: Finding) -> NormalizedFinding:
+    """Adapt one reviewer's `Finding` to the shape `render_block` takes (R11).
+
+    Nobody synthesized it, so the tag, kind and reporter fields are fillers
+    that `render_block(..., with_id=False)` never shows.
+    """
+    return NormalizedFinding(
+        id="",
+        kind="synthesizer",
+        reported_by=[],
+        severity=finding.severity,
+        category=finding.category,
+        file=finding.file,
+        line=finding.line,
+        title=finding.title,
+        problem=finding.detail,
+        trigger=finding.trigger,
+        fix=finding.suggested_fix,
+        fix_start_line=finding.fix_start_line,
+        fix_end_line=finding.fix_end_line,
+        replacement=finding.replacement,
+        action="optional",
+    )
