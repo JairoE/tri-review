@@ -59,7 +59,13 @@ def parse_hunks(diff: str) -> dict[str, FileHunks]:
     pending: tuple[int, int] | None = None  # the open hunk's new-side range
     old_left = new_left = 0
 
-    for line in diff.splitlines():
+    # Split on "\n" only: splitlines() also breaks on \f, \v, U+2028 and friends,
+    # which git treats as content, so a valid hunk would read as truncated.
+    lines = diff.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    for line in lines:
+        line = line.removesuffix("\r")  # a CRLF diff parses as it did with splitlines()
         if (old_left > 0 or new_left > 0) and line[:1] not in _BODY_PREFIXES:
             # The hunk ended before its counted lines did (a truncated or
             # miscounted diff): drop it and read this line as a header, so the

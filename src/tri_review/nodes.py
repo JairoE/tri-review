@@ -473,18 +473,23 @@ def _synthesize(
     return report, True, findings
 
 
-def _offered_fixes(succeeded) -> dict[str, set[tuple]]:
-    """Every fix each reviewer returned, by model, as (file, start, end, replacement)."""
-    offered: dict[str, set[tuple]] = {}
+def _offered_fixes(succeeded) -> dict[str, dict[tuple, set[int | None]]]:
+    """Every fix each reviewer returned, by model.
+
+    Keyed by (file, start, end, replacement), each fix maps to the lines of the
+    findings it was offered for, so a fix can be tied back to its issue.
+    """
+    offered: dict[str, dict[tuple, set[int | None]]] = {}
     for result in succeeded:
-        offered.setdefault(result.model, set()).update(
-            (f.file, f.fix_start_line, f.fix_end_line, f.replacement) for f in result.findings
-        )
+        fixes = offered.setdefault(result.model, {})
+        for f in result.findings:
+            fix = (f.file, f.fix_start_line, f.fix_end_line, f.replacement)
+            fixes.setdefault(fix, set()).add(f.line)
     return offered
 
 
 def _reporters_fix_only(
-    finding: NormalizedFinding, offered: dict[str, set[tuple]]
+    finding: NormalizedFinding, offered: dict[str, dict[tuple, set[int | None]]]
 ) -> NormalizedFinding:
     """`finding`, keeping its fix only if one of its reporters offered exactly that fix (R3).
 
@@ -493,14 +498,24 @@ def _reporters_fix_only(
     other and can be posted as a one-click suggested change: the wrong change
     ADR 0001 exists to prevent. So the fix range and replacement must equal,
     in the same file, a fix that a model in the normalized `reported_by`
-    returned. Otherwise all three are dropped, as R4.1 drops an invented
+    returned, and for this issue: the finding's line must equal the line of
+    the finding that fix was offered for, or lie inside the fix's range.
+    Otherwise a reporter's fix for one issue could be posted under another's
+    title. Failing either, all three are dropped, as R4.1 drops an invented
     reporter, and the finding reads as one with no fix code.
     """
     fix = (finding.file, finding.fix_start_line, finding.fix_end_line, finding.replacement)
     if fix[1:] == (None, None, None):
         return finding
-    if any(fix in offered.get(model, ()) for model in finding.reported_by):
-        return finding
+    start = finding.fix_start_line
+    end = finding.fix_end_line if finding.fix_end_line is not None else start
+    in_range = (
+        finding.line is not None and start is not None and start <= finding.line <= end
+    )
+    for model in finding.reported_by:
+        source_lines = offered.get(model, {}).get(fix)
+        if source_lines is not None and (in_range or finding.line in source_lines):
+            return finding
     return finding.model_copy(
         update={"fix_start_line": None, "fix_end_line": None, "replacement": None}
     )

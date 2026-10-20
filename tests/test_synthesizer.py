@@ -705,14 +705,14 @@ _STORE_FIX = {
 }
 
 
-def _offering(model, file="auth.py", **fix):
-    """`model`'s review of the md5 issue in `file`, offering `fix` when one is given."""
+def _offering(model, file="auth.py", line=3, **fix):
+    """`model`'s review of the md5 issue at `file`:`line`, offering `fix` when one is given."""
     return ReviewResult(
         model=model,
         findings=[
             Finding(
                 file=file,
-                line=3,
+                line=line,
                 severity="critical",
                 category="security",
                 title="md5 hashing",
@@ -729,10 +729,10 @@ def test_applyability_is_set_from_the_diff_in_state():
     unrelated_fix = {"fix_start_line": 40, "fix_end_line": 40, "replacement": "x = 1"}
     inside = _report_finding(line=3, **_STORE_FIX)
     outside = _report_finding(title="unrelated", line=40, **unrelated_fix)
-    # Each fix is copied from one of the finding's reporters, as R3 requires:
-    # m1 offered the first, m2 the second.
+    # Each fix is copied from one of the finding's reporters, for that issue,
+    # as R3 requires: m1 offered the first at line 3, m2 the second at line 40.
     state = {
-        "results": [_offering("m1", **_STORE_FIX), _offering("m2", **unrelated_fix)],
+        "results": [_offering("m1", **_STORE_FIX), _offering("m2", line=40, **unrelated_fix)],
         "diff": _DIFF,
     }
     llm = CapturingLLM(output=_synthesis(inside, outside))
@@ -749,56 +749,72 @@ def test_applyability_is_set_from_the_diff_in_state():
 
 
 @pytest.mark.parametrize(
-    "results, fix, reported_by",
+    "results, fix, reported_by, line",
     [
         pytest.param(
             [_offering("m1"), _offering("m2")],
             {**_STORE_FIX, "replacement": "import os; os.system('rm -rf /')"},
             ["m1", "m2"],
+            3,
             id="no-reviewer-offered-a-fix",
         ),
         pytest.param(
             [_offering("m1", **_STORE_FIX), _offering("m2")],
             {**_STORE_FIX, "replacement": "def store(password):\n    return password"},
             ["m1", "m2"],
+            3,
             id="reporters-replacement-edited",
         ),
         pytest.param(
             [_offering("m1", **_STORE_FIX), _offering("m2")],
             {**_STORE_FIX, "fix_start_line": 3},
             ["m1", "m2"],
+            3,
             id="reporters-range-moved",
         ),
         pytest.param(
             [_offering("m1", file="other.py", **_STORE_FIX), _offering("m2")],
             _STORE_FIX,
             ["m1", "m2"],
+            3,
             id="offered-for-another-file",
         ),
         pytest.param(
             [_offering("m1", **_STORE_FIX), _offering("m2")],
             _STORE_FIX,
             ["m2"],
+            3,
             id="offered-by-a-model-not-listed",
         ),
         pytest.param(
             [_offering("m1"), _offering("m2")],
             {"fix_start_line": 2, "fix_end_line": 3},
             ["m1", "m2"],
+            3,
             id="range-no-reviewer-offered",
+        ),
+        pytest.param(
+            # m1 offered this exact fix for its md5 finding at line 3; the
+            # synthesized finding is a different issue at line 40, outside the
+            # fix range, so the fix is not the reporters' fix for this issue.
+            [_offering("m1", **_STORE_FIX), _offering("m2")],
+            _STORE_FIX,
+            ["m1", "m2"],
+            40,
+            id="reporters-fix-for-another-issue",
         ),
     ],
 )
-def test_a_fix_no_listed_reporter_offered_is_dropped(results, fix, reported_by):
+def test_a_fix_no_listed_reporter_offered_is_dropped(results, fix, reported_by, line):
     """The synthesizer copies a reporter's fix; it never writes one (R3).
 
     Passed through, a replacement no reviewer offered is checked against the
     diff like any other and posted as a one-click suggested change: the wrong
     change ADR 0001 exists to prevent. Only an exact copy of a fix that a
-    listed reporter offered for the same file survives; anything else loses
+    listed reporter offered for the same file and issue survives; anything else loses
     all three fix fields, so neither the code nor its range reaches the report.
     """
-    invented = _report_finding(line=3, reported_by=reported_by, **fix)
+    invented = _report_finding(line=line, reported_by=reported_by, **fix)
     llm = CapturingLLM(output=_synthesis(invented))
     out = synthesize_node({"results": results, "diff": _DIFF}, llm_builder=lambda _: llm)
     (finding,) = out["synthesis"]
@@ -807,5 +823,5 @@ def test_a_fix_no_listed_reporter_offered_is_dropped(results, fix, reported_by):
     report = out["final_report"]
     assert "Inline suggestion posted" not in report
     assert "```" not in report, "the dropped replacement must not be rendered"
-    assert "`auth.py:3` ·" in report, "the location falls back to the finding's line"
+    assert f"`auth.py:{line}` ·" in report, "the location falls back to the finding's line"
     assert out["synthesized"] is True

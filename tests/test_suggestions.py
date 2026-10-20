@@ -121,6 +121,23 @@ def test_no_newline_at_end_of_file_marker_is_ignored():
     assert hunks["b.py"].ranges == [(1, 2)]
 
 
+def test_line_separator_inside_an_added_line_is_not_a_line_end():
+    # Git ends lines only at "\n"; U+2028 is content, so the hunk is complete.
+    diff = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+        "@@ -1,1 +1,2 @@\n+s = 'a\u2028b'\n x\n"
+    )
+    assert parse_hunks(diff)["a.py"].ranges == [(1, 2)]
+
+
+def test_crlf_diff_parses_like_lf():
+    diff = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+        "@@ -1,2 +1,2 @@\n-a = 1\n+a = 2\n b = 3\n"
+    )
+    assert parse_hunks(diff.replace("\n", "\r\n")) == parse_hunks(diff)
+
+
 def test_body_lines_that_look_like_headers_are_body():
     diff = (
         "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
