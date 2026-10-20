@@ -243,6 +243,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 5: Deterministic renderer (R6, R11)
 
+**Status:** done.
+
 **Implement:** Sonnet @ high / Opus @ medium · **Review:** Opus @ medium / Sonnet @ high
 
 - **Files:** modify `src/tri_review/report.py`, `src/tri_review/schema.py` (`render_findings_md`); tests `tests/test_report.py`, `tests/test_render.py`.
