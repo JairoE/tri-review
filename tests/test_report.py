@@ -442,3 +442,13 @@ def test_report_code_block_uses_a_longer_fence_when_needed():
     replacement = "print('''\n```\nhi\n```\n''')"
     text = block(norm(fix_start_line=1, fix_end_line=5, replacement=replacement, file="docs/a.md"))
     assert f"````markdown\n{replacement}\n````" in text
+
+
+def test_location_code_span_outgrows_backticks_in_the_path():
+    finding = norm(file="src/we`ird.py", line=42, fix="Rename it.")
+    text = report.render_report([finding], REPO, SHA)
+    label = "``src/we`ird.py:42``"
+    assert f"[{label}](" in text
+    assert f"{label} — Rename it." in text
+    edge = block(norm(file="`x.py", line=42), "", "")
+    assert "`` `x.py:42 ``" in edge  # a path starting with a backtick is padded

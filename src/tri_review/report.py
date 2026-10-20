@@ -9,6 +9,7 @@ functions: no LLM, no I/O.
 from __future__ import annotations
 
 import posixpath
+import re
 from urllib.parse import quote
 
 from tri_review.schema import SEVERITY_ORDER, NormalizedFinding, ReportFinding
@@ -220,7 +221,7 @@ def render_report(findings: list[NormalizedFinding], link_repo: str, head_sha: s
 
 
 def _next_step(f: NormalizedFinding) -> str:
-    text = f"- **{ACTION_LABEL[f.action]}** {f.id} · `{_location_text(f)}` — {_sentence(f.fix)}"
+    text = f"- **{ACTION_LABEL[f.action]}** {f.id} · {_code_span(_location_text(f))} — {_sentence(f.fix)}"
     if f.action == "blocking_pending_check" and _stated(f.check):
         text += f" Check: {_sentence(f.check)}"
     if f.action != "optional" and _stated(f.falsified_by):
@@ -246,8 +247,21 @@ def _location_text(f: NormalizedFinding) -> str:
     return f"{f.file}:{start}" if start == end else f"{f.file}:{start}-{end}"
 
 
+def _code_span(text: str) -> str:
+    """`text` as an inline code span that a backtick in it cannot end early.
+
+    The delimiter is one backtick longer than the longest run in `text`; a
+    space pads each side when `text` starts or ends with a backtick, as
+    CommonMark requires.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    delimiter = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{delimiter}{pad}{text}{pad}{delimiter}"
+
+
 def _location_link(f: NormalizedFinding, link_repo: str, head_sha: str) -> str:
-    text = f"`{_location_text(f)}`"
+    text = _code_span(_location_text(f))
     if not (link_repo and head_sha):
         return text
     url = f"https://github.com/{link_repo}/blob/{head_sha}/{quote(f.file, safe='/')}"
