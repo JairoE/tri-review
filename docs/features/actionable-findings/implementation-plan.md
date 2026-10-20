@@ -210,6 +210,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 4: Diff hunks and applyability (R7)
 
+**Status:** done.
+
 **Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 - **Files:** create `src/tri_review/suggestions.py`, `tests/test_suggestions.py`.
