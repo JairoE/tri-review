@@ -5,7 +5,7 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Any, TypedDict
 
-from .schema import ReviewResult
+from .schema import NormalizedFinding, ReviewResult
 
 
 class ReviewState(TypedDict, total=False):
@@ -13,6 +13,9 @@ class ReviewState(TypedDict, total=False):
     # "owner/name" to review a repo the process is not checked out into, or
     # absent/empty to use whatever repo the cwd is in.
     repo: str
+    # "owner/name" for the report's permalinks, or "" when unknown. Set by the
+    # CLI. Not `repo`, which stays empty in cwd mode, the mode the Action uses.
+    link_repo: str
     # The PR's head commit SHA. File contents are read at this ref, so leaving it
     # to be resolved by the entry node is safe, but overriding it with anything
     # other than the reviewed revision silently corrupts the review.
@@ -45,3 +48,7 @@ class ReviewState(TypedDict, total=False):
     # findings fallback. That report is still shown, but it must not be stored
     # as the answer for this commit: a re-run should retry the synthesis.
     synthesized: bool
+    # The normalized findings `final_report` was rendered from, with each
+    # fix's applyability already checked against `diff`. Empty on the raw
+    # fallback, which has no synthesis to store or post.
+    synthesis: list[NormalizedFinding]

@@ -1118,7 +1118,7 @@ def test_a_fresh_run_reads_the_ledger_once(monkeypatch, tmp_path):
     read anywhere on the path would be counted.
     """
     from tri_review import context, graph, history
-    from tri_review.schema import ReviewOutput
+    from tri_review.schema import ReviewOutput, SynthesisOutput
 
     ledger = '[[dismissed]]\nclaim = "the widget leaks"\nreason = "it does not"\n'
     reads = []
@@ -1138,9 +1138,13 @@ def test_a_fresh_run_reads_the_ledger_once(monkeypatch, tmp_path):
     class Synth:
         seen = ""
 
+        def with_structured_output(self, _schema, include_raw=False):
+            return self
+
         def invoke(self, messages):
             Synth.seen = "\n".join(m.content for m in messages)
-            return type("Resp", (), {"content": "## Consensus Findings\n\nNone."})()
+            return {"raw": type("R", (), {"usage_metadata": None})(),
+                    "parsed": SynthesisOutput(), "parsing_error": None}
 
     def builder(model):
         return Synth() if model == "claude-opus-5" else Stub()
