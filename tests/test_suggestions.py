@@ -1,7 +1,17 @@
 """Diff hunks and which fixes can become inline suggestions (R7)."""
 
 from tri_review.schema import NormalizedFinding
-from tri_review.suggestions import MAX_SUGGESTION_LINES, FileHunks, applyability, parse_hunks
+import hashlib
+
+from tri_review.suggestions import (
+    MAX_SUGGESTION_LINES,
+    FileHunks,
+    applyability,
+    build_review_payload,
+    comment_body,
+    fingerprint,
+    parse_hunks,
+)
 
 # src/auth.py: one hunk covering new lines 40-46, another covering 100-149.
 DIFF = """\
@@ -243,3 +253,124 @@ def test_first_failing_condition_wins():
         reason(file="src/other.py", previously_rejected="Intended.", reported_by=[])
         == "file not in this diff"
     )
+
+
+# --- review payload (R8) -------------------------------------------------
+
+HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+def applyable(**overrides) -> NormalizedFinding:
+    return make(applyable=True, **overrides)
+
+
+def test_payload_shape_matches_reviews_api():
+    payload = build_review_payload([applyable()], HEAD)
+    assert set(payload) == {"commit_id", "event", "body", "comments"}
+    assert payload["commit_id"] == HEAD
+    assert payload["event"] == "COMMENT"
+    assert payload["body"].startswith("<!-- tri-review-suggestions -->\n")
+    assert "`0123456`" in payload["body"]
+    assert len(payload["comments"]) == 1
+
+
+def test_payload_holds_only_applyable_findings():
+    not_applyable = make(id="F2", applyable=False, inline_reason="lines outside the diff")
+    payload = build_review_payload([applyable(), not_applyable], HEAD)
+    assert len(payload["comments"]) == 1
+
+
+def test_single_line_fix_omits_start_line():
+    payload = build_review_payload([applyable(fix_start_line=42, fix_end_line=42)], HEAD)
+    comment = payload["comments"][0]
+    assert comment["path"] == "src/auth.py"
+    assert comment["line"] == 42
+    assert comment["side"] == "RIGHT"
+    assert "start_line" not in comment
+    assert "start_side" not in comment
+
+
+def test_fix_without_end_line_is_single_line():
+    comment = build_review_payload([applyable(fix_end_line=None)], HEAD)["comments"][0]
+    assert comment["line"] == 42
+    assert "start_line" not in comment
+
+
+def test_multi_line_fix_sets_start_and_side_right():
+    comment = build_review_payload([applyable(fix_start_line=42, fix_end_line=44)], HEAD)["comments"][0]
+    assert comment["start_line"] == 42
+    assert comment["start_side"] == "RIGHT"
+    assert comment["line"] == 44
+    assert comment["side"] == "RIGHT"
+
+
+def test_comment_body_starts_with_fingerprint_marker():
+    f = applyable()
+    assert comment_body(f).startswith(f"<!-- tri-review-suggestion:{fingerprint(f)} -->\n")
+
+
+def test_comment_body_is_the_block_without_location_or_code_block():
+    body = comment_body(applyable())
+    assert "### F1 · **major** · bug — Token refresh races logout" in body
+    assert "**Problem:** refresh() writes the token after logout() cleared it." in body
+    assert "**Trigger:** Logout while a refresh request is in flight." in body
+    assert "**Fix:** Check the session is still set before assigning." in body
+    assert "src/auth.py:42" not in body
+    assert "```python" not in body
+    assert "Inline suggestion posted" not in body
+
+
+def test_suggestion_block_holds_replacement_verbatim():
+    replacement = "    if session.active:\n        session.token = token\n"
+    body = comment_body(applyable(replacement=replacement))
+    assert body.endswith("```suggestion\n" + replacement + "```")
+
+
+def test_replacement_without_trailing_newline_gets_one_before_the_fence():
+    body = comment_body(applyable(replacement="x = 1"))
+    assert body.endswith("```suggestion\nx = 1\n```")
+
+
+def test_deletion_is_an_empty_suggestion_block():
+    body = comment_body(applyable(replacement=""))
+    assert body.endswith("```suggestion\n```")
+
+
+def test_suggestion_fence_outgrows_backticks_in_replacement():
+    replacement = 'DOC = """\n```\nexample\n```\n"""\n'
+    body = comment_body(applyable(replacement=replacement))
+    assert body.endswith("````suggestion\n" + replacement + "````")
+
+
+def test_unique_comment_is_marked_unverified():
+    f = applyable(kind="unique", reported_by=["gpt-6-sol"])
+    lines = comment_body(f).splitlines()
+    assert lines[0].startswith("<!-- tri-review-suggestion:")
+    assert lines[1] == "**Unverified:** only `gpt-6-sol` reported this."
+
+
+def test_consensus_comment_is_not_marked_unverified():
+    assert "**Unverified:**" not in comment_body(applyable())
+
+
+def test_fingerprint_is_stable_and_changes_with_replacement():
+    f = applyable()
+    assert fingerprint(f) == fingerprint(applyable())
+    assert len(fingerprint(f)) == 16
+    assert all(c in "0123456789abcdef" for c in fingerprint(f))
+    expected = hashlib.sha256(
+        "\0".join(["src/auth.py", "42", "43", f.replacement, f.title]).encode()
+    ).hexdigest()[:16]
+    assert fingerprint(f) == expected
+    assert fingerprint(applyable(replacement="pass\n")) != fingerprint(f)
+    # The ID and prose are not part of it: renumbering does not repost.
+    assert fingerprint(applyable(id="F7", problem="Reworded.")) == fingerprint(f)
+
+
+def test_no_applyable_findings_returns_none():
+    assert build_review_payload([make(applyable=False)], HEAD) is None
+    assert build_review_payload([], HEAD) is None
+
+
+def test_missing_head_sha_returns_none():
+    assert build_review_payload([applyable()], "") is None
