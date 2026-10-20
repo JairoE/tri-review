@@ -68,6 +68,13 @@ inputs:
     description: 'Post a PR comment with the report.'
     required: false
     default: 'true'
+  suggestions:
+    description: >
+      Post applyable fixes as inline suggested changes. Needs post-comment to
+      be 'true' too. On a pull request from a fork the token is read-only, so
+      this posts nothing and warns; the run's result is unaffected.
+    required: false
+    default: 'true'
   comment-mode:
     description: >
       'append' posts a new comment for every run and marks the previous ones
@@ -97,6 +104,17 @@ outputs:
       $RUNNER_TEMP/tri-review/. Empty when no report was produced (a skip, a
       capped run, or a failure) -- a report.md in the checkout is never this.
     value: ${{ steps.run.outputs.report-path }}
+  review-path:
+    description: >
+      Absolute path to the review payload (the body for GitHub's create-review
+      API) this run wrote, under $RUNNER_TEMP/tri-review/. Empty when no
+      finding had an applyable fix, or when no report was produced.
+    value: ${{ steps.run.outputs.review-path }}
+  suggestions-posted:
+    description: >
+      How many inline suggestions the "Post inline suggestions" step posted.
+      Empty when that step did not run.
+    value: ${{ steps.suggestions.outputs.suggestions-posted }}
   exit-code:
     description: "tri-review's own exit code (see README: 0 success, 2 environment problem, 3 no such PR, 4 fewer than two reviews)."
     value: ${{ steps.run.outputs.exit-code || steps.cap.outputs.exit-code }}
@@ -187,11 +205,14 @@ runs:
         # review. Cleared first because two invocations in one job share
         # RUNNER_TEMP.
         REPORT: ${{ runner.temp }}/tri-review/report.md
+        # Same reasons as REPORT: outside the checkout, and cleared first.
+        # tri-review writes it only when some finding has an applyable fix.
+        REVIEW: ${{ runner.temp }}/tri-review/review.json
       run: |
         set +e
         mkdir -p "$(dirname "$REPORT")"
-        rm -f "$REPORT"
-        args=(--output "$REPORT")
+        rm -f "$REPORT" "$REVIEW"
+        args=(--output "$REPORT" --review-output "$REVIEW")
         [ -n "$INPUT_PR_NUMBER" ] && args+=(--pr "$INPUT_PR_NUMBER")
         # Word-split on whitespace (spaces or newlines) but never glob: a spec
         # is data from the workflow file, not a pattern for this shell.
@@ -212,6 +233,9 @@ runs:
         set -e
 
         echo "exit-code=$exit_code" >> "$GITHUB_OUTPUT"
+        if [ -f "$REVIEW" ]; then
+          echo "review-path=$REVIEW" >> "$GITHUB_OUTPUT"
+        fi
         if [ -f "$REPORT" ]; then
           echo "report-path=$REPORT" >> "$GITHUB_OUTPUT"
         elif [ "$exit_code" -eq 0 ]; then
@@ -326,6 +350,21 @@ runs:
         fi
 
         COMMIT_SHA="$commit_sha" KIND="$kind" bash "${{ github.action_path }}/scripts/pr_comment.sh"
+
+    - name: Post inline suggestions
+      id: suggestions
+      # After the report comment, so the suggestions never land on a PR whose
+      # report did not. review-path is set only when this run's own CLI wrote
+      # a payload: capped, skipped and failed runs leave it empty. The script
+      # always exits 0 -- pass/fail stays with "Enforce result".
+      if: ${{ inputs.post-comment == 'true' && inputs.suggestions == 'true' && (inputs.pr-number || github.event.pull_request.number) && steps.run.outputs.review-path }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+        REVIEW_FILE: ${{ steps.run.outputs.review-path }}
+      run: bash "${{ github.action_path }}/scripts/pr_review.sh"
 
     - name: Enforce result
       shell: bash
