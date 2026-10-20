@@ -60,9 +60,20 @@ Actionable Next Steps). Relay it back to the user as-is — don't summarize it
 into something shorter or rewrite its structure. The whole point of the tool is
 that the synthesis already happened.
 
+Keep the finding IDs (`F1`, `F2`, ...) exactly as printed. They are how the
+user refers back to a finding.
+
+## Applying a finding
+
+Only when the user asks to apply a finding (for example "apply F2"): use that
+finding's `file:start-end` location and its code block from the report, replace
+exactly those lines with that code, and change nothing else. If the finding has
+no code block or its location is only a file, say so and ask rather than
+guessing. Never apply findings the user did not name.
+
 ## Boundaries
 
-- Don't modify code based on the findings unless the user separately asks you to.
+- Don't modify code based on the findings unless the user separately asks you to (see "Applying a finding").
 - Don't manage API keys or run `gh auth login` on the user's behalf.
 - Don't retry a failed run automatically — surface the exit code and let the
   user decide (e.g., a rate-limited provider might just need a minute).
