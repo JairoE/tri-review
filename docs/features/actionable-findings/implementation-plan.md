@@ -315,6 +315,8 @@ every header note and the fallback's no-store behaviour.
 
 ## Task 7: Review payload builder (R8)
 
+**Status:** done.
+
 **Implement:** Opus @ medium / Sonnet @ high · **Review:** Opus @ high / Sonnet @ high
 
 - **Files:** modify `src/tri_review/suggestions.py`; test `tests/test_suggestions.py`.

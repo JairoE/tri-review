@@ -1,18 +1,21 @@
-"""Which fixes can be posted as inline GitHub suggested changes (R7).
+"""Which fixes can be posted as inline GitHub suggested changes (R7, R8).
 
 GitHub only accepts a review comment on lines the PR's diff shows, and a
 multi-line suggestion must stay inside one hunk. `parse_hunks` reads those
 ranges from the unified diff; `applyability` checks a finding against them.
-Pure functions: no LLM, no I/O.
+`build_review_payload` turns the applyable findings into the body of one
+`POST /repos/{owner}/{repo}/pulls/{n}/reviews` call. Pure functions: no LLM,
+no I/O.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
 from tri_review import gating
-from tri_review.report import _stated
+from tri_review.report import _stated, fence_for, render_block
 from tri_review.schema import NormalizedFinding
 
 MAX_SUGGESTION_LINES = 40
@@ -141,3 +144,71 @@ def applyability(finding: NormalizedFinding, hunks: dict[str, FileHunks]) -> str
     if not finding.reported_by:
         return NO_REPORTER
     return None
+
+
+# --- Review payload (R8) -----------------------------------------------------
+
+REVIEW_MARKER = "<!-- tri-review-suggestions -->"
+
+
+def _fix_range(f: NormalizedFinding) -> tuple[int, int]:
+    """The fix's first and last line; callers pass applyable findings only."""
+    start = f.fix_start_line or 0
+    return start, f.fix_end_line if f.fix_end_line is not None else start
+
+
+def fingerprint(f: NormalizedFinding) -> str:
+    """16 hex characters identifying this suggestion across runs.
+
+    Built from the R8 fields: path, fix range, replacement and title, not the
+    finding's ID, so a re-run that only renumbers the finding is recognised as
+    posted. The title and replacement are hashed as given, so a re-run that
+    rewords the title (even whitespace only) yields a new fingerprint.
+    """
+    start, end = _fix_range(f)
+    fields = [f.file, str(start), str(end), f.replacement or "", f.title]
+    return hashlib.sha256("\0".join(fields).encode()).hexdigest()[:16]
+
+
+def comment_body(f: NormalizedFinding) -> str:
+    """The inline comment: the R6 block without its location line, code block
+    or status line, then a suggestion block holding `replacement` verbatim."""
+    block = render_block(f.model_copy(update={"replacement": None}), "", "").split("\n")
+    del block[1]  # the location line: the comment sits on those lines
+
+    lines = [f"<!-- tri-review-suggestion:{fingerprint(f)} -->"]
+    if f.kind == "unique" and f.reported_by:
+        lines.append(f"**Unverified:** only `{f.reported_by[0]}` reported this.")
+    lines += block
+
+    replacement = f.replacement or ""
+    if replacement and not replacement.endswith("\n"):
+        replacement += "\n"
+    fence = fence_for(replacement)
+    lines += ["", f"{fence}suggestion\n{replacement}{fence}"]
+    return "\n".join(lines)
+
+
+def build_review_payload(findings: list[NormalizedFinding], head_sha: str) -> dict | None:
+    """The reviews API body for every applyable finding, or None if there are
+    none or the head SHA is unknown (the comments must pin to a commit)."""
+    applyable = [f for f in findings if f.applyable]
+    if not applyable or not head_sha:
+        return None
+
+    comments = []
+    for f in applyable:
+        start, end = _fix_range(f)
+        comment: dict = {"path": f.file}
+        if start != end:
+            comment |= {"start_line": start, "start_side": "RIGHT"}
+        comment |= {"line": end, "side": "RIGHT", "body": comment_body(f)}
+        comments.append(comment)
+
+    count = len(applyable)
+    noun = "fix" if count == 1 else "fixes"
+    body = (
+        f"{REVIEW_MARKER}\n**tri-review suggested changes** for `{head_sha[:7]}`: "
+        f"{count} {noun} from the report. Unverified ones were reported by one model only."
+    )
+    return {"commit_id": head_sha, "event": "COMMENT", "body": body, "comments": comments}
