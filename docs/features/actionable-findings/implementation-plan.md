@@ -346,6 +346,8 @@ every header note and the fallback's no-store behaviour.
 
 ## Task 8: CLI flag, history v2 and replay (R8 CLI, R10)
 
+**Status:** done.
+
 **Implement:** Opus @ medium / Sonnet @ high · **Review:** Opus @ high / Opus @ medium
 
 - **Files:** modify `src/tri_review/cli.py`, `src/tri_review/history.py`; tests `tests/test_cli.py`, `tests/test_history.py`.

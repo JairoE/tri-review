@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, dismissals
-from .schema import ReviewResult
+from .schema import NormalizedFinding, ReviewResult
 
-SCHEMA_VERSION = 1
+# 2: records store the normalized synthesis (R10). A version-1 record is a
+# miss, so each PR is re-reviewed once instead of replaying the old format.
+SCHEMA_VERSION = 2
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -47,6 +49,10 @@ class RunRecord:
     # the synthesizer. Empty means "no ledger", which is also what records
     # written before this field read as -- they replay until a ledger appears.
     ledger_digest: str = ""
+    # The normalized findings `report` was rendered from, with their IDs, kinds
+    # and applyability. Replay writes --review-output from these; the head SHA
+    # is unchanged, so the stored applyability still holds.
+    synthesis: list[NormalizedFinding] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(
@@ -62,6 +68,7 @@ class RunRecord:
                 "created_at": self.created_at or _now(),
                 "report": self.report,
                 "results": [r.model_dump() for r in self.results],
+                "synthesis": [f.model_dump() for f in self.synthesis],
             },
             indent=2,
         )
@@ -87,6 +94,9 @@ class RunRecord:
                 report=str(obj.get("report", "")),
                 results=[ReviewResult.model_validate(r) for r in obj.get("results", [])],
                 created_at=str(obj.get("created_at", "")),
+                synthesis=[
+                    NormalizedFinding.model_validate(f) for f in obj.get("synthesis", [])
+                ],
             )
         except Exception:  # noqa: BLE001 - any malformed field is just a miss
             return None

@@ -296,3 +296,57 @@ def test_reordering_the_ledger_does_not_change_it():
     b = '[[dismissed]]\nclaim = "b"\nreason = "y"\n'
     assert history.ledger_digest(a + b) == history.ledger_digest(b + a)
 
+
+
+def _normalized(**overrides):
+    from tri_review.schema import NormalizedFinding
+
+    base = dict(
+        id="F1",
+        kind="consensus",
+        reported_by=["gpt-5.6-terra", "claude-sonnet-5"],
+        severity="major",
+        category="bug",
+        file="auth.py",
+        line=7,
+        title="MD5 password hash",
+        problem="Fast and unsalted.",
+        trigger="Any login.",
+        fix="Use bcrypt.",
+        fix_start_line=7,
+        fix_end_line=7,
+        replacement="    return bcrypt.hash(pw)\n",
+        action="blocking",
+        applyable=True,
+    )
+    base.update(overrides)
+    return NormalizedFinding(**base)
+
+
+def test_v1_history_record_is_a_miss(tmp_path):
+    """R10: a version-1 record replays the old format, so it is re-reviewed once."""
+    path = history.path_for("octocat/Hello-World", "42", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stored = json.loads(_record().to_json())
+    stored["schema"] = 1
+    stored.pop("synthesis", None)
+    path.write_text(json.dumps(stored), encoding="utf-8")
+
+    assert history.SCHEMA_VERSION == 2
+    assert history.load("octocat/Hello-World", "42", tmp_path) is None
+
+
+def test_synthesis_round_trips_through_history(tmp_path):
+    findings = [
+        _normalized(),
+        _normalized(id="F2", kind="unique", reported_by=["claude-sonnet-5"],
+                    applyable=False, inline_reason="lines outside the diff"),
+    ]
+    history.save(_record(synthesis=findings), tmp_path)
+
+    loaded = history.load("octocat/Hello-World", "42", tmp_path)
+
+    assert loaded is not None
+    assert loaded.synthesis == findings
+    assert [f.id for f in loaded.synthesis] == ["F1", "F2"]
+    assert loaded.synthesis[1].inline_reason == "lines outside the diff"
