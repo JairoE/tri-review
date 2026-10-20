@@ -375,6 +375,8 @@ every header note and the fallback's no-store behaviour.
 
 ## Task 9: Action posting (R9)
 
+**Status:** done.
+
 **Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ xhigh / Opus @ max
 
 This task mutates GitHub state and handles token scopes. Review it as
