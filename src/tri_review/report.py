@@ -289,7 +289,7 @@ def _inline_status(f: NormalizedFinding) -> str:
             return ""
         end = start if end is None else end
         lines = f"L{start}" if start == end else f"L{start}-{end}"
-        return f"_Inline suggestion posted on {lines}._"
+        return f"_Inline suggestion available on {lines}._"
     if f.inline_reason:
         return f"_No inline suggestion: {f.inline_reason}._"
     return ""

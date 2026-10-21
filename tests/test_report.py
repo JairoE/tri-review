@@ -342,11 +342,11 @@ def test_previously_rejected_reason_and_new_evidence_shown():
 def test_inline_status_line_posted_vs_reason():
     base = dict(fix_start_line=42, fix_end_line=44, replacement="x")
     posted = norm(**base).model_copy(update={"applyable": True})
-    assert block(posted).splitlines()[-1] == "_Inline suggestion posted on L42-44._"
+    assert block(posted).splitlines()[-1] == "_Inline suggestion available on L42-44._"
     single = norm(fix_start_line=42, fix_end_line=42, replacement="x").model_copy(
         update={"applyable": True}
     )
-    assert block(single).splitlines()[-1] == "_Inline suggestion posted on L42._"
+    assert block(single).splitlines()[-1] == "_Inline suggestion available on L42._"
     refused = norm(**base).model_copy(update={"inline_reason": "lines outside the diff"})
     assert block(refused).splitlines()[-1] == "_No inline suggestion: lines outside the diff._"
     # No replacement: no status line at all, whatever the flags say.

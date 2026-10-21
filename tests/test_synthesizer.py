@@ -738,7 +738,8 @@ def test_applyability_is_set_from_the_diff_in_state():
     llm = CapturingLLM(output=_synthesis(inside, outside))
     out = synthesize_node(state, llm_builder=lambda _: llm)
     report = out["final_report"]
-    assert "_Inline suggestion posted on L2-3._" in report
+    assert "_Inline suggestion available on L2-3._" in report
+    assert "Inline suggestion posted" not in report, "the report renders before posting"
     assert "_No inline suggestion: lines outside the diff._" in report
     first, second = out["synthesis"]
     assert (first.applyable, first.inline_reason) == (True, None)

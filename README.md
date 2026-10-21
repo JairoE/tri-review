@@ -427,7 +427,7 @@ broken, so leaked hashes are easy to brute-force.
 return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 ```
 
-_Inline suggestion posted on L4-5._
+_Inline suggestion available on L4-5._
 
 ## Unique Insights
 

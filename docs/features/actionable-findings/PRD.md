@@ -191,7 +191,7 @@ if self._session is not None:
     self._session.token = new_token
 ```
 
-_Inline suggestion posted on L42-44._
+_Inline suggestion available on L42-44._
 ~~~
 
 - The location is `file:line`, or `file:start-end` when a fix range exists
@@ -209,8 +209,9 @@ _Inline suggestion posted on L42-44._
 - A previously rejected finding shows "Previously rejected: <reason>" and,
   if present, "New evidence: <text>".
 - The last line of each block is the suggestion status (R7): "Inline
-  suggestion posted on L42-44.", "No inline suggestion: <reason>.", or nothing
-  when the finding has no replacement.
+  suggestion available on L42-44.", "No inline suggestion: <reason>.", or
+  nothing when the finding has no replacement. The report marks eligibility
+  only, because posting happens later and may not happen at all.
 - **Actionable Next Steps** is one bullet per finding with a fix, in ID order:
   `**Blocking** F2 · `src/auth.py:42` — <fix>. Falsified by: <text>`.
   `blocking_pending_check` adds `Check: <check>.`
