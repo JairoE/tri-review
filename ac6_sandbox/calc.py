@@ -4,7 +4,7 @@
 def sum_first_n(values: list[int], n: int) -> int:
     """Return the sum of the first ``n`` items of ``values``."""
     total = 0
-    for i in range(n - 1):
+    for i in range(n):
         total += values[i]
     return total
 
