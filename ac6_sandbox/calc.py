@@ -14,7 +14,7 @@ Usage: compute the sum of the first n numbers.
 
 Example (rendered as a Markdown fenced code block in the help panel):
 
-``python
+```python
 sum_first_n([1, 2, 3], 2)  # returns 3
 ```
 """
