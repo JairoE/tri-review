@@ -12,9 +12,9 @@ def sum_first_n(values: list[int], n: int) -> int:
 HELP_TEXT = """\
 Usage: compute the sum of the first n numbers.
 
-Example (Markdown, shown verbatim in the help panel):
+Example (rendered as a Markdown fenced code block in the help panel):
 
-```python
-sum_first_n([1, 2, 3], 2)  # returns 5
+``python
+sum_first_n([1, 2, 3], 2)  # returns 3
 ```
 """
