@@ -90,6 +90,17 @@ console = Console()
     help="Also write the raw Markdown report to this file.",
 )
 @click.option(
+    "--review-output",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=None,
+    metavar="PATH",
+    help=(
+        "Write the applyable fixes as a GitHub review payload (the body for "
+        "POST /pulls/{n}/reviews) to this file. Not written, and any existing "
+        "file left alone, when no fix is applyable or synthesis failed."
+    ),
+)
+@click.option(
     "--exclude",
     "excludes",
     multiple=True,
@@ -143,6 +154,7 @@ def main(
     no_default_excludes: bool,
     fresh: bool,
     use_triage: bool | None,
+    review_output: Path | None,
 ) -> None:
     """Review a GitHub pull request with three LLMs and report their consensus."""
     load_dotenv(find_dotenv(usecwd=True))
@@ -152,6 +164,7 @@ def main(
         _run(
             pr, repo, dry_run, models, output, excludes,
             no_default_excludes, fresh, use_triage, effort, synthesizer,
+            review_output,
         )
     except NothingToReview as exc:
         # Not a failure: nothing was found worth spending on, and nothing was
@@ -463,6 +476,7 @@ def _run(
     use_triage: bool | None = None,
     effort: str | None = None,
     synthesizer: str | None = None,
+    review_output: Path | None = None,
 ) -> None:
     models = _resolve_models(selected, _resolve_effort(effort))
     synthesizer = _resolve_synthesizer(synthesizer, models)
@@ -511,7 +525,7 @@ def _run(
 
     if identity and not fresh and _replay(
         identity, pr_number, head_sha, models, patterns, output, tree_reason,
-        synthesizer, ledger,
+        synthesizer, ledger, review_output,
     ):
         return
 
@@ -536,14 +550,27 @@ def _run(
     from .graph import build_review_graph
 
     app = build_review_graph(models=models, use_cache=not fresh, synthesizer=synthesizer)
-    report, results, synthesized = _stream_graph(
-        app, pr_number, repo, patterns, len(models), head_sha, diff, ledger_text
+    report, results, synthesized, synthesis = _stream_graph(
+        app, pr_number, repo, patterns, len(models), head_sha, diff, ledger_text,
+        identity or "",
     )
 
     console.print()
     console.print(Markdown(report))
 
     _write_output(report, output)
+    if review_output and tree_reason:
+        # The models numbered lines from the files on disk, which are not
+        # head_sha's, so a payload pinned to head_sha could land on the wrong
+        # lines. Any existing file is left alone, as when nothing is applyable.
+        console.print(
+            f"No inline suggestions: {escape(tree_reason)}, so the line numbers "
+            f"are not {head_sha[:8]}'s.",
+            highlight=False,
+        )
+    else:
+        # A failed synthesis has no findings to post, whatever the update carried.
+        _write_review_output(synthesis if synthesized else [], head_sha, review_output)
 
     if identity and tree_reason:
         console.print(
@@ -571,6 +598,7 @@ def _run(
                 excludes=list(patterns),
                 report=report,
                 results=results,
+                synthesis=list(synthesis),
             )
         )
         if saved is None:
@@ -592,6 +620,7 @@ def _replay(
     tree_reason: str | None = None,
     synthesizer: str | None = None,
     ledger_digest: str | None = None,
+    review_output: Path | None = None,
 ) -> bool:
     """Print the stored review if it still answers the question. True if it did."""
     record = history.load(identity, str(pr_number))
@@ -621,6 +650,9 @@ def _replay(
     )
     console.print(Markdown(record.report))
     _write_output(record.report, output)
+    # Same head SHA, so the stored applyability still holds; fingerprint dedup
+    # in the Action makes re-posting a no-op.
+    _write_review_output(record.synthesis, head_sha, review_output)
     return True
 
 
@@ -637,6 +669,42 @@ def _write_output(report: str, output: Path | None) -> None:
         console.print(f"\n[green]Wrote report to[/green] {output}")
 
 
+def _write_review_output(findings: list, head_sha: str, path: Path | None) -> None:
+    """Write the R8 review payload to `path` and print the summary line.
+
+    Nothing is written -- and an existing file at `path` is left alone -- when
+    no finding is applyable or the head SHA is unknown, so the Action's
+    "file exists" check means "there is something to post".
+    """
+    if not path:
+        return
+    import json
+    from collections import Counter
+
+    from .suggestions import build_review_payload
+
+    payload = build_review_payload(findings, head_sha)
+    if payload is None:
+        console.print("No inline suggestions.", highlight=False)
+        return
+    try:
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        # As with --output: the report is already out, so a bad path is a
+        # warning, not a failed run.
+        console.print(f"\n[yellow]Could not write {path}: {exc}[/yellow]")
+        return
+
+    count = len(payload["comments"])
+    line = f"{count} inline suggestion{'' if count == 1 else 's'}"
+    reasons = Counter(f.inline_reason or "not applyable" for f in findings if not f.applyable)
+    if reasons:
+        skipped = sum(reasons.values())
+        listed = ", ".join(f"{reason} ×{n}" for reason, n in reasons.items())
+        line += f" ({skipped} not applyable: {listed})"
+    console.print(escape(line), highlight=False)
+
+
 def _stream_graph(
     app,
     pr_number: str,
@@ -646,18 +714,21 @@ def _stream_graph(
     head_sha: str = "",
     diff: str = "",
     ledger: str | None = None,
-) -> tuple[str, list, bool]:
+    link_repo: str = "",
+) -> tuple[str, list, bool, list]:
     """Drive the graph, reporting each node's outcome as it lands.
 
     Returns the report, the individual results, and whether the synthesizer
     wrote the report (False for the raw-findings fallback). The results are
     what a later run compares against to say which findings were resolved, so
     they have to survive the graph rather than being folded into prose and
-    discarded.
+    discarded. The fourth item is the normalized synthesis the report was
+    rendered from (empty on the raw fallback).
     """
     report = ""
     results: list = []
     synthesized = False
+    synthesis: list = []
 
     with Progress(
         SpinnerColumn(),
@@ -677,6 +748,8 @@ def _stream_graph(
             "diff": diff,
             "excludes": excludes,
             "results": [],
+            # "owner/name" for the report's permalinks; "" when unknown.
+            "link_repo": link_repo,
         }
         if ledger is not None:
             # Already read from the base by the caller; see ReviewState.ledger.
@@ -697,8 +770,9 @@ def _stream_graph(
                     progress.update(task, description="Synthesizing...")
                     report = update["final_report"]
                     synthesized = update.get("synthesized", True)
+                    synthesis = list(update.get("synthesis") or [])
 
-    return report, results, synthesized
+    return report, results, synthesized, synthesis
 
 
 def _print_result(result, via=console) -> None:

@@ -406,7 +406,8 @@ def test_an_empty_file_list_is_left_to_the_diff_fetch(monkeypatch):
 
 
 def _seed_history(
-    tmp_path, monkeypatch, head_sha="abc123def456", models=None, synthesizer=None
+    tmp_path, monkeypatch, head_sha="abc123def456", models=None, synthesizer=None,
+    synthesis=None,
 ):
     from tri_review import config, history
 
@@ -422,6 +423,7 @@ def _seed_history(
             synthesizer=synthesizer or panel[0],
             excludes=list(config.default_excludes()),
             report="## Consensus Findings\n\nStored report from the last run.",
+            synthesis=list(synthesis or []),
         )
     )
 
@@ -1118,7 +1120,7 @@ def test_a_fresh_run_reads_the_ledger_once(monkeypatch, tmp_path):
     read anywhere on the path would be counted.
     """
     from tri_review import context, graph, history
-    from tri_review.schema import ReviewOutput
+    from tri_review.schema import ReviewOutput, SynthesisOutput
 
     ledger = '[[dismissed]]\nclaim = "the widget leaks"\nreason = "it does not"\n'
     reads = []
@@ -1138,9 +1140,13 @@ def test_a_fresh_run_reads_the_ledger_once(monkeypatch, tmp_path):
     class Synth:
         seen = ""
 
+        def with_structured_output(self, _schema, include_raw=False):
+            return self
+
         def invoke(self, messages):
             Synth.seen = "\n".join(m.content for m in messages)
-            return type("Resp", (), {"content": "## Consensus Findings\n\nNone."})()
+            return {"raw": type("R", (), {"usage_metadata": None})(),
+                    "parsed": SynthesisOutput(), "parsing_error": None}
 
     def builder(model):
         return Synth() if model == "claude-opus-5" else Stub()
@@ -1180,3 +1186,202 @@ def test_a_fresh_run_reads_the_ledger_once(monkeypatch, tmp_path):
     stored = history.load("octocat/Hello-World", "42")
     assert stored is not None and stored.ledger_digest == history.ledger_digest(ledger)
 
+
+
+# --- --review-output (R8) and link_repo ------------------------------------
+
+
+def _normalized(**overrides):
+    from tri_review.schema import NormalizedFinding
+
+    base = dict(
+        id="F1",
+        kind="consensus",
+        reported_by=["gpt-5.1", "claude-opus-5"],
+        severity="major",
+        category="bug",
+        file="src/auth.py",
+        line=42,
+        title="Token refresh races logout",
+        problem="refresh() writes the token after logout() cleared it.",
+        trigger="Logout while a refresh request is in flight.",
+        fix="Check the session is still set before assigning.",
+        fix_start_line=42,
+        fix_end_line=43,
+        replacement="    if session.active:\n        session.token = token\n",
+        action="blocking",
+        applyable=True,
+    )
+    base.update(overrides)
+    return NormalizedFinding(**base)
+
+
+def _not_applyable(n, reason="lines outside the diff"):
+    return _normalized(id=f"F{n}", title=f"Finding {n}", applyable=False, inline_reason=reason)
+
+
+class _SynthApp:
+    """A compiled graph stand-in whose synthesize update carries `synthesis`."""
+
+    def __init__(self, synthesis, synthesized=True):
+        self.synthesis = synthesis
+        self.synthesized = synthesized
+        self.initial = None
+
+    def stream(self, initial, stream_mode="updates"):
+        self.initial = initial
+        yield {
+            "synthesize": {
+                "final_report": "## Consensus Findings\n\nFresh report.",
+                "synthesized": self.synthesized,
+                "synthesis": self.synthesis,
+            }
+        }
+
+
+def _run_fresh(monkeypatch, tmp_path, app, *extra):
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path / "history"))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    monkeypatch.setattr("tri_review.graph.build_review_graph", lambda **k: app)
+    return CliRunner().invoke(
+        main,
+        ["--repo", "octocat/Hello-World", "--pr", "42",
+         "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5", *extra],
+    )
+
+
+def test_review_output_written_when_a_fix_is_applyable(monkeypatch, tmp_path):
+    import json
+
+    target = tmp_path / "review.json"
+    app = _SynthApp([_normalized(), _not_applyable(2)])
+
+    result = _run_fresh(monkeypatch, tmp_path, app, "--review-output", str(target))
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["commit_id"] == "abc123def456"
+    assert payload["event"] == "COMMENT"
+    assert [c["path"] for c in payload["comments"]] == ["src/auth.py"]
+
+
+def test_review_output_not_written_and_existing_file_untouched_when_none_applyable(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "review.json"
+    target.write_text("left over from another run", encoding="utf-8")
+    app = _SynthApp([_not_applyable(1), _not_applyable(2, "no replacement code")])
+
+    result = _run_fresh(monkeypatch, tmp_path, app, "--review-output", str(target))
+
+    assert result.exit_code == 0, result.output
+    assert target.read_text(encoding="utf-8") == "left over from another run"
+    assert "No inline suggestions." in result.output
+
+
+def test_review_output_not_written_when_synthesis_failed(monkeypatch, tmp_path):
+    target = tmp_path / "review.json"
+    app = _SynthApp([_normalized()], synthesized=False)
+
+    result = _run_fresh(monkeypatch, tmp_path, app, "--review-output", str(target))
+
+    assert result.exit_code == 0, result.output
+    assert not target.exists()
+    assert "No inline suggestions." in result.output
+
+
+def test_review_output_not_written_when_checkout_is_not_the_pr_head(monkeypatch, tmp_path):
+    # In cwd mode the models number lines from the local files; when those are
+    # not head_sha's, a payload pinned to head_sha would land on wrong lines.
+    target = tmp_path / "review.json"
+    target.write_text("left over from another run", encoding="utf-8")
+    monkeypatch.setenv("TRI_REVIEW_HISTORY_DIR", str(tmp_path / "history"))
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {
+            "head_sha": "abc123def456",
+            "url": "https://github.com/octocat/Hello-World/pull/42",
+        },
+    )
+    monkeypatch.setattr(
+        "tri_review.github.working_tree_reason",
+        lambda sha: "the checkout is at deadbeef, not the PR head abc123de",
+    )
+    monkeypatch.setattr("tri_review.dismissals.trusted_ledger", lambda *a, **k: "")
+    monkeypatch.setattr(
+        "tri_review.graph.build_review_graph", lambda **k: _SynthApp([_normalized()])
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--pr", "42", "--reviewer", "gpt-5.1", "--reviewer", "claude-opus-5",
+         "--review-output", str(target)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert target.read_text(encoding="utf-8") == "left over from another run"
+    assert "No inline suggestions" in result.output
+    assert "1 inline suggestion" not in result.output
+
+
+def test_summary_line_counts_applyable_and_reasons(monkeypatch, tmp_path):
+    target = tmp_path / "review.json"
+    findings = [
+        _normalized(id="F1", title="One"),
+        _normalized(id="F2", title="Two", file="src/b.py"),
+        _normalized(id="F3", title="Three", file="src/c.py"),
+        _not_applyable(4),
+        _not_applyable(5),
+    ]
+
+    result = _run_fresh(
+        monkeypatch, tmp_path, _SynthApp(findings), "--review-output", str(target)
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "3 inline suggestions (2 not applyable: lines outside the diff ×2)" in result.output
+
+
+def test_link_repo_reaches_initial_state(monkeypatch, tmp_path):
+    app = _SynthApp([])
+
+    result = _run_fresh(monkeypatch, tmp_path, app)
+
+    assert result.exit_code == 0, result.output
+    assert app.initial["link_repo"] == "octocat/Hello-World"
+
+
+def test_replay_writes_review_output_from_stored_synthesis(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr("tri_review.github.preflight", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tri_review.github.fetch_changed_files", lambda *a, **k: (["src/auth.py"], True)
+    )
+    monkeypatch.setattr(
+        "tri_review.github.fetch_pr_meta",
+        lambda *a, **k: {"head_sha": "abc123def456", "url": ""},
+    )
+    _seed_history(tmp_path, monkeypatch, synthesis=[_normalized()])
+    target = tmp_path / "review.json"
+
+    result = CliRunner().invoke(
+        main, ["--repo", "octocat/Hello-World", "--pr", "42", "--review-output", str(target)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No change since the last review" in result.output
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["commit_id"] == "abc123def456"
+    assert len(payload["comments"]) == 1

@@ -89,6 +89,7 @@ When you run without `--repo` or `--url`, do it from the repo root **with the PR
 | `--url URL` | Sets `--repo` and `--pr` from a PR URL |
 | `--dry-run` | Show the resolved panel and what would be sent. No model calls, no keys needed |
 | `--output FILE` | Also save the Markdown report to a file |
+| `--review-output PATH` | Also write the applyable fixes as a GitHub review payload (the body for `POST /pulls/{n}/reviews`). Not written, and any existing file is left alone, when no fix is applyable, synthesis failed, or the head SHA is unknown. Works on a replayed report too |
 | `--reviewer SPEC` | Add a reviewer (repeatable). See [Choosing models](#choosing-models) |
 | `--synthesizer SPEC` | Model that writes the report |
 | `--effort LEVEL` | Effort for reviewers that don't set their own `@effort` |
@@ -198,6 +199,7 @@ A PR with nothing to review gets a short "Nothing to review" comment, and the ch
 | `force` | `false` | `'true'` ignores `max-reviews` for this run |
 | `fail-on-insufficient-reviews` | `true` | Whether exit code `4` fails the check or only posts a warning |
 | `post-comment` | `true` | Post a PR comment at all |
+| `suggestions` | `true` | Post applyable fixes as inline suggested changes. Needs `post-comment: true`. See [Suggested changes](#suggested-changes) |
 | `comment-mode` | `append` | `append`: a new comment per run. `update`: edit one comment in place |
 | `pr-number` | autodetected | Which PR to review |
 | `github-token` | `${{ github.token }}` | Used for `gh` and for posting comments |
@@ -210,7 +212,26 @@ A PR with nothing to review gets a short "Nothing to review" comment, and the ch
 | `report-path` | Absolute path of the report under `$RUNNER_TEMP/tri-review/`. Empty if no report was produced |
 | `exit-code` | The CLI's exit code |
 | `skipped` | `'true'` if no review was produced |
+| `review-path` | Absolute path of the review payload under `$RUNNER_TEMP/tri-review/`. Empty if no finding had an applyable fix or no report was produced |
+| `suggestions-posted` | How many inline suggestions the "Post inline suggestions" step posted. Empty when that step did not run |
 | `skip-reason` | `path` (every file excluded), `empty-diff`, `triage` (a model found no behaviour change), or `cap` (`max-reviews` reached) |
+
+### Suggested changes
+
+When a finding comes with a fix that can be applied to the PR's diff, the Action posts it as an inline GitHub suggested change, so you can accept it with the **Commit suggestion** button. They go out as one review after the report comment, and each carries the finding's ID (`F2`) from the report.
+
+- A fix is applyable only if its lines fall inside a single hunk of the diff, in a file the PR doesn't delete, and span at most 40 lines. Findings that don't qualify say why in the report ("No inline suggestion: lines outside the diff").
+- Suggestions are not repeated: each is tagged with a fingerprint, and a re-run on a later commit skips the ones already posted by the Action's own login.
+- **Fork PRs:** the token on a pull request from a fork is read-only, so GitHub refuses the review. The step prints a warning and posts nothing. The report comment is unaffected.
+- Every failure in this step is a warning. It never changes whether the check passes.
+- Set `suggestions: 'false'` to post the report only.
+
+To get the same payload from the CLI, use `--review-output`:
+
+```bash
+tri-review --pr 123 --review-output review.json
+gh api repos/owner/name/pulls/123/reviews --input review.json
+```
 
 ### Choosing the panel per PR
 
@@ -389,34 +410,35 @@ Model variables accept full specs. Command-line flags override the matching vari
 
 ## Sample output
 
-A diff that adds an MD5 password hash, an off-by-one error, and a SQL injection, reviewed by three OpenAI models (hence the single-provider banner):
+A diff with a token refresh race and an MD5 password hash, reviewed by two models from different providers:
 
-```markdown
-> **All 3 reviewers are `openai` models.** Models from one provider share training
-> data and failure modes, so agreement between them is much weaker evidence than
-> cross-provider consensus. Read the sections below as one opinion stated
-> repeatedly, not as independent corroboration.
-
+````markdown
 ## Consensus Findings
 
-1. **Insecure password hashing using MD5**
-   - **File:** `auth.py`, approx. lines 4–5
-   - **Severity:** Critical (security)
-   - **Issue:** `hash_password` uses `hashlib.md5`, which is fast, unsalted, and
-     cryptographically broken, making leaked hashes easy to brute-force.
-   - **Reported by:** `gpt-5.1`, `gpt-4.1`, `gpt-4o`
+### F1 · **critical** · security — Insecure password hashing using MD5
+[`auth.py:4-5`](https://github.com/o/r/blob/<sha>/auth.py#L4-L5) · `gpt-6-sol`, `claude-sonnet-5`
 
-2. **Out-of-bounds access in `find_user` loop**
-   - **File:** `auth.py`, approx. lines 7–8
-   - **Severity:** Major (bug)
-   - **Issue:** `range(len(users) + 1)` indexes one past the end, raising
-     `IndexError` whenever the user is not found.
-   - **Reported by:** `gpt-5.1`, `gpt-4.1`, `gpt-4o`
+**Problem:** `hash_password` uses `hashlib.md5`, which is fast, unsalted and
+broken, so leaked hashes are easy to brute-force.
+**Trigger:** any database leak.
+**Fix:** hash with a salted, slow function such as `bcrypt` (L4).
+
+```python
+return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+```
+
+_Inline suggestion available on L4-5._
 
 ## Unique Insights
 
-None. All models reported the same underlying issues.
-```
+_No unique insights._
+
+## Actionable Next Steps
+
+- **Blocking** F1 · `auth.py:4` — hash with a salted, slow function such as `bcrypt`.
+````
+
+Each finding is numbered by priority (`F1`, `F2`, ...), shown as Problem, Trigger and Fix, and links to the exact lines at the PR's head commit. The same ID appears in Actionable Next Steps and on the inline suggestion.
 
 ## Development
 

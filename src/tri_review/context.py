@@ -24,6 +24,17 @@ class PathOutsideRepo(Exception):
     """
 
 
+def _numbered(content: str) -> str:
+    """Prefix each line with its 1-indexed number, right-aligned to the file's line count."""
+    # Split on "\n" only: splitlines() also breaks on \f, \v, U+2028 and friends,
+    # which git does not count as line ends, so the numbers would drift from the PR's.
+    lines = content.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    width = len(str(len(lines)))
+    return "\n".join(f"{n:>{width}} | {line}" for n, line in enumerate(lines, 1))
+
+
 @dataclass
 class ReviewContext:
     diff: str
@@ -41,7 +52,7 @@ class ReviewContext:
     def render(self) -> str:
         parts = [f"## Pull request diff\n\n```diff\n{self.diff}\n```"]
         for path, content in self.files.items():
-            parts.append(f"## Current contents of `{path}`\n\n```\n{content}\n```")
+            parts.append(f"## Current contents of `{path}`\n\n```\n{_numbered(content)}\n```")
         if self.dropped:
             parts.append(
                 "## Note\n\nFull contents of these changed files were omitted to fit the "
@@ -187,8 +198,8 @@ def build_context(
         else:
             candidates.append((rel, content))
 
-    for rel, content in sorted(candidates, key=lambda item: len(item[1])):
-        cost = config.estimate_tokens(content)
+    for rel, content in sorted(candidates, key=lambda item: len(_numbered(item[1]))):
+        cost = config.estimate_tokens(_numbered(content))
         if cost <= remaining:
             ctx.files[rel] = content
             remaining -= cost

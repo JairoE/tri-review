@@ -11,6 +11,7 @@ def _finding(**overrides):
         category="bug",
         title="Off-by-one in the loop bound",
         detail="The range excludes the final element.",
+        trigger="Calling it with a one-element list.",
     )
     base.update(overrides)
     return Finding(**base)
@@ -29,12 +30,41 @@ def test_omits_the_line_when_a_finding_is_not_line_specific():
     assert "src/app.py:" not in md
 
 
-def test_includes_a_suggested_fix_when_present():
+def test_renders_problem_trigger_fix_blocks_without_ids():
     md = render_findings_md(
         ReviewResult(model="m1", findings=[_finding(suggested_fix="Use range(n + 1).")])
     )
-    assert "Suggested fix" in md
-    assert "Use range(n + 1)." in md
+    assert "### **major** · bug — Off-by-one in the loop bound" in md
+    assert "**Problem:** The range excludes the final element." in md
+    assert "**Trigger:** Calling it with a one-element list." in md
+    assert "**Fix:** Use range(n + 1)." in md
+    assert "F1" not in md and "Suggested fix" not in md
+
+
+def test_a_missing_trigger_and_fix_follow_the_block_rules():
+    md = render_findings_md(ReviewResult(model="m1", findings=[_finding(trigger="")]))
+    assert "**Trigger:** _not stated_" in md
+    assert "**Fix:**" not in md
+
+
+def test_a_fix_replacement_renders_as_a_code_block_with_a_longer_fence_when_needed():
+    md = render_findings_md(
+        ReviewResult(
+            model="m1",
+            findings=[
+                _finding(fix_start_line=12, fix_end_line=12, replacement="for i in range(n + 1):")
+            ],
+        )
+    )
+    assert "`src/app.py:12`" in md
+    assert "```python\nfor i in range(n + 1):\n```" in md
+    fenced = render_findings_md(
+        ReviewResult(
+            model="m1",
+            findings=[_finding(fix_start_line=1, fix_end_line=2, replacement="a\n```\nb")],
+        )
+    )
+    assert "````python\na\n```\nb\n````" in fenced
 
 
 def test_severity_orders_critical_first():

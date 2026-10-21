@@ -9,8 +9,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from . import cache, config, dismissals
 from .errors import InsufficientReviewsError
 from .providers import build_llm, provider_of
-from .schema import ReviewOutput, ReviewResult
+from .report import normalize, render_block, render_report
+from .schema import NormalizedFinding, ReviewOutput, ReviewResult, SynthesisOutput, _as_block
 from .state import ReviewState
+from .suggestions import applyability, parse_hunks
 
 REVIEW_PROMPT = """You are an expert code reviewer examining a pull request.
 
@@ -20,6 +22,18 @@ Ignore pure style and formatting nitpicks -- a linter handles those.
 You are given the PR diff and, where available, the full current contents of the
 files it touches. Review the change, not the whole file: only report issues the
 diff introduces or leaves unaddressed in the code it touches.
+
+Each line of a file's current contents is prefixed with its line number and
+` | ` (for example ` 42 | return token`); padding varies with the file's length. The prefix is a line number, not code.
+Use these numbers for `line`, `fix_start_line` and `fix_end_line`, and never
+include the prefix in a `replacement`.
+
+Keep each finding short. `detail` is the problem: what is wrong and its
+consequence, in at most two sentences. `trigger` is one sentence naming the
+input, state or sequence of events that makes the problem happen. `suggested_fix`
+is one sentence saying what to change. Offer a `replacement` only when the fix is
+a local edit to the lines you name; set `fix_start_line` and `fix_end_line` to the
+smallest range that contains the change, and leave all three null otherwise.
 
 Report every real issue you find with its file and line. Be specific and
 concrete. An empty findings list is a strong claim that the change is
@@ -39,73 +53,64 @@ treat it as though that reviewer did not weigh in at all. Never cite a
 low-confidence reviewer's silence as corroboration that the diff is clean, and
 never count it as a second independent "no issues found" opinion.
 
-Produce a Markdown report with exactly these three sections:
+Return one entry in `findings` for each distinct issue. Match on the underlying
+problem, not on wording -- the same bug described differently in the same file
+and region is one finding, listed once with every model that reported it. You
+do not write the report: tri-review lays it out from these fields, numbers the
+findings, and checks each one's reporters, tag and fix against the reviews.
 
-## Consensus Findings
-Issues reported by 2 or more models. Match on the underlying problem, not on
-wording -- the same bug described differently in the same file and region is one
-finding. State each once, with file and line, and note which models found it.
-Give its severity in bold -- **critical**, **major**, or **minor** -- taking
-the highest severity any of the agreeing models reported.
+Fill in each field as follows:
 
-## Unique Insights
-Issues reported by only one model. Name that model in bold at the very start of
-the bullet, then the "unverified" qualifier, then that model's reported
-severity in bold, e.g. "**gemini-3.7-flash** (unverified by the other
-reviewers): **major** --" -- never write "unverified by the other reviewer(s)"
-without naming the reporting model in that same phrase. A reader must be able
-to tell who found the issue, and how serious its reporter judged it, from the
-bullet itself, without needing a separate line below it.
+- `reported_by`: the `model` of every reviewer that reported this issue,
+  exactly as the input spells it. Leave it empty only for an issue you are
+  adding yourself rather than lifting from a reviewer's finding.
+- `severity`: the highest severity any of those reviewers gave it.
+- `category`, `file`, `line`: as the reporters gave them. `line` is a line
+  number in the PR head's version of `file`, or null.
+- `title`: one line naming the problem.
+- `problem`: what is wrong and its consequence, in at most two sentences.
+- `trigger`: one sentence naming the input, state or sequence of events that
+  makes the problem happen; an empty string if no reporter stated one.
+- `fix`: one sentence saying what to change, or null.
+- `fix_start_line`, `fix_end_line`, `replacement`: copied unchanged from the
+  one reporter's finding whose fix matches `fix`. Never write, edit or combine
+  replacement code yourself; if no reporter gave one, leave all three null.
+- `action`: `blocking`, `blocking_pending_check` or `optional`, by the rules
+  below.
+- `check`: for `blocking_pending_check` only, the specific check that would
+  settle it -- the call to make, the command to run, the page to read -- so
+  the reader can resolve it in one step.
+- `falsified_by`: for `blocking` and `blocking_pending_check`, what would show
+  the finding to be wrong.
+- `previously_rejected`, `new_evidence`: see the dismissals below; null
+  otherwise.
 
-Every bullet in both sections carries its severity label. Never omit it, even
-when every finding in the section shares the same severity.
-
-## Actionable Next Steps
-The specific changes worth making, highest value first, with file and line
-references and concrete code where useful. If a step comes from a Unique
-Insight rather than a Consensus Finding, name the reporting model here too --
-do not let a single-model, unverified claim read as equally established just
-because it reached this section.
-
-Tag every step **Blocking**, **Blocking pending check**, or **Optional** at the
-start of the bullet, before any other text.
-
-**Blocking** requires all three: it traces back to a Consensus Finding, that
-finding is critical or major severity, and it is settled by what the diff and
-the file contents in front of you actually show. Agreement alone is not
-evidence. Reviewers who cannot observe something can still agree about it, and
-where they share a wrong assumption their agreement reproduces it rather than
+`blocking` requires all three: two or more models reported the issue, it is
+critical or major severity, and it is settled by what the diff and the file
+contents in front of you actually show. Agreement alone is not evidence.
+Reviewers who cannot observe something can still agree about it, and where
+they share a wrong assumption their agreement reproduces it rather than
 correcting it -- so treat consensus as a reason to look closely, not as proof.
 
-**Blocking pending check** is for a step that would be Blocking except that it
-rests on behaviour none of the reviewers could observe: how a provider, API,
+`blocking_pending_check` is for an issue that would be `blocking` except that
+it rests on behaviour none of the reviewers could observe: how a provider, API,
 library, runtime, or model actually responds; what a service accepts or
-returns; what a particular version does. Name the specific check that would
-settle it -- the call to make, the command to run, the page to read -- so the
-reader can resolve it in one step. Never present an unobserved claim as a
-required change.
+returns; what a particular version does. Name the check that would settle it
+in `check`. Never present an unobserved claim as a required change.
 
-Everything else -- minor-severity findings, single-model Unique Insights, and
-any suggestion you are adding yourself rather than lifting from a specific
-finding -- is **Optional**.
-
-End every Blocking and Blocking pending check step with a short "Falsified by:"
-clause naming what would show it to be wrong. A step whose falsifier you cannot
-name is a speculation, not a requirement; make it Optional.
-
-A reader skimming just the bold tags should be able to tell what has to be
-fixed before merge, what needs one check first, and what can wait.
+Everything else -- minor-severity issues, issues only one model reported, and
+any issue you are adding yourself -- is `optional`. An issue whose falsifier
+you cannot name is a speculation, not a requirement; make it `optional`.
 
 You may be given a list of claims a human has already reviewed and rejected on
 this codebase. Never silently drop a finding because it matches one. Report it,
-say plainly that it was previously rejected and give the recorded reason, and
-make it Optional -- unless this diff carries new evidence the earlier rejection
-did not account for, in which case say what that new evidence is. A reader must
-always be able to see that a finding was raised and on what grounds it was set
-aside.
+put the recorded reason in `previously_rejected`, and make it `optional` --
+unless this diff carries new evidence the earlier rejection did not account
+for, in which case say what that new evidence is in `new_evidence`. A reader
+must always be able to see that a finding was raised and on what grounds it was
+set aside.
 
-If a section has nothing in it, say so in one line rather than padding it.
-Do not reproduce the raw reviews.
+If the reviews report no issues, return an empty `findings` list.
 """
 
 
@@ -333,6 +338,9 @@ def synthesize_node(
 
     `synthesizer` is any model spec, reviewer or not. The graph always passes
     one; the fallback is for direct callers and mirrors the CLI's default.
+
+    Returns the report, whether the synthesizer produced it, and `synthesis`:
+    the normalized findings the report was rendered from, [] on the fallback.
     """
     results = state.get("results", [])
     succeeded = [r for r in results if r.ok]
@@ -352,18 +360,39 @@ def synthesize_node(
     if synthesizer is None:
         synthesizer = config.synthesizer_model() or results[0].model
 
-    report, synthesized = _synthesize(
-        succeeded, failed, llm_builder, state.get("dismissals") or [], synthesizer
+    report, synthesized, synthesis = _synthesize(
+        succeeded,
+        failed,
+        llm_builder,
+        state.get("dismissals") or [],
+        synthesizer,
+        diff=state.get("diff") or "",
+        link_repo=state.get("link_repo") or "",
+        # `head_ref` holds the PR head's commit SHA (see ReviewState), which
+        # the report's permalinks pin to.
+        head_sha=state.get("head_ref") or "",
     )
-    return {"final_report": report, "synthesized": synthesized}
+    return {"final_report": report, "synthesized": synthesized, "synthesis": synthesis}
 
 
 def _synthesize(
-    succeeded, failed, llm_builder, recorded_dismissals=(), synthesizer: str = ""
-) -> tuple[str, bool]:
-    """Ask a model to cross-reference the structured findings into one report.
+    succeeded,
+    failed,
+    llm_builder,
+    recorded_dismissals=(),
+    synthesizer: str = "",
+    diff: str = "",
+    link_repo: str = "",
+    head_sha: str = "",
+) -> tuple[str, bool, list[NormalizedFinding]]:
+    """Ask a model to cross-reference the structured findings, then render them.
 
-    Returns the report and whether the synthesizer actually wrote it.
+    The model returns `ReportFinding`s (ADR 0001). tri-review normalizes them
+    (R4, R5), keeps only fixes a reporter offered (R3), checks each fix against
+    the diff's hunks (R7), and renders the report itself (R6), so the model's
+    tags, fixes and layout are never taken on trust. Returns the report,
+    whether it was synthesized, and the findings it was rendered from: [] for
+    the raw fallback, which has none.
     """
     # Only the synthesizer sees recorded dismissals. The reviewers stay blind
     # to them so their findings stay independent -- a dismissal changes how
@@ -392,21 +421,110 @@ def _synthesize(
 
     try:
         llm = llm_builder(synthesizer)
-        response = llm.invoke(
+        structured = llm.with_structured_output(SynthesisOutput, include_raw=True)
+        raw_result = structured.invoke(
             [
                 SystemMessage(content=SYNTHESIS_PROMPT),
                 *([SystemMessage(content=recorded)] if recorded else []),
                 HumanMessage(content=payload),
             ]
         )
-        return header + _text_of(response), True
+        parsing_error = raw_result.get("parsing_error")
+        if parsing_error is not None:
+            # As in review_with: include_raw=True returns a parse failure
+            # instead of raising it, and unchecked it would pass for a
+            # synthesis that found nothing.
+            raise parsing_error
+        output = raw_result["parsed"]
+        if output is None:
+            # No tool call at all. Rendering that as an empty synthesis would
+            # hide every reviewer's findings behind "No consensus findings."
+            raise ValueError("returned no structured output")
+        if output.malformed and not output.findings:
+            raise ValueError(_all_malformed_error(output.malformed))
+        # Only a review with findings can have reported an issue. A clean or
+        # low-confidence empty review listed in `reported_by` would otherwise
+        # count toward Consensus, and keep a Blocking tag nobody agreed to.
+        reporters = [r.model for r in succeeded if r.findings]
+        if not output.findings and reporters:
+            # An empty list means the reviews found nothing. When they found
+            # something, it would hide all of it behind "No consensus
+            # findings." and be stored as this commit's answer.
+            reported = sum(len(r.findings) for r in succeeded)
+            raise ValueError(f"returned no findings, though the reviews reported {reported}")
+        hunks = parse_hunks(diff)
+        offered = _offered_fixes(succeeded)
+        findings = [
+            _with_applyability(_reporters_fix_only(finding, offered), hunks)
+            for finding in normalize(output.findings, reporters)
+        ]
+        report = (
+            header
+            + _synthesis_malformed_note(output.malformed)
+            + render_report(findings, link_repo, head_sha)
+        )
     except Exception as exc:  # noqa: BLE001 - the reviews already cost money; don't lose them
         return (
             header
             + f"> Synthesis failed ({type(exc).__name__}: {exc}). "
             "Raw findings from each model follow.\n\n"
-            + _raw_listing(succeeded, recorded_dismissals)
-        ), False
+            + _raw_listing(succeeded, recorded_dismissals, link_repo, head_sha)
+        ), False, []
+    return report, True, findings
+
+
+def _offered_fixes(succeeded) -> dict[str, dict[tuple, set[int | None]]]:
+    """Every fix each reviewer returned, by model.
+
+    Keyed by (file, start, end, replacement), each fix maps to the lines of the
+    findings it was offered for, so a fix can be tied back to its issue.
+    """
+    offered: dict[str, dict[tuple, set[int | None]]] = {}
+    for result in succeeded:
+        fixes = offered.setdefault(result.model, {})
+        for f in result.findings:
+            fix = (f.file, f.fix_start_line, f.fix_end_line, f.replacement)
+            fixes.setdefault(fix, set()).add(f.line)
+    return offered
+
+
+def _reporters_fix_only(
+    finding: NormalizedFinding, offered: dict[str, dict[tuple, set[int | None]]]
+) -> NormalizedFinding:
+    """`finding`, keeping its fix only if one of its reporters offered exactly that fix (R3).
+
+    The synthesizer copies fixes; it never writes them. Passed through, a
+    replacement no reviewer offered is checked against the diff like any
+    other and can be posted as a one-click suggested change: the wrong change
+    ADR 0001 exists to prevent. So the fix range and replacement must equal,
+    in the same file, a fix that a model in the normalized `reported_by`
+    returned, and for this issue: the finding's line must equal the line of
+    the finding that fix was offered for, or lie inside the fix's range.
+    Otherwise a reporter's fix for one issue could be posted under another's
+    title. Failing either, all three are dropped, as R4.1 drops an invented
+    reporter, and the finding reads as one with no fix code.
+    """
+    fix = (finding.file, finding.fix_start_line, finding.fix_end_line, finding.replacement)
+    if fix[1:] == (None, None, None):
+        return finding
+    start = finding.fix_start_line
+    end = finding.fix_end_line if finding.fix_end_line is not None else start
+    in_range = (
+        finding.line is not None and start is not None and start <= finding.line <= end
+    )
+    for model in finding.reported_by:
+        source_lines = offered.get(model, {}).get(fix)
+        if source_lines is not None and (in_range or finding.line in source_lines):
+            return finding
+    return finding.model_copy(
+        update={"fix_start_line": None, "fix_end_line": None, "replacement": None}
+    )
+
+
+def _with_applyability(finding: NormalizedFinding, hunks) -> NormalizedFinding:
+    """`finding` with R7's verdict on its fix: applyable, or why it is not."""
+    reason = applyability(finding, hunks)
+    return finding.model_copy(update={"applyable": reason is None, "inline_reason": reason})
 
 
 def _panel_line(succeeded, failed, synthesizer: str) -> str:
@@ -496,6 +614,23 @@ def _malformed_note(succeeded) -> str:
     )
 
 
+def _synthesis_malformed_note(malformed: list[str]) -> str:
+    """Name the synthesized findings that were set aside as malformed (R3).
+
+    The rest of the synthesis still stands, as a reviewer's review does when
+    one of its findings is set aside, but the reader must know the synthesizer
+    said more than the report shows.
+    """
+    if not malformed:
+        return ""
+    lines = "\n".join(f"- {entry}" for entry in malformed)
+    return (
+        f"> **The synthesizer returned {len(malformed)} finding(s) that did not match the "
+        "schema.** Those findings are not in this report.\n"
+        f"{lines}\n\n"
+    )
+
+
 def _failure_note(failed) -> str:
     if not failed:
         return ""
@@ -503,15 +638,11 @@ def _failure_note(failed) -> str:
     return f"> **{len(failed)} model(s) did not report.** This review is based on the rest.\n{lines}\n\n"
 
 
-def _text_of(response) -> str:
-    content = getattr(response, "content", response)
-    if isinstance(content, list):  # some providers return content blocks
-        return "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
-    return str(content)
+def _raw_listing(succeeded, recorded_dismissals=(), link_repo: str = "", head_sha: str = "") -> str:
+    """Each model's findings in the block format (R11), plus what a human already rejected.
 
-
-def _raw_listing(succeeded, recorded_dismissals=()) -> str:
-    """Each model's findings as-is, plus what a human already rejected.
+    The blocks carry no ID, reporter line or suggestion status: nothing was
+    synthesized, so there is no consensus to state and no payload to post.
 
     The dismissals are listed rather than matched to findings: the model that
     would do the matching is the one that just failed. Listing them keeps the
@@ -522,10 +653,10 @@ def _raw_listing(succeeded, recorded_dismissals=()) -> str:
     for result in succeeded:
         lines.append(f"### {result.model} ({len(result.findings)} findings)")
         for finding in result.findings:
-            lines.append(
-                f"- **{finding.severity}/{finding.category}** `{finding.file}:{finding.line}` "
-                f"— {finding.title}\n  {finding.detail}"
-            )
+            block = render_block(_as_block(finding), link_repo, head_sha, with_id=False)
+            # One heading level below the model's, so each block reads as one
+            # of that model's findings rather than as the next model.
+            lines += ["", "#" + block]
         lines.append("")
     if recorded_dismissals:
         lines.append("### Previously rejected")

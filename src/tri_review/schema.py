@@ -21,8 +21,39 @@ class Finding(BaseModel):
     severity: Severity = Field(description="critical, major, or minor.")
     category: Category = Field(description="bug, security, performance, or logic.")
     title: str = Field(description="One-line statement of the problem.")
-    detail: str = Field(description="What is wrong and why it matters.")
-    suggested_fix: str | None = Field(default=None, description="Concrete change to make, or null.")
+    detail: str = Field(
+        description="The problem: what is wrong and its consequence, in at most two sentences."
+    )
+    # No default: the model is shown this as required. A reviewer that omits it
+    # anyway is caught by `_normalize_fix`, which keeps the finding with "".
+    trigger: str = Field(
+        description=(
+            "One sentence: the input, state or sequence of events that makes the problem happen."
+        )
+    )
+    suggested_fix: str | None = Field(
+        default=None,
+        description="The fix: one sentence saying what to change, or null.",
+    )
+    fix_start_line: int | None = Field(
+        default=None,
+        description=(
+            "First line the fix replaces, 1-indexed, in the PR head's version of `file`. "
+            "Null when the fix is not a local code change."
+        ),
+    )
+    fix_end_line: int | None = Field(
+        default=None,
+        description="Last line the fix replaces, inclusive. Defaults to fix_start_line.",
+    )
+    replacement: str | None = Field(
+        default=None,
+        description=(
+            "Exact code that replaces fix_start_line..fix_end_line, with its indentation and "
+            "no line-number prefixes. An empty string deletes those lines. Null when the fix "
+            "is not a local code change."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -41,6 +72,69 @@ class Finding(BaseModel):
         if not isinstance(detail, str) or not detail.strip():
             return data
         return {**data, "title": _headline(detail)}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fix(cls, data):
+        """Keep the finding when its trigger or fix fields are unusable.
+
+        A missing or blank `trigger` becomes "". `fix_end_line` defaults to the
+        start line. A fix that cannot be located (start below 1, end before
+        start, a replacement with no start line, or a coordinate that is not a
+        whole number) loses all three fix fields rather than the whole finding,
+        which is still a valid report. Numeric strings and integer-valued
+        floats are coerced first, so the rules apply to the values pydantic
+        will hold.
+        """
+        return _normalize_trigger_and_fix(data)
+
+
+def _normalize_trigger_and_fix(data):
+    """R2's trigger and fix-range rules, shared by Finding and ReportFinding."""
+    if not isinstance(data, dict):
+        return data
+    data = dict(data)
+    trigger = data.get("trigger")
+    data["trigger"] = trigger.strip() if isinstance(trigger, str) else ""
+
+    raw_start, raw_end = data.get("fix_start_line"), data.get("fix_end_line")
+    start, end = _as_line(raw_start), _as_line(raw_end)
+    # A coordinate that is present but not a whole number ("L42", 42.5,
+    # True) cannot be located, so it costs the fix, not the finding.
+    unparseable = (raw_start is not None and start is None) or (
+        raw_end is not None and end is None
+    )
+    if start is not None and end is None and raw_end is None:
+        end = start
+    unlocatable = (
+        unparseable
+        or (start is not None and start < 1)
+        or (start is not None and end is not None and end < start)
+        or (start is None and data.get("replacement") is not None)
+    )
+    if unlocatable:
+        data["fix_start_line"] = data["fix_end_line"] = data["replacement"] = None
+    else:
+        data["fix_start_line"], data["fix_end_line"] = start, end
+    return data
+
+
+def _as_line(value) -> int | None:
+    """`value` as a whole number, or None. Mirrors what pydantic's lax int
+    accepts (numeric strings, integer-valued floats) so R2's range rules run on
+    the values the model will actually hold, except that bool is rejected."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 _TITLE_LIMIT = 100
@@ -98,6 +192,117 @@ def _describe_malformed(index: int, item, exc: ValidationError) -> str:
     label = f"findings[{index}]" + (f" ({file})" if isinstance(file, str) and file else "")
     more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
     return f"{label}: {where}: {first['msg']}{more}"
+
+
+Action = Literal["blocking", "blocking_pending_check", "optional"]
+
+
+class ReportFinding(BaseModel):
+    """One finding of the synthesized report, as the synthesizer returns it (R3).
+
+    The model's claims here -- who reported it, and its tag -- are inputs, not
+    facts: `report.normalize` re-derives consensus and enforces the tag rules.
+    """
+
+    reported_by: list[str] = Field(
+        description="Model specs, exactly as given in the input, that reported this issue."
+    )
+    severity: Severity = Field(description="Highest severity among the reporters.")
+    category: Category = Field(description="bug, security, performance, or logic.")
+    file: str = Field(description="Repository-relative path the finding applies to.")
+    line: int | None = Field(default=None, description="1-indexed line number, or null.")
+    title: str = Field(description="One-line statement of the problem.")
+    problem: str = Field(description="What is wrong and its consequence, in at most two sentences.")
+    # Required in the model-facing schema; `_normalize_trigger_and_fix` keeps
+    # a finding that omits it anyway, with "".
+    trigger: str = Field(
+        description=(
+            "One sentence: the input, state or sequence that makes the problem happen. "
+            'Empty string if no reporter stated one.'
+        )
+    )
+    fix: str | None = Field(default=None, description="One sentence saying what to change, or null.")
+    fix_start_line: int | None = Field(
+        default=None,
+        description="First line a reporter's fix replaces. Taken from a reporter; never invented.",
+    )
+    fix_end_line: int | None = Field(
+        default=None,
+        description="Last line that fix replaces, inclusive. Defaults to fix_start_line.",
+    )
+    replacement: str | None = Field(
+        default=None,
+        description=(
+            "A reporter's exact replacement code for fix_start_line..fix_end_line. "
+            "Taken from a reporter; never invented. Null when there is none."
+        ),
+    )
+    action: Action = Field(description="blocking, blocking_pending_check, or optional.")
+    check: str | None = Field(
+        default=None,
+        description=(
+            "Required for blocking_pending_check: the call, command or page that settles it."
+        ),
+    )
+    falsified_by: str | None = Field(
+        default=None,
+        description="Required for both blocking tags: what would show the finding is wrong.",
+    )
+    previously_rejected: str | None = Field(
+        default=None,
+        description="The recorded dismissal reason, when the finding matches one.",
+    )
+    new_evidence: str | None = Field(
+        default=None,
+        description="What in this diff the recorded dismissal did not account for.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fix(cls, data):
+        """The same trigger and fix-range rules as `Finding` (R2)."""
+        return _normalize_trigger_and_fix(data)
+
+
+class SynthesisOutput(BaseModel):
+    """What the synthesizer model is asked to return (R3)."""
+
+    findings: list[ReportFinding] = Field(
+        default_factory=list,
+        description="One entry per distinct issue across all reviews.",
+    )
+    # As on ReviewOutput: filled by the validator, hidden from the model.
+    malformed: SkipJsonSchema[list[str]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _set_aside_malformed(cls, data):
+        """Validate findings one at a time, so one bad entry costs only itself."""
+        if not isinstance(data, dict) or not isinstance(data.get("findings"), list):
+            return data
+        kept: list[ReportFinding] = []
+        malformed: list[str] = []
+        for index, item in enumerate(data["findings"]):
+            try:
+                kept.append(ReportFinding.model_validate(item))
+            except ValidationError as exc:
+                malformed.append(_describe_malformed(index, item, exc))
+        return {**data, "findings": kept, "malformed": malformed}
+
+
+FindingKind = Literal["consensus", "unique", "synthesizer"]
+
+
+class NormalizedFinding(ReportFinding):
+    """A ReportFinding after `report.normalize`: reporters filtered, tag enforced, numbered."""
+
+    id: str
+    kind: FindingKind
+    # Why the action was lowered to optional, e.g. "only one model reported this".
+    downgrade_reason: str | None = None
+    # Why no inline suggestion is posted (R7); set with `applyable` later.
+    inline_reason: str | None = None
+    applyable: bool = False
 
 
 class ReviewResult(BaseModel):
@@ -193,6 +398,9 @@ def render_findings_md(result: ReviewResult) -> str:
             )
         return f"_{result.model} found no issues in this diff._\n" + set_aside
 
+    # Imported here: report.py imports this module for the finding types.
+    from tri_review.report import render_block
+
     ordered = sorted(
         result.findings,
         key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.file, f.line or 0),
@@ -203,11 +411,31 @@ def render_findings_md(result: ReviewResult) -> str:
     parts.append(f"**{count} finding{'' if count == 1 else 's'}**\n")
 
     for finding in ordered:
-        location = finding.file + (f":{finding.line}" if finding.line else "")
-        parts.append(
-            f"### {finding.severity.capitalize()} · {finding.category} — {finding.title}\n\n"
-            f"`{location}`\n\n{finding.detail}"
-            + (f"\n\n**Suggested fix**\n\n{finding.suggested_fix}" if finding.suggested_fix else "")
-        )
+        parts.append(render_block(_as_block(finding), "", "", with_id=False))
 
     return "\n\n".join(parts) + "\n" + set_aside
+
+
+def _as_block(finding: Finding) -> NormalizedFinding:
+    """Adapt one reviewer's `Finding` to the shape `render_block` takes (R11).
+
+    Nobody synthesized it, so the tag, kind and reporter fields are fillers
+    that `render_block(..., with_id=False)` never shows.
+    """
+    return NormalizedFinding(
+        id="",
+        kind="synthesizer",
+        reported_by=[],
+        severity=finding.severity,
+        category=finding.category,
+        file=finding.file,
+        line=finding.line,
+        title=finding.title,
+        problem=finding.detail,
+        trigger=finding.trigger,
+        fix=finding.suggested_fix,
+        fix_start_line=finding.fix_start_line,
+        fix_end_line=finding.fix_end_line,
+        replacement=finding.replacement,
+        action="optional",
+    )

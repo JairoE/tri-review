@@ -36,6 +36,7 @@ def _argv(tmp_path, **inputs) -> list[str]:
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "GITHUB_OUTPUT": str(tmp_path / "out"),
         "REPORT": str(tmp_path / "rt" / "report.md"),
+        "REVIEW": str(tmp_path / "rt" / "review.json"),
         "ARGV_FILE": str(argv_file),
         "INPUT_PR_NUMBER": "7",
         "INPUT_MODELS": "",
@@ -105,3 +106,39 @@ def test_every_new_input_is_declared():
     for name in ("reviewers", "models", "synthesizer", "effort"):
         assert name in inputs
         assert inputs[name].get("required") is False
+
+
+def _step(name):
+    steps = yaml.safe_load((ROOT / "action.yml").read_text())["runs"]["steps"]
+    return next(s for s in steps if s["name"] == name)
+
+
+def test_suggestions_input_is_optional_and_defaults_true():
+    action = yaml.safe_load((ROOT / "action.yml").read_text())
+    suggestions = action["inputs"]["suggestions"]
+    assert suggestions.get("required") is False
+    assert suggestions["default"] == "true"
+    assert "review-path" in action["outputs"]
+    assert "suggestions-posted" in action["outputs"]
+
+
+def test_step_skipped_without_review_path():
+    """Capped, skipped and failed runs write no review.json, so the run step
+    sets no review-path and nothing is posted (R9)."""
+    step = _step("Post inline suggestions")
+    condition = step["if"]
+    assert "steps.run.outputs.review-path" in condition
+    assert "inputs.suggestions == 'true'" in condition
+    assert "inputs.post-comment == 'true'" in condition
+    assert "inputs.pr-number || github.event.pull_request.number" in condition
+    assert step["env"]["REVIEW_FILE"] == "${{ steps.run.outputs.review-path }}"
+
+    steps = yaml.safe_load((ROOT / "action.yml").read_text())["runs"]["steps"]
+    names = [s["name"] for s in steps]
+    assert names.index("Post PR comment") < names.index("Post inline suggestions")
+    assert names.index("Post inline suggestions") < names.index("Enforce result")
+
+
+def test_run_step_writes_review_output_outside_the_checkout(tmp_path):
+    argv = _argv(tmp_path)
+    assert _values(argv, "--review-output") == [str(tmp_path / "rt" / "review.json")]

@@ -134,6 +134,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 1: Line-numbered file context (R1)
 
+**Status:** done.
+
 **Implement:** Sonnet @ medium / Opus @ medium · **Review:** Opus @ medium / Sonnet @ high
 
 - **Files:** modify `src/tri_review/context.py`, `src/tri_review/nodes.py` (`REVIEW_PROMPT`); test `tests/test_context.py`.
@@ -151,6 +153,8 @@ else fails. Green means the whole suite passes:
 - **Commit:** `feat(context): number file lines so findings cite exact lines`
 
 ## Task 2: Finding schema fields (R2)
+
+**Status:** done.
 
 **Implement:** Sonnet @ high / Opus @ medium · **Review:** Opus @ high / Sonnet @ high
 
@@ -173,6 +177,8 @@ else fails. Green means the whole suite passes:
 - **Commit:** `feat(schema): trigger, fix range and replacement on findings`
 
 ## Task 3: ReportFinding and normalization (R3 schema, R4, R5)
+
+**Status:** done.
 
 **Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
@@ -204,6 +210,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 4: Diff hunks and applyability (R7)
 
+**Status:** done.
+
 **Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 - **Files:** create `src/tri_review/suggestions.py`, `tests/test_suggestions.py`.
@@ -234,6 +242,8 @@ else fails. Green means the whole suite passes:
 - **Commit:** `feat(suggestions): parse diff hunks and decide which fixes are applyable`
 
 ## Task 5: Deterministic renderer (R6, R11)
+
+**Status:** done.
 
 **Implement:** Sonnet @ high / Opus @ medium · **Review:** Opus @ medium / Sonnet @ high
 
@@ -271,6 +281,8 @@ else fails. Green means the whole suite passes:
 
 ## Task 6: Structured synthesis call (R3 call, R11 fallback)
 
+**Status:** done.
+
 **Implement:** Opus @ max / Opus @ xhigh · **Review:** Opus @ high / Opus @ xhigh
 
 The default is Opus @ max because this task is novel design on the
@@ -303,6 +315,8 @@ every header note and the fallback's no-store behaviour.
 
 ## Task 7: Review payload builder (R8)
 
+**Status:** done.
+
 **Implement:** Opus @ medium / Sonnet @ high · **Review:** Opus @ high / Sonnet @ high
 
 - **Files:** modify `src/tri_review/suggestions.py`; test `tests/test_suggestions.py`.
@@ -332,6 +346,8 @@ every header note and the fallback's no-store behaviour.
 
 ## Task 8: CLI flag, history v2 and replay (R8 CLI, R10)
 
+**Status:** done.
+
 **Implement:** Opus @ medium / Sonnet @ high · **Review:** Opus @ high / Opus @ medium
 
 - **Files:** modify `src/tri_review/cli.py`, `src/tri_review/history.py`; tests `tests/test_cli.py`, `tests/test_history.py`.
@@ -358,6 +374,8 @@ every header note and the fallback's no-store behaviour.
 - **Commit:** `feat(cli): --review-output and stored synthesis for replay`
 
 ## Task 9: Action posting (R9)
+
+**Status:** done.
 
 **Implement:** Opus @ high / Opus @ xhigh · **Review:** Opus @ xhigh / Opus @ max
 
@@ -393,6 +411,8 @@ applies here too.
 - **Commit:** `feat(action): post inline suggested changes, deduped by fingerprint`
 
 ## Task 10: README and skill docs
+
+**Status:** done.
 
 **Implement:** Sonnet @ medium / Opus @ low · **Review:** Sonnet @ medium / Opus @ low
 

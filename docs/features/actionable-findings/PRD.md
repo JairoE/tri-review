@@ -138,7 +138,8 @@ is a list of `ReportFinding`:
 
 Malformed entries are set aside one at a time, as `ReviewOutput` does, and
 disclosed in the header. If the structured call fails or nothing validates,
-synthesis has failed and the raw fallback (R11) applies.
+synthesis has failed and the raw fallback (R11) applies. So has an empty
+`findings` list when the reviews reported findings: it would hide them all.
 
 ### R4. Deterministic tag enforcement
 
@@ -146,7 +147,8 @@ tri-review normalizes every `ReportFinding` before rendering. The model's
 claims are inputs, not facts:
 
 1. `reported_by` is filtered to models that returned a successful review in
-   this run (duplicates removed, input order kept).
+   this run with at least one finding (duplicates removed, input order kept).
+   A review with no findings reported nothing, so it corroborates nothing.
 2. **Consensus** = 2 or more remaining reporters. **Unique** = exactly 1.
    **Synthesizer suggestion** = 0.
 3. `blocking` is downgraded to `optional` unless the finding is Consensus,
@@ -189,7 +191,7 @@ if self._session is not None:
     self._session.token = new_token
 ```
 
-_Inline suggestion posted on L42-44._
+_Inline suggestion available on L42-44._
 ~~~
 
 - The location is `file:line`, or `file:start-end` when a fix range exists
@@ -207,8 +209,9 @@ _Inline suggestion posted on L42-44._
 - A previously rejected finding shows "Previously rejected: <reason>" and,
   if present, "New evidence: <text>".
 - The last line of each block is the suggestion status (R7): "Inline
-  suggestion posted on L42-44.", "No inline suggestion: <reason>.", or nothing
-  when the finding has no replacement.
+  suggestion available on L42-44.", "No inline suggestion: <reason>.", or
+  nothing when the finding has no replacement. The report marks eligibility
+  only, because posting happens later and may not happen at all.
 - **Actionable Next Steps** is one bullet per finding with a fix, in ID order:
   `**Blocking** F2 · `src/auth.py:42` — <fix>. Falsified by: <text>`.
   `blocking_pending_check` adds `Check: <check>.`
