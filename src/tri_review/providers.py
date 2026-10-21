@@ -224,7 +224,7 @@ def _openai_has_cache_options(model_name: str) -> bool:
     match = _OPENAI_VERSION.match(model_name)
     if match is None:
         return False
-    return (int(match.group(1)), int(match.group(2) or 0)) >= (5, 6)
+    return (int(match.group(1)), int(match.group(2) or 0)) > (5, 6)
 
 
 def build_llm(spec: str | ModelSpec):

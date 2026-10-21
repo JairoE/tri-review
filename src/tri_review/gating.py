@@ -85,7 +85,7 @@ def matches_any_of_each(paths: list[str], patterns: tuple[str, ...]) -> bool:
     Used to tell a skip caused by the built-in exclude set apart from one caused
     entirely by patterns the operator supplied -- the two have different remedies.
     """
-    return any(matches_any(path, patterns) for path in paths)
+    return all(matches_any(path, patterns) for path in paths)
 
 
 _SECTION_START = re.compile(r"^(?=diff --git )", re.MULTILINE)

@@ -134,8 +134,8 @@ jobs:
               reviewers="gpt-5.4@high gpt-5.2@high gpt-5.1@high"
               synthesizer="gpt-5.4-mini@medium" ;;
             "" | tri-review:again)
-              reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-sonnet-5"
-              synthesizer="gpt-6.1-sol@medium" ;;
+              reviewers="gpt-5.4@high gpt-5.2@xhigh o3@high"
+              synthesizer="gpt-5.4-mini@medium" ;;
             *)
               # Admitted by the job's `if` but missing here: the two lists
               # have drifted. Fail rather than bill the default panel.
@@ -159,6 +159,7 @@ jobs:
           reviewers: ${{ steps.panel.outputs.reviewers }}
           # Two reviews per PR; any of the labels above forces one more.
           max-reviews: 2
+          exclude: .github/**
           force: ${{ github.event.action == 'labeled' }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

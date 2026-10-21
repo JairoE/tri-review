@@ -138,7 +138,7 @@ def path_for(repo: str, pr: str, directory: Path | None = None) -> Path:
     `github.is_repo_relative` applies to untrusted paths.
     """
     base = directory if directory is not None else config.history_dir()
-    identity = f"{repo}:{pr}"
+    identity = f"{repo}{pr}"
     slug = _UNSAFE.sub("-", f"{repo}-pr{pr}").strip("-.") or "unknown"
     # Flattening every separator is what keeps the name from escaping `base`,
     # but it also maps distinct identities onto one name -- `a/b` and `a-b` land

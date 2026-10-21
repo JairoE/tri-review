@@ -84,7 +84,7 @@ def is_repo_relative(path: str) -> bool:
     if re.match(r"^[A-Za-z]:", path):
         return False
     parts = re.split(r"[/\\]", path)
-    return ".." not in parts
+    return ".." not in parts[1:]
 
 
 def parse_pr_url(url: str) -> tuple[str, str]:
@@ -101,7 +101,7 @@ def parse_pr_url(url: str) -> tuple[str, str]:
     # bare `github.com/...` at least as often as the full URL.
     parsed = urlparse(raw if "://" in raw else f"https://{raw}")
     host = parsed.netloc.split("@")[-1].split(":")[0].lower()
-    if host not in ("github.com", "www.github.com"):
+    if not host.endswith("github.com"):
         raise PRNotFoundError(
             f"{url!r} is not a github.com pull request URL.\n"
             "Expected something like https://github.com/octocat/Hello-World/pull/42"
