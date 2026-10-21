@@ -88,12 +88,12 @@ jobs:
       # Pushes and tri-review:again get the default panel.
       # The label name goes in through env, never spliced into the script.
       #
-      # Default: two OpenAI reviewers and one Anthropic, so agreement can cross
-      # a provider boundary. The synthesizer is set explicitly and is not on
-      # the panel: unset, it is the first reviewer, which then judges its own
-      # findings (#29). claude-sonnet-5, not 5.5: v1.2.1 gets a 400 from
-      # sonnet-5-5 (it rejects the forced tool call tri-review uses), and on a
-      # measured PR sonnet-5 was also the reviewer that found the most (#35).
+      # Default: the tri-review:free-2 panel, three OpenAI models on OpenAI's
+      # free daily tier. One provider, so agreement is weaker evidence than a
+      # mixed panel's; tri-review:council-cross and tri-review:deep still
+      # cross a provider boundary when a PR needs that. The synthesizer is set
+      # explicitly and is not on the panel: unset, it is the first reviewer,
+      # which then judges its own findings (#29).
       #
       # The council-gpt and council-claude panels are one provider each, for
       # comparing providers. Their agreement is weaker evidence than a mixed
@@ -133,16 +133,13 @@ jobs:
               # with council-gpt.
               reviewers="gpt-5.4@high gpt-5.2@high gpt-5.1@high"
               synthesizer="gpt-5.4-mini@medium" ;;
-            tri-review:free-2)
+            "" | tri-review:again | tri-review:free-2)
               # Same free tier and caveats as tri-review:free, with o3 in
               # place of gpt-5.1: on a PR with five planted bugs o3 caught
               # all five and gpt-5.4 four. gpt-5.2 stays at @high; @xhigh
               # timed out even at 300s.
               reviewers="gpt-5.4@high o3@high gpt-5.2@high"
               synthesizer="gpt-5.4-mini@medium" ;;
-            "" | tri-review:again)
-              reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-sonnet-5"
-              synthesizer="gpt-6.1-sol@medium" ;;
             *)
               # Admitted by the job's `if` but missing here: the two lists
               # have drifted. Fail rather than bill the default panel.
