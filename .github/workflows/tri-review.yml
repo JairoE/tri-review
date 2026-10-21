@@ -4,8 +4,8 @@ on:
   pull_request:
     # `labeled` is how a PR asks for one more review past the cap: add
     # tri-review:again for the usual panel, or a tri-review:council-* /
-    # tri-review:deep / tri-review:free label for a different one (see "Pick
-    # the panel" below).
+    # tri-review:deep / tri-review:free / tri-review:free-2 label for a
+    # different one (see "Pick the panel" below).
     types: [opened, synchronize, reopened, labeled]
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
     # list in step with the `case` in "Pick the panel".
     if: >-
       github.event.action != 'labeled' ||
-      contains(fromJSON('["tri-review:again", "tri-review:council-gpt", "tri-review:council-claude", "tri-review:council-cross", "tri-review:deep", "tri-review:free"]'), github.event.label.name)
+      contains(fromJSON('["tri-review:again", "tri-review:council-gpt", "tri-review:council-claude", "tri-review:council-cross", "tri-review:deep", "tri-review:free", "tri-review:free-2"]'), github.event.label.name)
     # One review per PR at a time. On the job rather than the workflow, so a
     # run whose job is skipped by the `if` above (an unrelated label) never
     # joins the group and cannot displace a real review. Not
@@ -132,6 +132,13 @@ jobs:
               # 2.5M/day mini pool. One provider, so weaker agreement, as
               # with council-gpt.
               reviewers="gpt-5.4@high gpt-5.2@high gpt-5.1@high"
+              synthesizer="gpt-5.4-mini@medium" ;;
+            tri-review:free-2)
+              # Same free tier and caveats as tri-review:free, with o3 in
+              # place of gpt-5.1: on a PR with five planted bugs o3 caught
+              # all five and gpt-5.4 four. gpt-5.2 stays at @high; @xhigh
+              # timed out even at 300s.
+              reviewers="gpt-5.4@high o3@high gpt-5.2@high"
               synthesizer="gpt-5.4-mini@medium" ;;
             "" | tri-review:again)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-sonnet-5"
