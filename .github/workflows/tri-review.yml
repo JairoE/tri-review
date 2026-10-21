@@ -4,7 +4,8 @@ on:
   pull_request:
     # `labeled` is how a PR asks for one more review past the cap: add
     # tri-review:again for the usual panel, or a tri-review:council-* /
-    # tri-review:deep label for a different one (see "Pick the panel" below).
+    # tri-review:deep / tri-review:free label for a different one (see "Pick
+    # the panel" below).
     types: [opened, synchronize, reopened, labeled]
 
 permissions:
@@ -23,7 +24,7 @@ jobs:
     # list in step with the `case` in "Pick the panel".
     if: >-
       github.event.action != 'labeled' ||
-      contains(fromJSON('["tri-review:again", "tri-review:council-gpt", "tri-review:council-claude", "tri-review:council-cross", "tri-review:deep"]'), github.event.label.name)
+      contains(fromJSON('["tri-review:again", "tri-review:council-gpt", "tri-review:council-claude", "tri-review:council-cross", "tri-review:deep", "tri-review:free"]'), github.event.label.name)
     # One review per PR at a time. On the job rather than the workflow, so a
     # run whose job is skipped by the `if` above (an unrelated label) never
     # joins the group and cannot displace a real review. Not
@@ -124,6 +125,14 @@ jobs:
             tri-review:deep)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-opus-5@high"
               synthesizer="gpt-6-astra@medium" ;;
+            tri-review:free)
+              # OpenAI's free daily tier, which needs data sharing on: PR
+              # code reviewed here is shared with OpenAI. Reviewers draw on
+              # the 250k tokens/day pool, the synthesizer on the separate
+              # 2.5M/day mini pool. One provider, so weaker agreement, as
+              # with council-gpt.
+              reviewers="gpt-5.4@high gpt-5.2@high gpt-5.1@high"
+              synthesizer="gpt-5.4-mini@medium" ;;
             "" | tri-review:again)
               reviewers="gpt-6-sol@high gpt-5.6-sol@high claude-sonnet-5"
               synthesizer="gpt-6.1-sol@medium" ;;
