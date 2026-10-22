@@ -241,7 +241,7 @@ Use labels to pick a different panel for one run. With the setup below, every pu
 |---|---|---|---|
 | `tri-review:again` | the default panel | the default | One more review past the cap |
 | `tri-review:council-gpt` | gpt-6-sol@high, gpt-5.6-sol@high, gpt-6-astra@medium | gpt-6.1-sol@medium | Seeing what OpenAI models alone find |
-| `tri-review:council-claude` | claude-opus-5@high, claude-sonnet-5@high | claude-opus-5@medium | Seeing what Anthropic models alone find |
+| `tri-review:council-claude` | claude-opus-5@high, claude-sonnet-5@high | claude-sonnet-5-5@medium | Seeing what Anthropic models alone find |
 | `tri-review:council-cross` | gpt-6-sol@high, claude-opus-5@high, gemini-3.8-flash | gpt-6.1-sol@medium | One model per provider |
 | `tri-review:deep` | gpt-6-sol@high, gpt-5.6-sol@high, claude-opus-5@high | gpt-6-astra@medium | A heavier review of a risky change |
 
@@ -277,7 +277,7 @@ jobs:
               synthesizer="gpt-6.1-sol@medium" ;;
             tri-review:council-claude)
               reviewers="claude-opus-5@high claude-sonnet-5@high"
-              synthesizer="claude-opus-5@medium" ;;
+              synthesizer="claude-sonnet-5-5@medium" ;;
             tri-review:council-cross)
               reviewers="gpt-6-sol@high claude-opus-5@high gemini-3.8-flash"
               synthesizer="gpt-6.1-sol@medium" ;;
@@ -312,7 +312,7 @@ jobs:
 - Create the labels once in the repository (**Issues → Labels**, or `gh label create tri-review:council-gpt`). GitHub doesn't create them for you.
 - Pass the label name through `env`, as above. Don't put `${{ github.event.label.name }}` straight into a `run:` script: whoever names a label would then be writing your shell code.
 - A one-provider panel is for comparing providers. Its agreement means less than a mixed panel's, because models from one provider tend to miss the same things.
-- Set the synthesizer to a model that isn't on the panel when you can. Otherwise it judges findings from its own model. `council-claude` breaks this rule because only `claude-opus-5` and `claude-sonnet-5` are known to work: `claude-sonnet-5-5` returns a 400 error on the tool call tri-review uses.
+- Set the synthesizer to a model that isn't on the panel when you can. Otherwise it judges findings from its own model.
 - Leave Gemini without an `@effort` suffix. tri-review runs it at `high` by default, and lower levels were measured returning empty reviews.
 - Change the panels to suit your keys and budget. Every label needs a matching entry in both the `if:` list and the `case`. A label in the `if:` list but missing from the `case` fails the run and stays on the PR, instead of quietly using the default panel.
 - If two labels are added while a review is running, GitHub may drop the earlier request and leave its label on. Add it again.

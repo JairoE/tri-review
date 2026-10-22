@@ -23,7 +23,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from . import config
-from .providers import build_llm
+from .providers import build_llm, structured
 
 TRIAGE_PROMPT = """You are triaging a pull request diff to decide whether it is worth
 a full code review by three separate models.
@@ -70,7 +70,7 @@ def assess(diff: str, model: str | None = None, llm_builder=build_llm) -> Triage
     model = model or config.triage_model()
     try:
         llm = llm_builder(model)
-        verdict = llm.with_structured_output(TriageVerdict).invoke(
+        verdict = structured(llm, TriageVerdict).invoke(
             [SystemMessage(content=TRIAGE_PROMPT), HumanMessage(content=diff)]
         )
     except Exception:  # noqa: BLE001 - a failed gate must never block the review
