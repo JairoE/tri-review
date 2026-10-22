@@ -8,6 +8,7 @@ from tri_review.providers import (
     build_llm,
     caveat_for,
     provider_of,
+    structured,
 )
 
 
@@ -489,6 +490,41 @@ def test_anthropic_cache_breakpoint_leaves_effort_and_thinking_alone(monkeypatch
     assert payload["cache_control"] == {"type": "ephemeral"}
     assert payload["output_config"] == {"effort": "high"}
     assert payload["thinking"]["type"] == "adaptive"
+
+
+def _structured_payload(spec):
+    from tri_review.schema import ReviewOutput
+
+    bound = structured(build_llm(spec), ReviewOutput, include_raw=True).first.steps__["raw"]
+    return bound.bound._get_request_payload(_messages(), **bound.kwargs)
+
+
+def test_anthropic_structured_output_uses_the_native_format_not_a_forced_tool(monkeypatch):
+    """claude-sonnet-5-5 answers a forced tool_choice with a 400 ("type tool
+    and any are not supported for this model"), so Claude must not get one."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    payload = _structured_payload("claude-sonnet-5-5")
+    assert "tool_choice" not in payload
+    assert "tools" not in payload
+    assert payload["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_anthropic_native_format_keeps_the_effort_beside_it(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    payload = _structured_payload("claude-sonnet-5-5@high")
+    assert payload["output_config"]["effort"] == "high"
+    assert payload["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_structured_leaves_other_providers_on_their_default_method():
+    class _Recorder:
+        def with_structured_output(self, schema, **kwargs):
+            self.kwargs = kwargs
+            return self
+
+    llm = _Recorder()
+    structured(llm, object, include_raw=True)
+    assert llm.kwargs == {"include_raw": True}
 
 
 @pytest.mark.parametrize(

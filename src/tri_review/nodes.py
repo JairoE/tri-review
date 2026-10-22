@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import cache, config, dismissals
 from .errors import InsufficientReviewsError
-from .providers import build_llm, provider_of
+from .providers import build_llm, provider_of, structured
 from .report import normalize, render_block, render_report
 from .schema import NormalizedFinding, ReviewOutput, ReviewResult, SynthesisOutput, _as_block
 from .state import ReviewState
@@ -149,8 +149,8 @@ def review_with(
 
     try:
         llm = llm_builder(model_name)
-        structured = llm.with_structured_output(ReviewOutput, include_raw=True)
-        raw_result = structured.invoke(
+        structured_llm = structured(llm, ReviewOutput, include_raw=True)
+        raw_result = structured_llm.invoke(
             [SystemMessage(content=REVIEW_PROMPT), HumanMessage(content=payload)]
         )
         parsing_error = raw_result.get("parsing_error")
@@ -421,8 +421,8 @@ def _synthesize(
 
     try:
         llm = llm_builder(synthesizer)
-        structured = llm.with_structured_output(SynthesisOutput, include_raw=True)
-        raw_result = structured.invoke(
+        structured_llm = structured(llm, SynthesisOutput, include_raw=True)
+        raw_result = structured_llm.invoke(
             [
                 SystemMessage(content=SYNTHESIS_PROMPT),
                 *([SystemMessage(content=recorded)] if recorded else []),
@@ -437,7 +437,7 @@ def _synthesize(
             raise parsing_error
         output = raw_result["parsed"]
         if output is None:
-            # No tool call at all. Rendering that as an empty synthesis would
+            # No structured output at all. Rendering that as an empty synthesis would
             # hide every reviewer's findings behind "No consensus findings."
             raise ValueError("returned no structured output")
         if output.malformed and not output.findings:

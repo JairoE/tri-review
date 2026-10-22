@@ -227,6 +227,23 @@ def _openai_has_cache_options(model_name: str) -> bool:
     return (int(match.group(1)), int(match.group(2) or 0)) >= (5, 6)
 
 
+def structured(llm, schema, **kwargs):
+    """`llm.with_structured_output(schema)`, by the method each provider takes.
+
+    Claude gets Anthropic's native structured output (output_config.format)
+    rather than langchain-anthropic's default of a forced tool call:
+    claude-sonnet-5-5 answers a forced `tool_choice` with a 400, while every
+    Claude model in use accepts the native format. The effort setting still
+    reaches the wire -- langchain merges it into the same output_config.
+    Other providers keep their default method.
+    """
+    from langchain_anthropic import ChatAnthropic
+
+    if isinstance(llm, ChatAnthropic):
+        kwargs.setdefault("method", "json_schema")
+    return llm.with_structured_output(schema, **kwargs)
+
+
 def build_llm(spec: str | ModelSpec):
     """Construct a chat model from its spec, choosing the client by provider.
 
@@ -307,12 +324,12 @@ def build_llm(spec: str | ModelSpec):
         # this alone was never the real fix, just a reasonable one to keep.
         #
         # Prompt caching: one top-level automatic breakpoint, which the API
-        # places on the last cacheable block -- the PR payload -- so tools +
-        # system + payload are cached as a single entry. That whole request is
+        # places on the last cacheable block -- the PR payload -- so system +
+        # payload are cached as a single entry. That whole request is
         # what repeats: an SDK retry (the max_retries above, and the timeout)
         # re-sends it verbatim, as do same-SHA CI re-runs and `--fresh`.
         #
-        # Do not "fix" this by caching the system prompt instead. Tool schema
+        # Do not "fix" this by caching the system prompt instead. Output schema
         # plus REVIEW_PROMPT is ~460 tokens, under the minimum cacheable prefix
         # (1024 on claude-sonnet-5, 512 on Opus 5 / Sonnet 5.5 / Opus 5.5), so
         # a breakpoint there silently caches nothing.
