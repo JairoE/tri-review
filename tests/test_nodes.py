@@ -10,16 +10,25 @@ from tri_review.schema import Finding, ReviewOutput
 class _FakeRaw:
     """Stands in for the raw AIMessage `include_raw=True` hands back."""
 
-    def __init__(self, usage_metadata=None):
+    def __init__(self, usage_metadata=None, response_metadata=None):
         self.usage_metadata = usage_metadata
+        self.response_metadata = response_metadata or {}
 
 
 class FakeLLM:
-    def __init__(self, output=None, raises=None, usage_metadata=None, parsing_error=None):
+    def __init__(
+        self,
+        output=None,
+        raises=None,
+        usage_metadata=None,
+        parsing_error=None,
+        response_metadata=None,
+    ):
         self._output = output
         self._raises = raises
         self._usage_metadata = usage_metadata
         self._parsing_error = parsing_error
+        self._response_metadata = response_metadata
 
     def with_structured_output(self, _schema, include_raw=False):
         return self
@@ -28,7 +37,7 @@ class FakeLLM:
         if self._raises:
             raise self._raises
         return {
-            "raw": _FakeRaw(self._usage_metadata),
+            "raw": _FakeRaw(self._usage_metadata, self._response_metadata),
             "parsed": self._output,
             "parsing_error": self._parsing_error,
         }
@@ -107,18 +116,121 @@ def test_builder_failure_is_recorded_not_raised():
     assert "missing API key" in result.error
 
 
-def test_empty_findings_after_reasoning_exhaustion_is_flagged_low_confidence():
-    """A schema-valid empty answer that ate almost the whole output budget on
-    reasoning must not be reported as an ordinary clean pass."""
+def _empty_review(model_name, usage_metadata=None, response_metadata=None):
     llm = FakeLLM(
         output=ReviewOutput(findings=[]),
-        usage_metadata={"output_tokens": 6907, "output_token_details": {"reasoning": 6898}},
+        usage_metadata=usage_metadata,
+        response_metadata=response_metadata,
     )
-    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    return review_with(model_name, "payload", llm_builder=lambda _: llm, use_cache=False)
+
+
+def test_gemini_calibrated_empty_shape_is_flagged_low_confidence():
+    """The shape the thresholds were calibrated on: Gemini deliberates at
+    length, finishes normally, and answers with only `{"findings": []}`."""
+    result = _empty_review(
+        "gemini-3.8-flash",
+        usage_metadata={"output_tokens": 6907, "output_token_details": {"reasoning": 6898}},
+        response_metadata={"finish_reason": "STOP"},
+    )
     assert result.ok
     assert result.findings == []
     assert result.low_confidence_reason is not None
     assert "6898" in result.low_confidence_reason
+    # It finished normally, so the message must not claim it ran out of tokens.
+    assert "limit" not in result.low_confidence_reason
+
+
+def test_clean_empty_claude_review_is_not_flagged_low_confidence():
+    """Every empty answer from a thinking Claude model is mostly thinking plus a
+    ~10-token `{"findings": []}`. Measured live on claude-sonnet-5-5: this is a
+    clean pass, not a signal."""
+    result = _empty_review(
+        "claude-sonnet-5-5",
+        usage_metadata={"output_tokens": 1316, "output_token_details": {"reasoning": 1306}},
+        response_metadata={"stop_reason": "end_turn"},
+    )
+    assert result.ok
+    assert result.low_confidence_reason is None
+
+
+def test_truncated_empty_claude_review_is_flagged_low_confidence():
+    result = _empty_review(
+        "claude-sonnet-5-5",
+        usage_metadata={"output_tokens": 8000, "output_token_details": {"reasoning": 7990}},
+        response_metadata={"stop_reason": "max_tokens"},
+    )
+    assert result.low_confidence_reason is not None
+    assert "max_tokens" in result.low_confidence_reason
+
+
+@pytest.mark.parametrize(
+    "usage_metadata",
+    [
+        # Measured live: gpt-6.1-sol and gpt-5.6-terra on the same clean diff.
+        {"output_tokens": 283, "output_token_details": {"audio": 0, "reasoning": 264}},
+        {"output_tokens": 1535, "output_token_details": {"audio": 0, "reasoning": 1505}},
+        # Gemini's flagged shape, which must not carry over to an uncalibrated provider.
+        {"output_tokens": 6907, "output_token_details": {"reasoning": 6898}},
+        # No reasoning details reported at all.
+        {"output_tokens": 9},
+    ],
+)
+def test_clean_empty_gpt_review_is_not_flagged_low_confidence(usage_metadata):
+    result = _empty_review(
+        "gpt-6.1-sol", usage_metadata=usage_metadata, response_metadata={"finish_reason": "stop"}
+    )
+    assert result.ok
+    assert result.low_confidence_reason is None
+
+
+@pytest.mark.parametrize(
+    "usage_metadata",
+    [
+        {"output_tokens": 4000, "output_token_details": {"reasoning": 3990}},
+        {"output_tokens": 4000},
+    ],
+)
+def test_truncated_empty_gpt_review_is_flagged_with_or_without_reasoning_details(usage_metadata):
+    result = _empty_review(
+        "gpt-5.6-terra", usage_metadata=usage_metadata, response_metadata={"finish_reason": "length"}
+    )
+    assert result.low_confidence_reason is not None
+    assert "length" in result.low_confidence_reason
+
+
+def test_truncated_responses_api_gpt_review_is_flagged():
+    result = _empty_review(
+        "gpt-6.1-sol",
+        response_metadata={"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}},
+    )
+    assert result.low_confidence_reason is not None
+    assert "max_output_tokens" in result.low_confidence_reason
+
+
+def test_truncated_empty_gemini_review_is_flagged_as_truncated():
+    result = _empty_review(
+        "gemini-3.8-flash",
+        usage_metadata={"output_tokens": 65536, "output_token_details": {"reasoning": 65536}},
+        response_metadata={"finish_reason": "MAX_TOKENS"},
+    )
+    assert result.low_confidence_reason is not None
+    assert "MAX_TOKENS" in result.low_confidence_reason
+
+
+def test_truncated_review_with_findings_is_not_flagged():
+    llm = FakeLLM(
+        output=ReviewOutput(findings=[_finding()]),
+        response_metadata={"stop_reason": "max_tokens"},
+    )
+    result = review_with("claude-sonnet-5-5", "payload", llm_builder=lambda _: llm, use_cache=False)
+    assert result.low_confidence_reason is None
+
+
+def test_non_dict_response_metadata_does_not_fail_an_otherwise_ok_review():
+    result = _empty_review("claude-sonnet-5-5", response_metadata="not-a-dict")
+    assert result.ok
+    assert result.low_confidence_reason is None
 
 
 def test_genuine_clean_diff_is_not_flagged_low_confidence():
@@ -139,7 +251,7 @@ def test_light_reasoning_then_genuinely_clean_is_not_flagged_low_confidence():
         output=ReviewOutput(findings=[]),
         usage_metadata={"output_tokens": 59, "output_token_details": {"reasoning": 50}},
     )
-    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    result = review_with("gemini-3.8-flash", "payload", llm_builder=lambda _: llm)
     assert result.ok
     assert result.low_confidence_reason is None
 
@@ -151,7 +263,7 @@ def test_inconsistent_usage_metadata_is_not_flagged_low_confidence():
         output=ReviewOutput(findings=[]),
         usage_metadata={"output_tokens": 10, "output_token_details": {"reasoning": 50}},
     )
-    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    result = review_with("gemini-3.8-flash", "payload", llm_builder=lambda _: llm)
     assert result.ok
     assert result.low_confidence_reason is None
 
@@ -270,7 +382,7 @@ def test_real_findings_are_never_flagged_low_confidence_even_with_heavy_reasonin
         output=ReviewOutput(findings=[_finding()]),
         usage_metadata={"output_tokens": 6907, "output_token_details": {"reasoning": 6898}},
     )
-    result = review_with("fake-model", "payload", llm_builder=lambda _: llm)
+    result = review_with("gemini-3.8-flash", "payload", llm_builder=lambda _: llm)
     assert result.ok
     assert result.low_confidence_reason is None
 

@@ -177,7 +177,9 @@ def review_with(
             model=model_name,
             findings=findings,
             malformed_findings=malformed,
-            low_confidence_reason=_low_confidence_reason(raw_result["raw"], findings),
+            low_confidence_reason=_low_confidence_reason(
+                model_name, raw_result["raw"], findings
+            ),
             prompt_cache_read_tokens=cache_read,
             prompt_cache_write_tokens=cache_write,
         )
@@ -200,6 +202,20 @@ def review_with(
 # on empty results ranged 819-30,588, so that floor only excludes a model that
 # barely thought at all.
 #
+# Gemini only, because that is the only place this shape was ever shown to
+# predict anything. On a thinking Claude model every empty answer looks like
+# this -- `{"findings": []}` is ~10 tokens and the rest is thinking -- so the
+# check fired on every clean pass and carried no signal. On OpenAI it missed
+# by accident rather than by design. Measured on one clean 103K-token diff
+# (JairoE/content-creator-video#57 @ 1b97c71), all three empty:
+#
+#   claude-sonnet-5-5   reasoning 1306 / output 1316  end_turn  -> flagged
+#   gpt-6.1-sol         reasoning  264 / output  283  stop      -> under 500
+#   gpt-5.6-terra       reasoning 1505 / output 1535  stop      -> 30-token answer
+#
+# Neither GPT miss says anything about review quality, so nothing outside
+# Gemini gets these thresholds until it is calibrated the same way.
+#
 # One shape these thresholds deliberately do not flag: 3.8-flash sometimes
 # answers with reasoning=0 (snap judgement, no deliberation), which the
 # reasoning<=0 guard below drops before the floor is ever consulted. Every
@@ -208,29 +224,56 @@ def review_with(
 # report it. Revisit if an empty result with zero reasoning is ever seen.
 _MIN_ANSWER_TOKENS = 20
 _MIN_REASONING_TOKENS_FOR_CONCERN = 500
+_CALIBRATED_PROVIDERS = ("google",)
 
-def _low_confidence_reason(raw_message, findings: list) -> str | None:
+# How each provider says the output-token limit cut the response off, as
+# LangChain surfaces it in response_metadata: Anthropic's stop_reason
+# (model_context_window_exceeded is the same cut, at the context window
+# instead of max_tokens), OpenAI Chat Completions' finish_reason, and
+# Gemini's finish_reason enum name.
+_TRUNCATED_STOP_REASONS = frozenset(
+    {"max_tokens", "model_context_window_exceeded", "length", "MAX_TOKENS"}
+)
+
+
+def _low_confidence_reason(model_name: str, raw_message, findings: list) -> str | None:
     """Flag an empty result that may be an under-review rather than a clean pass.
 
-    Named for what it looked like from the token split -- nearly all output
-    spent on reasoning, a 9-token answer -- but that reading was wrong, and the
-    live evidence is worth recording so nobody re-derives it. The model is not
-    running out of anything: finish_reason is STOP on every observed sample,
-    which is what actually rules truncation out. Its thought summary (via
-    include_thoughts) reads as a survey that ends by approving the diff --
-    though a summary is not the raw chain of thought, so it is evidence about
-    how the model concluded, not proof that every hunk was examined. The
+    Two signals, of different strength. Only applies to empty findings: a real
+    finding means the model did the work.
+
+    Truncation holds for every provider: a response stopped at its token limit
+    was cut short, so whatever it did not get to say is missing. In practice a
+    cut usually breaks the JSON and fails as a parse error instead; this
+    catches the case where the cut still left a valid empty answer.
+
+    The token-split shape holds only where it was calibrated (see
+    `_CALIBRATED_PROVIDERS`). It was named for what it looked like -- nearly
+    all output spent on reasoning, a 9-token answer -- but that reading was
+    wrong, and the live evidence is worth recording so nobody re-derives it.
+    The model is not running out of anything: finish_reason is STOP on every
+    observed sample, which is what actually rules truncation out. Its thought
+    summary (via include_thoughts) reads as a survey that ends by approving the
+    diff -- though a summary is not the raw chain of thought, so it is evidence
+    about how the model concluded, not proof that every hunk was examined. The
     9-token answer is simply the fixed width of `{"findings": []}`, and the
     reasoning count is just how long it deliberated. So neither number means
     exhaustion; what they jointly identify is "deliberated, then reported
-    nothing", which on this model is unreliable often enough to be worth
+    nothing", which on Gemini is unreliable often enough to be worth
     surfacing -- it was measured returning empty on a diff where the other two
     reviewers found 3 and 2 real findings.
 
-    The reasoning floor only excludes a model that barely engaged at all. Only
-    applies to empty findings: a real finding means the model did the work.
+    The reasoning floor only excludes a model that barely engaged at all.
     """
     if findings:
+        return None
+    stop_reason = _truncation_stop_reason(raw_message)
+    if stop_reason is not None:
+        return (
+            f"reported no findings but its response stopped at the output-token "
+            f"limit ({stop_reason}), so the review may have been cut short"
+        )
+    if provider_of(model_name) not in _CALIBRATED_PROVIDERS:
         return None
     usage = getattr(raw_message, "usage_metadata", None)
     if not isinstance(usage, dict):
@@ -249,11 +292,31 @@ def _low_confidence_reason(raw_message, findings: list) -> str | None:
         return None
     if output - reasoning <= _MIN_ANSWER_TOKENS:
         return (
-            f"reported no findings after spending {reasoning}/{output} output tokens "
-            "on internal reasoning -- this model produces that exact shape both when a "
-            "diff is genuinely clean and when it has under-reviewed one, so treat it as "
-            "inconclusive rather than as a verified clean pass"
+            f"reported no findings after {reasoning} tokens of reasoning and a "
+            f"{output - reasoning}-token answer. It finished normally, but on this "
+            "model that shape was measured both on genuinely clean diffs and on "
+            "diffs it under-reviewed"
         )
+    return None
+
+
+def _truncation_stop_reason(raw_message) -> str | None:
+    """The provider's stop reason if the token limit cut the response off, else None.
+
+    Read as defensively as the usage counts: an absent or unexpected shape is
+    no signal. OpenAI's Responses API, which langchain-openai switches to for
+    some requests, reports the cut as an incomplete status instead.
+    """
+    meta = getattr(raw_message, "response_metadata", None)
+    if not isinstance(meta, dict):
+        return None
+    for key in ("stop_reason", "finish_reason"):
+        value = meta.get(key)
+        if isinstance(value, str) and value in _TRUNCATED_STOP_REASONS:
+            return value
+    incomplete = meta.get("incomplete_details")
+    if isinstance(incomplete, dict) and incomplete.get("reason") == "max_output_tokens":
+        return "max_output_tokens"
     return None
 
 
@@ -574,7 +637,7 @@ def _diversity_note(succeeded) -> str:
 
 
 def _low_confidence_note(succeeded) -> str:
-    """Warn about reviewers whose empty result may be reasoning-budget exhaustion.
+    """Warn about reviewers whose empty result may be an under-review.
 
     Without this, a suspect empty result reads identically to a genuine clean
     pass in the synthesized report -- silently weakening both "unique insight"
