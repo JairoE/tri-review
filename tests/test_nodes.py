@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from tri_review import nodes
 from tri_review.nodes import make_review_node, review_with
 from tri_review.providers import build_llm, provider_of
 from tri_review.schema import Finding, ReviewOutput
@@ -492,6 +493,17 @@ def test_a_retry_after_a_flake_reuses_the_reviews_already_paid_for():
 
     assert good.calls == 1
     assert bad.calls == 2
+
+
+def test_changing_the_low_confidence_rules_invalidates_cached_reviews(monkeypatch):
+    """A cached result carries the flag computed when it was saved."""
+    builder = _CountingBuilder(output=ReviewOutput(findings=[_finding()]))
+
+    review_with("cache-model", "payload", llm_builder=builder)
+    monkeypatch.setattr(nodes, "_LOW_CONFIDENCE_VERSION", nodes._LOW_CONFIDENCE_VERSION + 1)
+    review_with("cache-model", "payload", llm_builder=builder)
+
+    assert builder.calls == 2
 
 
 def test_the_cache_can_be_switched_off():

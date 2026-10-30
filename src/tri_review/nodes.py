@@ -114,14 +114,21 @@ If the reviews report no issues, return an empty `findings` list.
 """
 
 
+# Bump when `_low_confidence_reason` changes. A cached ReviewResult stores the
+# reason computed at save time, and the raw response it came from is not kept,
+# so an old entry would otherwise replay the old verdict.
+_LOW_CONFIDENCE_VERSION = 2
+
+
 def _output_fingerprint() -> str:
     """A stable rendering of the schema reviewers are held to.
 
     Part of the cache key: widening `Finding` changes what a reviewer can say,
     so entries written against the old shape must not be replayed against the
-    new one.
+    new one. The low-confidence version rides along for the same reason.
     """
-    return json.dumps(ReviewOutput.model_json_schema(), sort_keys=True)
+    schema = json.dumps(ReviewOutput.model_json_schema(), sort_keys=True)
+    return f"{schema}|low-confidence-v{_LOW_CONFIDENCE_VERSION}"
 
 
 def review_with(
